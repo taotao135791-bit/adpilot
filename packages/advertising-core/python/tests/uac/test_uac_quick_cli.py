@@ -1,0 +1,239 @@
+"""CLI and Workspace contracts for the read-only Quick Decision entry."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
+
+SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
+sys.path.insert(0, str(SCRIPTS_DIR))
+
+from adpilot_ads.uac.workspace import initialize_workspace  # noqa: E402
+
+
+def _run(repo_root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "uac_experiment.py"), *arguments],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+
+def _example(repo_root: Path) -> Path:
+    return (
+        repo_root
+        / "skills"
+        / "ads-google-app"
+        / "assets"
+        / "UAC-QUICK-OPS.example.yaml"
+    )
+
+
+def _numeric_example(repo_root: Path) -> Path:
+    return (
+        repo_root
+        / "skills"
+        / "ads-google-app"
+        / "assets"
+        / "UAC-QUICK-NUMERIC.example.yaml"
+    )
+
+
+def test_decide_help_exposes_no_ledger_append_or_live_write(repo_root):
+    completed = _run(repo_root, "decide", "--help")
+
+    assert completed.returncode == 0
+    assert "read-only Campaign Level operation card" in completed.stdout
+    assert "--append-experiment" not in completed.stdout
+    assert "--workspace" in completed.stdout
+
+
+def test_legacy_decide_prints_compact_card_and_machine_json(repo_root):
+    card = _run(repo_root, "decide", str(_example(repo_root)))
+    machine = _run(repo_root, "decide", str(_example(repo_root)), "--json")
+
+    assert card.returncode == 0, card.stderr
+    assert card.stdout.startswith("结论：")
+    assert "# UAC Experiment Loop Report" not in card.stdout
+    assert machine.returncode == 0, machine.stderr
+    result = json.loads(machine.stdout)
+    assert result["decision"]["verdict"] == "KEEP_AC25_AND_TEST_AC30"
+    assert result["account_write"] is False
+    assert result["ledger_write"] is False
+    assert result["experiments"] == []
+
+
+def test_decide_cli_loads_project_numeric_policy_and_rejects_invalid_override(
+    repo_root, tmp_path
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    input_path = project / "input.yaml"
+    case = yaml.safe_load(_numeric_example(repo_root).read_text(encoding="utf-8"))
+    case["goal"].update({"target_cpa": 2.0, "maximum_acceptable_cpa": 8.0})
+    input_path.write_text(
+        yaml.safe_dump(case, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    policies = project / "policies"
+    policies.mkdir()
+    policy_path = policies / "uac-numeric-policy.yaml"
+    policy_path.write_text(
+        """schema_version: "1.0"
+policy_version: cli-project-numeric-v2
+policy_kind: uac_numeric
+policy_mode: override
+extends: uac-numeric-policy-v1
+numeric_change_limits:
+  target_cpa:
+    normal_max_increase_percent: 10
+""",
+        encoding="utf-8",
+    )
+
+    completed = _run(repo_root, "decide", str(input_path), "--json")
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["policy"]["numeric"]["policy_version"] == ("cli-project-numeric-v2")
+    assert result["target_recommendation"]["recommended_value"] == 2.2
+
+    policy_path.write_text(
+        policy_path.read_text(encoding="utf-8").replace(
+            "normal_max_increase_percent: 10",
+            "normal_max_increase_percent: -1",
+        ),
+        encoding="utf-8",
+    )
+    rejected = _run(repo_root, "decide", str(input_path), "--json")
+
+    assert rejected.returncode == 2
+    assert "normal_max_increase_percent" in rejected.stderr
+    assert "Traceback" not in rejected.stderr
+
+
+def test_decide_card_forces_utf8_under_an_inherited_legacy_code_page(repo_root):
+    environment = os.environ.copy()
+    environment["PYTHONIOENCODING"] = "ascii:backslashreplace"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "scripts" / "uac_experiment.py"),
+            "decide",
+            str(_example(repo_root)),
+        ],
+        check=False,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode("utf-8")
+    assert completed.stdout.decode("utf-8").startswith("结论：")
+    assert rb"\u7ed3\u8bba" not in completed.stdout
+
+
+def test_workspace_decide_writes_private_outputs_but_never_changes_ledger(
+    repo_root, tmp_path
+):
+    workspace = initialize_workspace("quick-ops", base_dir=tmp_path)
+    raw = workspace.input_dir / "anonymous-export.yaml"
+    shutil.copyfile(_example(repo_root), raw)
+    normalized = _run(repo_root, "normalize", "--workspace", str(workspace.root))
+    assert normalized.returncode == 0, normalized.stderr
+    ready = yaml.safe_load(workspace.normalized_input_path.read_text(encoding="utf-8"))
+    assert ready["quick_ops"]["current_campaign"]["level"] == "AC2.5"
+    assert ready["campaign_level_glossary"]["ac30"]["value_optimization"] is True
+
+    ledger_before = workspace.ledger_path.read_bytes()
+    completed = _run(repo_root, "decide", "--workspace", str(workspace.root))
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.startswith("结论：")
+    assert "ledger: unchanged" in completed.stdout
+    assert workspace.ledger_path.read_bytes() == ledger_before
+    assert workspace.quick_decision_path.is_file()
+    assert workspace.quick_decision_report_path.is_file()
+    structured = json.loads(workspace.quick_decision_path.read_text(encoding="utf-8"))
+    assert structured["decision"]["primary_action_count"] == 1
+    assert workspace.quick_decision_report_path.read_text(encoding="utf-8").startswith(
+        "结论："
+    )
+
+
+def test_decide_refuses_to_overwrite_input_or_ledger(repo_root, tmp_path):
+    source = tmp_path / "input.yaml"
+    ledger = tmp_path / "ledger.yaml"
+    shutil.copyfile(_example(repo_root), source)
+    ledger.write_text('schema_version: "1.1"\nexperiments: []\n', encoding="utf-8")
+
+    overwrite_input = _run(
+        repo_root,
+        "decide",
+        str(source),
+        "--ledger",
+        str(ledger),
+        "--json-output",
+        str(source),
+    )
+    overwrite_ledger = _run(
+        repo_root,
+        "decide",
+        str(source),
+        "--ledger",
+        str(ledger),
+        "--markdown-output",
+        str(ledger),
+    )
+
+    assert overwrite_input.returncode == 2
+    assert "must not overwrite" in overwrite_input.stderr
+    assert overwrite_ledger.returncode == 2
+    assert "must not overwrite" in overwrite_ledger.stderr
+
+
+def test_decide_refuses_to_overwrite_glossary_or_workspace_controls(
+    repo_root, tmp_path
+):
+    source = tmp_path / "input.yaml"
+    glossary = tmp_path / "glossary.yaml"
+    shutil.copyfile(_example(repo_root), source)
+    glossary.write_text(
+        "campaign_level_glossary:\n  ac25:\n    display_name: AC2.5\n",
+        encoding="utf-8",
+    )
+    overwrite_glossary = _run(
+        repo_root,
+        "decide",
+        str(source),
+        "--glossary",
+        str(glossary),
+        "--json-output",
+        str(glossary),
+    )
+
+    workspace = initialize_workspace("protected-controls", base_dir=tmp_path)
+    shutil.copyfile(_example(repo_root), workspace.input_dir / "anonymous.yaml")
+    normalized = _run(repo_root, "normalize", "--workspace", str(workspace.root))
+    assert normalized.returncode == 0, normalized.stderr
+    overwrite_context = _run(
+        repo_root,
+        "decide",
+        "--workspace",
+        str(workspace.root),
+        "--json-output",
+        str(workspace.context_path),
+    )
+
+    assert overwrite_glossary.returncode == 2
+    assert "must not overwrite" in overwrite_glossary.stderr
+    assert overwrite_context.returncode == 2
+    assert "must not overwrite" in overwrite_context.stderr

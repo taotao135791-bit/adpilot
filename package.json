@@ -14,9 +14,10 @@
     "build": "pnpm typecheck && tsup apps/cli/src/index.ts --format esm --platform node --out-dir dist/cli && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:ads-core": "python3 -m pytest packages/advertising-core/python/tests/uac -q",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "check": "pnpm typecheck && pnpm test && pnpm build"
+    "check": "pnpm typecheck && pnpm test && pnpm test:ads-core && pnpm build"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.80.10",
