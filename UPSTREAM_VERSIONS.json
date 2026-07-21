@@ -1,0 +1,18 @@
+{
+  "pi": {
+    "packageVersion": "0.80.10",
+    "tag": "v0.80.10",
+    "commit": "8dc78834cde4e329284cf505f9e3f99763df5529",
+    "license": "MIT"
+  },
+  "uiTars": {
+    "packageVersion": "1.2.3",
+    "commit": "c2ad42e3eb9b27830db41a3e6f51ca7179d9b168",
+    "license": "Apache-2.0"
+  },
+  "advertisingPolicyUpstream": {
+    "version": "1.9.2",
+    "commit": "e4815fc9ae7a9fa69ee8dc3e06404dddd4913394",
+    "license": "MIT"
+  }
+}

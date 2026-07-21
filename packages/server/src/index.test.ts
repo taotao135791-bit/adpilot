@@ -14,6 +14,9 @@ describe("product server", () => {
     const state = await server.inject({ method: "GET", url: "/api/state?clientId=client-a" });
     expect(state.statusCode).toBe(200);
     expect(state.json().clients[0].name).toBe("Example");
+    const about = await server.inject({ method: "GET", url: "/api/about" });
+    expect(about.statusCode).toBe(200);
+    expect(about.json()).toMatchObject({ name: "AdPilot", runtime: { name: "Pi" }, computerUse: { name: "UI-TARS" } });
 
     const taskId = crypto.randomUUID();
     const operation = {

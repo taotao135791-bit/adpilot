@@ -12,6 +12,12 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
   await app.register(cors, { origin: false });
 
   app.get("/api/health", async () => ({ status: "ok", guiConfigured: system.modelStatus.guiConfigured }));
+  app.get("/api/about", async () => ({
+    name: "AdPilot", version: "0.1.0",
+    runtime: { name: "Pi", version: "0.80.10", license: "MIT" },
+    computerUse: { name: "UI-TARS", version: "1.2.3", license: "Apache-2.0" },
+    advertisingCore: { upstream: "codex-ads", version: "1.9.2", license: "MIT" }
+  }));
   app.get("/api/state", async (request) => {
     const query = z.object({ clientId: z.string().optional() }).parse(request.query);
     const clients = await system.workspace.listClients();

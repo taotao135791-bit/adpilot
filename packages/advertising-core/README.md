@@ -16,4 +16,4 @@ python3 -m pip install -r packages/advertising-core/python/requirements-dev.txt
 pnpm test:ads-core
 ```
 
-The migrated implementation is derived from the MIT-licensed upstream listed in `licenses/codex-ads-MIT.txt`. Product naming and storage paths are AdPilot-native; attribution remains intact in the license and third-party notices.
+The migrated implementation is derived from the MIT-licensed advertising-policy upstream listed in the root third-party notices. Product naming and storage paths are AdPilot-native; attribution remains intact in the license and About screen.

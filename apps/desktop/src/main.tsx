@@ -3,6 +3,12 @@ import { createRoot } from "react-dom/client";
 import {
   Badge,
   Button,
+  Dialog,
+  DialogActions,
+  DialogBody,
+  DialogContent,
+  DialogSurface,
+  DialogTitle,
   FluentProvider,
   Input,
   Spinner,
@@ -48,6 +54,7 @@ function App() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [computerMode, setComputerMode] = useState<"running" | "paused" | "takeover">("running");
+  const [aboutOpen, setAboutOpen] = useState(false);
 
   const loadState = useCallback(async (requestedClientId?: string) => {
     try {
@@ -118,7 +125,7 @@ function App() {
           <div className="top-status">
             <Badge appearance="outline" color={state.models.guiConfigured ? "success" : "warning"}>{state.models.guiConfigured ? "Computer ready" : "GUI model needs setup"}</Badge>
             <Tooltip content="切换主题" relationship="label"><Button appearance="subtle" icon={theme === "dark" ? <WeatherSunny24Regular /> : <WeatherMoon24Regular />} onClick={() => setTheme(theme === "dark" ? "light" : "dark")} /></Tooltip>
-            <Tooltip content="设置" relationship="label"><Button appearance="subtle" icon={<Settings24Regular />} /></Tooltip>
+            <Tooltip content="关于与设置" relationship="label"><Button appearance="subtle" icon={<Settings24Regular />} onClick={() => setAboutOpen(true)} /></Tooltip>
           </div>
         </header>
 
@@ -131,10 +138,10 @@ function App() {
           ) : <Empty title="还没有客户" body="先通过 API 或 CLI 创建一个隔离 Workspace。" />}
 
           <nav aria-label="产品导航">
-            <Nav icon={<Chat24Regular />} label="对话与任务" active />
-            <Nav icon={<TargetArrow24Regular />} label="实验" count={state.experiments.length} />
-            <Nav icon={<ShieldCheckmark24Regular />} label="审批" count={state.approvals.filter((item) => !["executed", "rejected", "failed"].includes(item.status)).length} />
-            <Nav icon={<DataUsage24Regular />} label="操作审计" count={state.audit.length} />
+            <Nav icon={<Chat24Regular />} label="对话与任务" active onClick={() => document.querySelector(".main-column")?.scrollTo({ top: 0, behavior: "smooth" })} />
+            <Nav icon={<TargetArrow24Regular />} label="实验" count={state.experiments.length} onClick={() => document.querySelector(".experiments-panel")?.scrollIntoView({ behavior: "smooth" })} />
+            <Nav icon={<ShieldCheckmark24Regular />} label="审批" count={state.approvals.filter((item) => !["executed", "rejected", "failed"].includes(item.status)).length} onClick={() => document.querySelector(".queue-panel")?.scrollIntoView({ behavior: "smooth" })} />
+            <Nav icon={<DataUsage24Regular />} label="操作审计" count={state.audit.length} onClick={() => document.querySelector(".audit-panel")?.scrollIntoView({ behavior: "smooth" })} />
           </nav>
 
           <section className="model-stack" aria-label="模型状态">
@@ -222,12 +229,29 @@ function App() {
             {state.audit.slice(-4).reverse().map((event) => <div className="audit-row" key={event.id}><span>{event.action}</span><time>{formatTime(event.at)}</time></div>)}
           </section>
         </aside>
+        <Dialog open={aboutOpen} onOpenChange={(_, data) => setAboutOpen(data.open)}>
+          <DialogSurface>
+            <DialogBody>
+              <DialogTitle>关于 AdPilot</DialogTitle>
+              <DialogContent className="about-content">
+                <p>版本 0.1.0。原生、可审批、以证据为中心的广告优化 Agent。</p>
+                <dl>
+                  <div><dt>主运行时</dt><dd>Pi 0.80.10 · MIT</dd></div>
+                  <div><dt>视觉执行</dt><dd>UI-TARS 1.2.3 · Apache-2.0</dd></div>
+                  <div><dt>广告策略来源</dt><dd>codex-ads 1.9.2 · MIT</dd></div>
+                </dl>
+                <p className="about-note">真实账户修改需要独立风险复核、用户批准和一次性执行令牌。完整署名与许可证位于仓库 THIRD_PARTY_NOTICES.md。</p>
+              </DialogContent>
+              <DialogActions><Button appearance="primary" onClick={() => setAboutOpen(false)}>关闭</Button></DialogActions>
+            </DialogBody>
+          </DialogSurface>
+        </Dialog>
       </div>
     </FluentProvider>
   );
 }
 
-function Nav({ icon, label, count, active = false }: { icon: React.ReactNode; label: string; count?: number; active?: boolean }) { return <button className={`nav-item ${active ? "active" : ""}`}>{icon}<span>{label}</span>{count !== undefined && <b>{count}</b>}</button>; }
+function Nav({ icon, label, count, active = false, onClick }: { icon: React.ReactNode; label: string; count?: number; active?: boolean; onClick: () => void }) { return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}>{icon}<span>{label}</span>{count !== undefined && <b>{count}</b>}</button>; }
 function ModelRow({ label, value, warn = false }: { label: string; value: string; warn?: boolean }) { return <div className="model-row"><span>{label}</span><strong className={warn ? "warn" : ""}>{value}</strong></div>; }
 function Empty({ title, body }: { title: string; body: string }) { return <div className="empty"><strong>{title}</strong><span>{body}</span></div>; }
 function formatTime(value: string) { return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
@@ -236,4 +260,3 @@ function phaseLabel(phase: string) { return ({ intake: "接收目标", investiga
 function phaseColor(phase: string): "brand" | "success" | "warning" | "danger" { if (phase === "completed") return "success"; if (phase === "blocked" || phase === "cancelled") return "danger"; if (phase === "awaiting_approval") return "warning"; return "brand"; }
 
 createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
-
