@@ -24,6 +24,7 @@ Command: `pnpm build`
 - Strict typecheck: passed.
 - CLI ESM bundle: passed.
 - React production bundle: passed.
+- Electron ESM main-process bundle: passed.
 - Post-build executable permission: verified as `-rwxr-xr-x`.
 
 Smoke checks:
@@ -34,6 +35,10 @@ Smoke checks:
 - `/api/health`, `/api/about`, `/api/state` and `/` returned successfully.
 - `node scripts/verify-upstreams.mjs` matched both reviewed git pins.
 - A real headless Chrome session loaded the production UI and captured `docs/screenshots/adpilot-console.png`.
+- Responsive UI checks passed at 1440×1000 and 390×844 with no horizontal overflow; the mobile command surface remains reachable above the fixed navigation.
+- The Electron development shell started the same local API on a random loopback port with sandboxing, context isolation and navigation restrictions enabled.
+- `pnpm desktop:dir` produced a runnable arm64 `AdPilot.app`; its packaged API, HTML, JavaScript and CSS assets all returned successfully.
+- `pnpm desktop:dmg` produced `AdPilot-0.1.0-arm64.dmg`; `hdiutil verify` passed and the mounted image contained `AdPilot.app` plus the `/Applications` install link.
 
 ## Upstream audit baseline
 

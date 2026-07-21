@@ -48,6 +48,7 @@ const starterGoals = [
 ];
 
 function App() {
+  const isNativeDesktop = new URLSearchParams(window.location.search).get("desktop") === "1";
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     const stored = localStorage.getItem("adpilot-theme");
     return stored === "light" || stored === "dark" ? stored : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
@@ -141,7 +142,7 @@ function App() {
 
   return (
     <FluentProvider theme={theme === "dark" ? webDarkTheme : webLightTheme} className="provider">
-      <div className="shell" data-theme={theme}>
+      <div className="shell" data-theme={theme} data-native={isNativeDesktop}>
         <header className="topbar">
           <div className="brand"><span className="brand-glyph">AP</span><div><strong>AdPilot</strong><small>CONTROL SYSTEM</small></div></div>
           <div className="workspace-switcher">
