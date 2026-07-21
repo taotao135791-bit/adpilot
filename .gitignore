@@ -1,0 +1,14 @@
+node_modules/
+.turbo/
+dist/
+coverage/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+workspace/clients/*/screenshots/*
+workspace/clients/*/traces/*
+workspace/clients/*/memory/*
+!workspace/clients/.gitkeep
+
