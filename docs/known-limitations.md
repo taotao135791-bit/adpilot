@@ -9,4 +9,5 @@ No known in-scope implementation item is intentionally left as a stub. The follo
 - The server is safe by default on loopback but does not ship multi-user authentication. Add an authenticated gateway before binding to a shared interface.
 - Scheduled/background reviews, team approval, cloud browser execution and direct advertising-platform APIs are extension targets, not hidden mock implementations in this release.
 - The generic image-difference verifier is suitable only as a conservative test fallback. Production uses the configured multimodal before/after verifier.
+- If `ADPILOT_GUI_STRONG_MODEL` is omitted, the third visual attempt falls back to the primary GUI model; configure a genuinely stronger compatible model for real escalation.
 - A transitive UI-TARS dependency emits Node's `punycode` deprecation warning; it does not fail tests or execution.

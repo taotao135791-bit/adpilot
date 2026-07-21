@@ -41,9 +41,9 @@ type Approval = { id: string; taskId: string; status: string; executionPlan: { t
 type Experiment = { id: string; hypothesis: string; variable: string; status: string; reviewAt: string };
 type Audit = { id: string; actor: string; action: string; status: string; at: string };
 type ProductEvent = { type: string; status?: string; message?: string; approvalId?: string; event?: { type: string; phase?: string; attempt?: number; screenshot?: { base64: string; capturedAt: string }; action?: { action: string; target: string; reason: string }; reason?: string } };
-type State = { clients: Client[]; selectedClientId?: string; tasks: Task[]; approvals: Approval[]; experiments: Experiment[]; audit: Audit[]; events: ProductEvent[]; models: { fast: string; strong: string; gui: string; guiConfigured: boolean } };
+type State = { clients: Client[]; selectedClientId?: string; tasks: Task[]; approvals: Approval[]; experiments: Experiment[]; audit: Audit[]; events: ProductEvent[]; models: { fast: string; strong: string; gui: string; guiStrong: string; guiConfigured: boolean } };
 
-const emptyState: State = { clients: [], tasks: [], approvals: [], experiments: [], audit: [], events: [], models: { fast: "", strong: "", gui: "", guiConfigured: false } };
+const emptyState: State = { clients: [], tasks: [], approvals: [], experiments: [], audit: [], events: [], models: { fast: "", strong: "", gui: "", guiStrong: "", guiConfigured: false } };
 
 function App() {
   const [theme, setTheme] = useState<"dark" | "light">(() => matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
@@ -151,6 +151,7 @@ function App() {
             <ModelRow label="Fast" value={state.models.fast} />
             <ModelRow label="Strong" value={state.models.strong} />
             <ModelRow label="Grounding" value={state.models.gui} warn={!state.models.guiConfigured} />
+            <ModelRow label="Grounding strong" value={state.models.guiStrong} warn={!state.models.guiConfigured} />
           </section>
         </aside>
 

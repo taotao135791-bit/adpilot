@@ -20,9 +20,10 @@ The provider name must exist in the Pi model registry and its normal credential 
 ADPILOT_GUI_BASE_URL=https://your-openai-compatible-endpoint/v1
 ADPILOT_GUI_API_KEY=...
 ADPILOT_GUI_MODEL=your-ui-tars-model
+ADPILOT_GUI_STRONG_MODEL=your-stronger-ui-tars-model
 ```
 
-The endpoint must support the UI-TARS SDK request shape for grounding and OpenAI-compatible `chat/completions` with image inputs for before/after verification. AdPilot invokes the grounding model for one micro-action only. It never delegates the full advertising goal to a GUI agent.
+The endpoint must support the UI-TARS SDK request shape for grounding and OpenAI-compatible `chat/completions` with image inputs for before/after verification. The first two attempts use `ADPILOT_GUI_MODEL`; the third uses `ADPILOT_GUI_STRONG_MODEL`. If the strong name is omitted, AdPilot explicitly reports the primary model as the compatibility fallback. AdPilot invokes the grounding model for one micro-action only. It never delegates the full advertising goal to a GUI agent.
 
 ## Runtime controls
 

@@ -233,20 +233,22 @@ function normalizedBox(x: number, y: number, screenshot: Screenshot): string {
 
 export class UiTarsGroundingModel implements GroundingModel {
   private readonly model: UITarsModel;
+  private readonly strongModel: UITarsModel;
 
-  constructor(config: { apiKey: string; baseURL: string; model: string }) {
+  constructor(config: { apiKey: string; baseURL: string; model: string; strongModel?: string }) {
     if (!config.apiKey || !config.baseURL || !config.model) throw new Error("GUI grounding model is not configured");
     this.model = new UITarsModel({ ...config, temperature: 0, max_tokens: 1000 });
+    this.strongModel = new UITarsModel({ ...config, model: config.strongModel ?? config.model, temperature: 0, max_tokens: 1000 });
   }
 
-  async ground(task: VisualMicroTask, screenshot: Screenshot, _tier: ModelTier): Promise<VisualAction> {
+  async ground(task: VisualMicroTask, screenshot: Screenshot, tier: ModelTier): Promise<VisualAction> {
     const instruction = [
       "Plan exactly one immediate GUI micro-action. Do not plan the overall advertising task.",
       `Instruction: ${task.instruction}`,
       `Target: ${task.target}`,
       `Expected result: ${task.expectedResult}`
     ].join("\n");
-    const output = await this.model.invoke({
+    const output = await (tier === "strong" ? this.strongModel : this.model).invoke({
       conversations: [{ from: "human", value: instruction }, { from: "human", value: "<image>" }],
       images: [screenshot.base64],
       screenContext: { width: screenshot.width, height: screenshot.height },

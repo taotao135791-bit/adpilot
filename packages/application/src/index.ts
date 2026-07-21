@@ -40,7 +40,7 @@ export interface AdPilotSystem {
   computer: VisualComputerRuntime | undefined;
   events: ProductEventBus;
   approvalTokens: Map<string, string>;
-  modelStatus: { fast: string; strong: string; gui: string; guiConfigured: boolean };
+  modelStatus: { fast: string; strong: string; gui: string; guiStrong: string; guiConfigured: boolean };
 }
 
 export async function createAdPilotSystem(options: { workspaceRoot?: string; env?: NodeJS.ProcessEnv } = {}): Promise<AdPilotSystem> {
@@ -55,7 +55,7 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   const computer = guiConfigured
     ? new VisualComputerRuntime(
         new UiTarsNativeOperator(),
-        new UiTarsGroundingModel({ baseURL: env.ADPILOT_GUI_BASE_URL!, apiKey: env.ADPILOT_GUI_API_KEY!, model: env.ADPILOT_GUI_MODEL! }),
+        new UiTarsGroundingModel({ baseURL: env.ADPILOT_GUI_BASE_URL!, apiKey: env.ADPILOT_GUI_API_KEY!, model: env.ADPILOT_GUI_MODEL!, ...(env.ADPILOT_GUI_STRONG_MODEL ? { strongModel: env.ADPILOT_GUI_STRONG_MODEL } : {}) }),
         new OpenAICompatibleVisualVerifier({ baseURL: env.ADPILOT_GUI_BASE_URL!, apiKey: env.ADPILOT_GUI_API_KEY!, model: env.ADPILOT_GUI_MODEL! }),
         undefined,
         (event) => events.publish({ type: "computer", event })
@@ -85,6 +85,7 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
       fast: `${env.ADPILOT_FAST_PROVIDER ?? "openai"}/${env.ADPILOT_FAST_MODEL ?? "gpt-5-mini"}`,
       strong: `${env.ADPILOT_STRONG_PROVIDER ?? "openai"}/${env.ADPILOT_STRONG_MODEL ?? "gpt-5.2"}`,
       gui: env.ADPILOT_GUI_MODEL ?? "not configured",
+      guiStrong: env.ADPILOT_GUI_STRONG_MODEL ?? env.ADPILOT_GUI_MODEL ?? "not configured",
       guiConfigured
     }
   };
