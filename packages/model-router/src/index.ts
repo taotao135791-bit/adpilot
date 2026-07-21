@@ -41,7 +41,7 @@ export class ModelRouter {
   }
 
   route(signals: RoutingSignals): RouteDecision {
-    if (signals.task === "grounding") return { tier: "gui", ref: this.config.gui, reasons: ["visual grounding requires the GUI model"] };
+    if (signals.task === "grounding") return { tier: "gui", ref: this.config.gui, reasons: ["visual grounding uses the selected vision-capable code model"] };
     const reasons: string[] = [];
     if (signals.conflictingSources) reasons.push("multiple data sources conflict");
     if (signals.confidence !== undefined && signals.confidence < this.confidenceThreshold) reasons.push("fast-model confidence is below threshold");
@@ -78,6 +78,6 @@ export function modelRouterFromEnv(env: NodeJS.ProcessEnv = process.env): ModelR
   return new ModelRouter({
     fast: { provider: fastProvider, model: fastModel },
     strong: { provider: env.ADPILOT_STRONG_PROVIDER ?? fastProvider, model: env.ADPILOT_STRONG_MODEL ?? "gpt-5.2" },
-    gui: { provider: "ui-grounding", model: env.ADPILOT_GUI_MODEL ?? "ui-tars-1.5" }
+    gui: { provider: fastProvider, model: fastModel }
   });
 }

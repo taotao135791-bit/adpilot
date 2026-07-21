@@ -8,6 +8,7 @@ import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import type { AdPilotSystem } from "@adpilot/application";
 import { ApprovalExecutionPlan, ApprovalOperation } from "@adpilot/approvals";
 import { SettingsUpdate } from "@adpilot/configuration";
+import { ConversationMessage } from "@adpilot/shared";
 
 export async function createServer(system: AdPilotSystem, options: { uiRoot?: string; onRestartRequested?: () => void } = {}) {
   const app = Fastify({ logger: false });
@@ -15,7 +16,14 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
   const authSessions = new Map<string, AuthSession>();
   await app.register(cors, { origin: false });
 
-  app.get("/api/health", async () => ({ status: "ok", guiConfigured: system.modelStatus.guiConfigured }));
+  if ((await system.workspace.listClients()).length === 0) {
+    await system.workspace.initializeClient({
+      profile: { id: "personal", name: "AdPilot", industry: "unknown", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" },
+      kpi: { primary: "CPA", target: 1, currency: "USD" }
+    });
+  }
+
+  app.get("/api/health", async () => ({ status: "ok", chatConfigured: system.modelStatus.chatConfigured, guiConfigured: system.modelStatus.guiConfigured }));
   app.get("/api/about", async () => ({
     name: "AdPilot", version: "0.1.0",
     runtime: { name: "Pi", version: "0.80.10", license: "MIT" },
@@ -27,7 +35,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const credentialList = await system.credentials.list();
     const stored = new Set(credentialList.map((item) => item.providerId));
     const providerConfigured = Object.fromEntries(view.catalog.providers.map((provider) => [provider.id, stored.has(provider.id) || provider.fields.some((field) => view.configured[field.env])]));
-    return { ...view, providerConfigured, providerCredentials: Object.fromEntries(credentialList.map((item) => [item.providerId, item.type])), restartAvailable: Boolean(options.onRestartRequested) };
+    return { ...view, providerConfigured, providerCredentials: Object.fromEntries(credentialList.map((item) => [item.providerId, item.type])), runtimeModels: system.modelStatus, restartAvailable: Boolean(options.onRestartRequested) };
   });
   app.put("/api/settings", async (request) => {
     const body = SettingsUpdate.parse(request.body);
@@ -78,11 +86,12 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const query = z.object({ clientId: z.string().optional() }).parse(request.query);
     const clients = await system.workspace.listClients();
     const clientId = query.clientId ?? clients[0]?.id;
-    if (!clientId) return { clients, tasks: [], approvals: [], experiments: [], audit: [], events: system.events.history(), models: system.modelStatus };
-    const [tasks, approvals, experiments, audit] = await Promise.all([
-      system.workspace.listTasks(clientId), system.approvals.list(clientId), system.experiments.list(clientId), system.audit.list(clientId)
+    if (!clientId) return { clients, tasks: [], approvals: [], experiments: [], audit: [], messages: [], events: system.events.history(), models: system.modelStatus };
+    const [tasks, approvals, experiments, audit, messages] = await Promise.all([
+      system.workspace.listTasks(clientId), system.approvals.list(clientId), system.experiments.list(clientId), system.audit.list(clientId),
+      system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage)
     ]);
-    return { clients, selectedClientId: clientId, tasks, approvals, experiments, audit, events: system.events.history(), models: system.modelStatus };
+    return { clients, selectedClientId: clientId, tasks, approvals, experiments, audit, messages, events: system.events.history(), models: system.modelStatus };
   });
 
   app.get("/events", async (_request, reply) => {
@@ -108,6 +117,29 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       reply.code(201); return result;
     } catch (error) {
       system.events.publish({ type: "error", message: error instanceof Error ? error.message : String(error), retryable: true });
+      throw error;
+    }
+  });
+
+  app.post("/api/messages", async (request, reply) => {
+    const body = z.object({ clientId: z.string().optional(), message: z.string().trim().min(1).max(20_000), locale: z.enum(["zh-CN", "en"]).default("zh-CN") }).parse(request.body);
+    const clients = await system.workspace.listClients();
+    const clientId = body.clientId ?? clients[0]?.id;
+    if (!clientId) return reply.code(409).send({ error: "workspace is not available" });
+    const existing = await system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage);
+    const userMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, role: "user", content: body.message, at: new Date().toISOString() });
+    await system.workspace.appendJsonl(clientId, "conversation.jsonl", userMessage);
+    system.events.publish({ type: "task", status: "running", message: body.message });
+    try {
+      const response = await system.agent.respond(clientId, body.message, { interfaceLocale: body.locale, recentConversation: existing.slice(-12).map(({ role, content }) => ({ role, content })) });
+      const assistantMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, role: "assistant", content: response.reply, ...(response.task ? { taskId: response.task.id } : {}), at: new Date().toISOString() });
+      await system.workspace.appendJsonl(clientId, "conversation.jsonl", assistantMessage);
+      system.events.publish({ type: "task", status: response.task?.phase ?? "completed", ...(response.task ? { taskId: response.task.id } : {}), message: response.reply });
+      reply.code(201); return { message: assistantMessage, task: response.task };
+    } catch (error) {
+      const content = error instanceof Error ? error.message : String(error);
+      await system.workspace.appendJsonl(clientId, "conversation.jsonl", ConversationMessage.parse({ id: crypto.randomUUID(), clientId, role: "system", content, status: "error", at: new Date().toISOString() }));
+      system.events.publish({ type: "error", message: content, retryable: true });
       throw error;
     }
   });

@@ -20,6 +20,11 @@ const LongTermMemory = z.object({
   nextStep: z.string().min(1), reviewAt: z.string().datetime().nullable(), proposedApprovalIds: z.array(z.string().uuid())
 });
 export type MainAgentOutput = z.infer<typeof MainAgentOutput>;
+const ConversationDecision = z.object({
+  mode: z.enum(["answer", "investigate"]),
+  reply: z.string().min(1),
+  goal: z.string().min(1).nullable()
+});
 
 export class AdPilotAgent {
   constructor(
@@ -29,6 +34,25 @@ export class AdPilotAgent {
     private readonly tools: AdPilotTools,
     private readonly onTaskState: (task: Task) => void | Promise<void> = () => undefined
   ) {}
+
+  async respond(clientId: string, message: string, sharedFacts: Record<string, unknown> = {}): Promise<{ reply: string; task: Task | null; result?: MainAgentOutput }> {
+    const client = await this.workspace.readClient(clientId);
+    const decision = await this.runtime.runStructured({
+      context: { clientId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", sessionId: crypto.randomUUID(), role: "adpilot_agent" },
+      systemPrompt: [
+        "You are AdPilot, the user's persistent advertising operator. Natural conversation is the primary interface.",
+        "Choose answer for greetings, product usage, definitions, clarifying questions, and requests that do not require account evidence.",
+        "Choose investigate for account-specific diagnosis, measurement review, optimization, creative analysis, or any request that should gather evidence or prepare an operation.",
+        "Never claim you inspected an account in answer mode. Never mutate an account from this decision turn.",
+        "Use sharedFacts.interfaceLocale: Simplified Chinese for zh-CN and English for en. Keep the reply direct and useful."
+      ].join("\n"),
+      prompt: JSON.stringify({ message, client, sharedFacts }),
+      signals: { task: "conversation" }
+    }, ConversationDecision);
+    if (decision.mode === "answer") return { reply: decision.reply, task: null };
+    const investigation = await this.runTask(clientId, decision.goal ?? message, sharedFacts);
+    return { reply: investigation.result.summary, task: investigation.task, result: investigation.result };
+  }
 
   async startTask(clientId: string, goal: string): Promise<Task> {
     const now = new Date().toISOString();

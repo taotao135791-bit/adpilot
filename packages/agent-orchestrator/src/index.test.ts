@@ -83,5 +83,8 @@ describe("AdPilotAgent integration", () => {
     await expect(approvals.list("client-a")).resolves.toMatchObject([{ status: "pending_risk_review", executionPlan: { target: "Save budget" } }]);
     expect((await workspace.readTask("client-a", result.task.id)).nextStep).toBe("Review again in seven days");
     await expect(workspace.readJsonl("client-a", "memory/agent.jsonl", z.object({ taskId: z.string().uuid(), summary: z.string() }))).resolves.toMatchObject([{ taskId: result.task.id, summary: "CPA is on target after deterministic review." }]);
+
+    faux.setResponses([fauxAssistantMessage('{"mode":"answer","reply":"You can ask me to diagnose performance or explain a metric.","goal":null}')]);
+    await expect(agent.respond("client-a", "What can you do?", { interfaceLocale: "en" })).resolves.toMatchObject({ reply: "You can ask me to diagnose performance or explain a metric.", task: null });
   });
 });

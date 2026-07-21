@@ -3,6 +3,7 @@ import { Jimp } from "jimp";
 import { NutJSOperator } from "@ui-tars/operator-nut-js";
 import { UITarsModel, parseBoxToScreenCoords, type ScreenshotOutput } from "@ui-tars/sdk/core";
 import { UITarsModelVersion } from "@ui-tars/sdk";
+import type { Api, AssistantMessage, Model, Models } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import { PermissionLevel, RiskLevel, type ModelTier, type PermissionLevel as Permission } from "@adpilot/shared";
 
@@ -260,6 +261,70 @@ export class UiTarsGroundingModel implements GroundingModel {
     const parsed = output.parsedPredictions[0];
     if (!parsed) throw new Error("grounding model returned no action");
     return mapGroundedAction(parsed, screenshot, task);
+  }
+}
+
+/** Uses the same Pi code/reasoning models as chat for screenshot grounding and verification. */
+export class PiVisionModel implements GroundingModel, VisualVerifier {
+  constructor(
+    private readonly models: Models,
+    private readonly primary: Model<Api>,
+    private readonly strong: Model<Api> = primary
+  ) {
+    if (!primary.input.includes("image")) throw new Error(`model does not accept screenshots: ${primary.provider}/${primary.id}`);
+    if (!strong.input.includes("image")) throw new Error(`strong model does not accept screenshots: ${strong.provider}/${strong.id}`);
+  }
+
+  async ground(task: VisualMicroTask, screenshot: Screenshot, tier: ModelTier): Promise<VisualAction> {
+    const model = tier === "strong" ? this.strong : this.primary;
+    const response = await this.models.completeSimple(model, {
+      systemPrompt: [
+        "You are the visual grounding layer inside AdPilot. Inspect the screenshot and return exactly one immediate GUI micro-action as JSON.",
+        "Never plan the overall task. Coordinates must be absolute screenshot pixels. Never infer hidden elements or credentials.",
+        "Allowed actions: click, double_click, right_click, move, drag, type, hotkey, scroll, wait, screenshot, done, fail.",
+        "Return keys required by the action plus target, reason, confidence, expected_result, risk_level. Do not wrap JSON in markdown."
+      ].join("\n"),
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: JSON.stringify({ instruction: task.instruction, target: task.target, expectedResult: task.expectedResult, declaredRisk: task.riskLevel, screenshot: { width: screenshot.width, height: screenshot.height } }) },
+          { type: "image", data: screenshot.base64, mimeType: "image/png" }
+        ],
+        timestamp: Date.now()
+      }]
+    }, { temperature: 0, maxTokens: 900, maxRetries: 1, timeoutMs: 20_000 });
+    return VisualAction.parse(parseModelJson(assistantText(response)));
+  }
+
+  async verify(expectedResult: string, before: Screenshot, after: Screenshot): Promise<{ matched: boolean; confidence: number; reason: string }> {
+    const response = await this.models.completeSimple(this.strong, {
+      systemPrompt: "Compare the before and after screenshots. Return JSON only with matched:boolean, confidence:number from 0 to 1, and reason:string. Judge only whether the stated expected result is visibly satisfied.",
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: `Expected visible result: ${expectedResult}\nBEFORE:` },
+          { type: "image", data: before.base64, mimeType: "image/png" },
+          { type: "text", text: "AFTER:" },
+          { type: "image", data: after.base64, mimeType: "image/png" }
+        ],
+        timestamp: Date.now()
+      }]
+    }, { temperature: 0, maxTokens: 400, maxRetries: 1, timeoutMs: 20_000 });
+    return z.object({ matched: z.boolean(), confidence: z.number().min(0).max(1), reason: z.string().min(1) }).parse(parseModelJson(assistantText(response)));
+  }
+}
+
+function assistantText(message: AssistantMessage): string {
+  if (message.stopReason === "error" || message.stopReason === "aborted") throw new Error(message.errorMessage ?? "vision model failed");
+  return message.content.filter((item) => item.type === "text").map((item) => item.text).join("\n").trim();
+}
+
+function parseModelJson(text: string): unknown {
+  const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+  try { return JSON.parse(cleaned); } catch {
+    const start = cleaned.indexOf("{"); const end = cleaned.lastIndexOf("}");
+    if (start < 0 || end <= start) throw new Error("vision model did not return a JSON object");
+    return JSON.parse(cleaned.slice(start, end + 1));
   }
 }
 

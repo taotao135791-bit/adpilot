@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { VisualAction, VisualComputerRuntime, VisualPolicy, type NativeOperator, type Screenshot } from "./index.js";
+import { createModels } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
+import { PiVisionModel, VisualAction, VisualComputerRuntime, VisualPolicy, type NativeOperator, type Screenshot } from "./index.js";
 
 const before: Screenshot = { base64: "before", width: 1000, height: 800, scaleFactor: 2, capturedAt: "2026-01-01T00:00:00.000Z", sha256: "a".repeat(64) };
 const after: Screenshot = { ...before, base64: "after", capturedAt: "2026-01-01T00:00:01.000Z", sha256: "b".repeat(64) };
@@ -69,5 +71,22 @@ describe("visual action protocol", () => {
     runtime.cancel();
     await expect(runtime.runMicroTask(task)).resolves.toMatchObject({ status: "failed", attempts: 0, blocker: "user cancelled" });
     expect(captures).toBe(0);
+  });
+
+  it("uses one Pi vision-capable code model for grounding and verification", async () => {
+    const faux = fauxProvider({ provider: "code", models: [{ id: "code-fast", input: ["text", "image"] }, { id: "code-strong", input: ["text", "image"], reasoning: true }] });
+    const models = createModels(); models.setProvider(faux.provider);
+    faux.setResponses([
+      (context) => {
+        const user = context.messages[0];
+        expect(user?.role).toBe("user");
+        expect(user?.role === "user" && Array.isArray(user.content) && user.content.some((item) => item.type === "image")).toBe(true);
+        return fauxAssistantMessage('{"action":"click","x":120,"y":80,"target":"date selector","reason":"visible","confidence":0.94,"expected_result":"date menu is open","risk_level":"interact"}');
+      },
+      fauxAssistantMessage('{"matched":true,"confidence":0.91,"reason":"menu is visibly open"}')
+    ]);
+    const vision = new PiVisionModel(models, faux.getModel("code-fast")!, faux.getModel("code-strong")!);
+    await expect(vision.ground(task, before, "gui")).resolves.toMatchObject({ action: "click", x: 120, y: 80 });
+    await expect(vision.verify(task.expectedResult, before, after)).resolves.toEqual({ matched: true, confidence: 0.91, reason: "menu is visibly open" });
   });
 });

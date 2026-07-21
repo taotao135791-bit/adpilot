@@ -85,12 +85,8 @@ const specialFields: Record<string, SettingsField[]> = {
   ]
 };
 
-const computerFields: SettingsField[] = [
-  field("ADPILOT_GUI_BASE_URL", "视觉模型基础地址", "Vision model base URL", false, true, "https://api.example.com/v1"),
-  field("ADPILOT_GUI_API_KEY", "视觉模型 API 密钥", "Vision model API key", true, true),
-  field("ADPILOT_GUI_MODEL", "视觉模型", "Vision model", false, true, "ui-tars-1.5"),
-  field("ADPILOT_GUI_STRONG_MODEL", "视觉复核模型", "Vision verification model", false, false)
-];
+// Computer Use reuses the selected Pi code models. There is no second VLM credential surface.
+const computerFields: SettingsField[] = [];
 
 function field(env: string, zh: string, en: string, secret: boolean, required = false, placeholder?: string): SettingsField {
   return { env, label: { zh, en }, secret, required, ...(placeholder ? { placeholder } : {}) };
@@ -213,7 +209,7 @@ export class SettingsStore {
     validateSelection(update.models.fast);
     validateSelection(update.models.strong);
     const current = await this.load();
-    const nextEnv = { ...current.env };
+    const nextEnv = Object.fromEntries(Object.entries(current.env).filter(([name]) => allowedEnv.has(name)));
     for (const [name, value] of Object.entries(update.env)) {
       if (!allowedEnv.has(name)) throw new Error(`unsupported setting: ${name}`);
       if (value === null || value.trim() === "") delete nextEnv[name];

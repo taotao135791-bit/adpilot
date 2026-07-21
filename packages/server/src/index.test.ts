@@ -1,11 +1,38 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createModels } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { describe, expect, it } from "vitest";
 import { createAdPilotSystem } from "@adpilot/application";
 import { createServer } from "./index.js";
 
 describe("product server", () => {
+  it("creates a usable personal workspace on first launch", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-first-launch-"));
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+    const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
+    const state = await server.inject({ method: "GET", url: "/api/state" });
+    expect(state.json()).toMatchObject({ selectedClientId: "personal", clients: [{ id: "personal", name: "AdPilot" }], messages: [] });
+    await server.close();
+  });
+
+  it("accepts natural-language chat and persists both sides of the conversation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-conversation-"));
+    const faux = fauxProvider({ provider: "test", models: [{ id: "code", input: ["text", "image"] }] });
+    const models = createModels(); models.setProvider(faux.provider);
+    faux.setResponses([fauxAssistantMessage('{"mode":"answer","reply":"Tell me the account symptom and I will investigate the evidence.","goal":null}')]);
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: { ADPILOT_FAST_PROVIDER: "test", ADPILOT_FAST_MODEL: "code", ADPILOT_STRONG_PROVIDER: "test", ADPILOT_STRONG_MODEL: "code" }, models });
+    const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
+    const response = await server.inject({ method: "POST", url: "/api/messages", payload: { message: "What can you do?", locale: "en" } });
+    expect(response.statusCode).toBe(201);
+    expect(response.json().message).toMatchObject({ role: "assistant", content: "Tell me the account symptom and I will investigate the evidence." });
+    const state = await server.inject({ method: "GET", url: "/api/state" });
+    expect(state.json().messages).toMatchObject([{ role: "user", content: "What can you do?" }, { role: "assistant" }]);
+    expect(state.json().models).toMatchObject({ chatConfigured: true, guiConfigured: true, gui: "test/code" });
+    await server.close();
+  });
+
   it("serves workspace state and keeps one-time approval tokens off the HTTP response", async () => {
     const root = await mkdtemp(join(tmpdir(), "adpilot-server-"));
     const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });

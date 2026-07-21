@@ -71,6 +71,17 @@ export const TaskState = z.object({
 });
 export type TaskState = z.infer<typeof TaskState>;
 
+export const ConversationMessage = z.object({
+  id: z.string().uuid(),
+  clientId: z.string().min(1),
+  role: z.enum(["user", "assistant", "system"]),
+  content: z.string().min(1),
+  status: z.enum(["complete", "error"]).default("complete"),
+  taskId: z.string().uuid().optional(),
+  at: z.string().datetime()
+});
+export type ConversationMessage = z.infer<typeof ConversationMessage>;
+
 export const ModelTier = z.enum(["fast", "gui", "strong"]);
 export type ModelTier = z.infer<typeof ModelTier>;
 
@@ -97,4 +108,3 @@ export function stableJson(value: unknown): string {
   }
   return JSON.stringify(value);
 }
-

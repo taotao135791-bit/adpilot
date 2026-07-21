@@ -25,7 +25,7 @@ import {
   TargetArrow24Regular
 } from "@fluentui/react-icons";
 import { getCopy, starterGoals, type AppLocale } from "./i18n.js";
-import { SettingsPanel, type SettingsData } from "./SettingsPanel.js";
+import { SettingsPanel, type SettingsData, type SettingsTab } from "./SettingsPanel.js";
 import "./styles.css";
 
 type Client = { id: string; name: string; industry: string; timezone: string };
@@ -33,10 +33,11 @@ type Task = { id: string; goal: string; phase: string; completedSteps: string[];
 type Approval = { id: string; taskId: string; status: string; executionPlan: { target: string } | null; operation: { account: string; campaign: string; operation: string; currentValue: unknown; proposedValue: unknown; changePercentage: number | null; reason: string; evidence: string[]; expectedImpact: string; observationWindow: string; rollbackCondition: string; riskLevel: string } };
 type Experiment = { id: string; hypothesis: string; variable: string; status: string; reviewAt: string };
 type Audit = { id: string; actor: string; action: string; status: string; at: string };
+type ConversationMessage = { id: string; clientId: string; role: "user" | "assistant" | "system"; content: string; status: "complete" | "error"; taskId?: string; at: string };
 type ProductEvent = { type: string; status?: string; message?: string; approvalId?: string; event?: { type: string; phase?: string; attempt?: number; screenshot?: { base64: string; capturedAt: string }; action?: { action: string; target: string; reason: string }; reason?: string } };
-type State = { clients: Client[]; selectedClientId?: string; tasks: Task[]; approvals: Approval[]; experiments: Experiment[]; audit: Audit[]; events: ProductEvent[]; models: { fast: string; strong: string; gui: string; guiStrong: string; guiConfigured: boolean } };
+type State = { clients: Client[]; selectedClientId?: string; tasks: Task[]; approvals: Approval[]; experiments: Experiment[]; audit: Audit[]; messages: ConversationMessage[]; events: ProductEvent[]; models: { fast: string; strong: string; gui: string; guiStrong: string; chatConfigured: boolean; guiConfigured: boolean } };
 
-const emptyState: State = { clients: [], tasks: [], approvals: [], experiments: [], audit: [], events: [], models: { fast: "", strong: "", gui: "", guiStrong: "", guiConfigured: false } };
+const emptyState: State = { clients: [], tasks: [], approvals: [], experiments: [], audit: [], messages: [], events: [], models: { fast: "", strong: "", gui: "", guiStrong: "", chatConfigured: false, guiConfigured: false } };
 function App() {
   const isNativeDesktop = new URLSearchParams(window.location.search).get("desktop") === "1";
   const [locale, setLocale] = useState<AppLocale>(() => localStorage.getItem("adpilot-locale") === "en" ? "en" : "zh-CN");
@@ -52,6 +53,7 @@ function App() {
   const [error, setError] = useState("");
   const [computerMode, setComputerMode] = useState<"running" | "paused" | "takeover">("running");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const [settingsData, setSettingsData] = useState<SettingsData>();
   const copy = getCopy(locale);
 
@@ -86,7 +88,6 @@ function App() {
   }, [loadState, locale]);
 
   const currentTask = state.tasks[0];
-  const taskEvents = state.events.filter((item) => item.type === "task" || item.type === "error");
   const latestComputer = [...state.events].reverse().find((item) => item.type === "computer")?.event;
   const latestShot = [...state.events].reverse().find((item) => item.type === "computer" && item.event?.type === "screenshot")?.event?.screenshot;
   const activeAgents = useMemo(() => {
@@ -106,13 +107,17 @@ function App() {
   }
 
   async function submitGoal() {
-    if (!clientId || !goal.trim()) return;
+    if (!state.models.chatConfigured) { setSettingsTab("models"); setSettingsOpen(true); return; }
+    if (!goal.trim()) return;
+    const message = goal.trim();
     setSubmitting(true); setError("");
+    setGoal("");
+    setState((current) => ({ ...current, messages: [...current.messages, { id: `local-${Date.now()}`, clientId: clientId || "personal", role: "user", content: message, status: "complete", at: new Date().toISOString() }] }));
     try {
-      const response = await fetch("/api/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId, goal: goal.trim(), sharedFacts: { interfaceLocale: locale } }) });
+      const response = await fetch("/api/messages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...(clientId ? { clientId } : {}), message, locale }) });
       const body = await response.json(); if (!response.ok) throw new Error(body.error ?? copy.taskError);
-      setGoal(""); await loadState(clientId);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+      await loadState(clientId || body.message?.clientId);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); await loadState(clientId); }
     finally { setSubmitting(false); }
   }
 
@@ -161,8 +166,8 @@ function App() {
             ) : <strong>{copy.noWorkspace}</strong>}
           </div>
           <div className="top-status">
-            <span className="live-label"><i data-ready={state.models.guiConfigured} />{state.models.guiConfigured ? copy.systemsNominal : copy.groundingOffline}</span>
-            <Tooltip content={copy.settings} relationship="label"><Button className="icon-button" appearance="subtle" icon={<Settings24Regular />} onClick={() => { setSettingsOpen(true); if (!settingsData) void loadSettings(); }} /></Tooltip>
+            <span className="live-label"><i data-ready={state.models.chatConfigured} />{state.models.chatConfigured ? copy.conversationReady : copy.modelRequired}</span>
+            <Tooltip content={copy.settings} relationship="label"><Button className="icon-button" appearance="subtle" icon={<Settings24Regular />} onClick={() => { setSettingsTab("general"); setSettingsOpen(true); if (!settingsData) void loadSettings(); }} /></Tooltip>
           </div>
         </header>
 
@@ -174,7 +179,7 @@ function App() {
             <Nav icon={<DataUsage24Regular />} label={copy.ledger} count={state.audit.length} onClick={() => document.querySelector(".audit-panel")?.scrollIntoView({ behavior: "smooth" })} />
           </nav>
           <div className="dock-index"><span>01</span><i /><span>04</span></div>
-          <button className="dock-help" onClick={() => setSettingsOpen(true)} aria-label={copy.settings}>?</button>
+          <button className="dock-help" onClick={() => { setSettingsTab("about"); setSettingsOpen(true); }} aria-label={copy.settings}>?</button>
         </aside>
 
         <main className="main-column">
@@ -193,13 +198,13 @@ function App() {
                 <Metric label={copy.reviewWindow} value={currentTask.reviewAt ? formatTime(currentTask.reviewAt, locale) : copy.unscheduled} compact />
               </section>
             </>
-          ) : <MissionZero onPick={setGoal} guiReady={state.models.guiConfigured} clients={state.clients.length} locale={locale} />}
+          ) : state.messages.length === 0 ? <MissionZero onPick={setGoal} guiReady={state.models.guiConfigured} clients={state.clients.length} locale={locale} /> : null}
 
-          {(taskEvents.length > 0 || submitting) && <section className="conversation" aria-label={copy.mission}>
-            {taskEvents.map((item, index) => (
-              <article className={`message ${item.type}`} key={`${item.type}-${index}`}>
-                <div className="message-avatar">{item.type === "error" ? <ErrorCircle24Regular /> : <Bot24Regular />}</div>
-                <div><strong>{item.type === "error" ? copy.system : copy.agent}</strong><p>{item.message}</p></div>
+          {(state.messages.length > 0 || submitting) && <section className="conversation" aria-label={copy.mission}>
+            {state.messages.map((item) => (
+              <article className={`message ${item.role} ${item.status}`} key={item.id}>
+                <div className="message-avatar">{item.role === "system" ? <ErrorCircle24Regular /> : item.role === "assistant" ? <Bot24Regular /> : <span>{locale === "zh-CN" ? "你" : "Y"}</span>}</div>
+                <div><strong>{item.role === "user" ? copy.you : item.role === "system" ? copy.system : copy.agent}</strong><p>{item.content}</p><time>{formatTime(item.at, locale)}</time></div>
               </article>
             ))}
             {submitting && <div className="thinking"><span className="thinking-pulse" /><span>{copy.investigating}</span></div>}
@@ -209,7 +214,7 @@ function App() {
             <div className="composer">
               <div className="composer-copy"><span>{copy.directive}</span><small>{copy.launchHint}</small></div>
               <Textarea resize="vertical" value={goal} onChange={(_, data) => setGoal(data.value)} placeholder={copy.goalPlaceholder} aria-label={copy.goalLabel} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void submitGoal(); }} />
-              <Button className="launch-button" appearance="primary" icon={<Send24Regular />} disabled={!clientId || !goal.trim() || submitting} onClick={() => void submitGoal()}>{submitting ? copy.investigatingShort : copy.launch}</Button>
+              <Button className="launch-button" appearance="primary" icon={<Send24Regular />} disabled={state.models.chatConfigured && (!goal.trim() || submitting)} onClick={() => void submitGoal()}>{!state.models.chatConfigured ? copy.configureModel : submitting ? copy.investigatingShort : copy.send}</Button>
             </div>
           </div>
         </main>
@@ -271,7 +276,7 @@ function App() {
             {state.audit.length ? state.audit.slice(-4).reverse().map((event) => <div className="audit-row" key={event.id}><span>{auditActionLabel(event.action, locale)}</span><time>{formatTime(event.at, locale)}</time></div>) : <Empty title={copy.tracePristine} body={copy.traceBody} />}
           </section>
         </aside>
-        <SettingsPanel open={settingsOpen} data={settingsData} onClose={() => setSettingsOpen(false)} onSaved={applySettings} />
+        <SettingsPanel open={settingsOpen} data={settingsData} initialTab={settingsTab} onClose={() => setSettingsOpen(false)} onSaved={applySettings} />
       </div>
     </FluentProvider>
   );

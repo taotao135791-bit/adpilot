@@ -4,9 +4,9 @@ import { resolve } from "node:path";
 import { AuditLog } from "@adpilot/audit";
 import { ApprovalService } from "@adpilot/approvals";
 import { AdPilotAgent } from "@adpilot/agent-orchestrator";
-import { UiTarsGroundingModel, UiTarsNativeOperator, VisualComputerRuntime, OpenAICompatibleVisualVerifier, type VisualRuntimeEvent } from "@adpilot/computer-use";
+import { PiVisionModel, UiTarsNativeOperator, VisualComputerRuntime, type VisualRuntimeEvent } from "@adpilot/computer-use";
 import { ExperimentStore } from "@adpilot/experiments";
-import { createPiModels, modelRouterFromEnv } from "@adpilot/model-router";
+import { createPiModels, modelRouterFromEnv, resolvePiModel } from "@adpilot/model-router";
 import { PiAgentRuntime } from "@adpilot/runtime";
 import { SkillRegistry } from "@adpilot/skills";
 import { AccountOperator, CreativeStrategist, MediaBuyer, MeasurementReviewer, PerformanceAnalyst, RiskReviewer, SpecialistCoordinator } from "@adpilot/specialist-agents";
@@ -45,10 +45,10 @@ export interface AdPilotSystem {
   computer: VisualComputerRuntime | undefined;
   events: ProductEventBus;
   approvalTokens: Map<string, string>;
-  modelStatus: { fast: string; strong: string; gui: string; guiStrong: string; guiConfigured: boolean };
+  modelStatus: { fast: string; strong: string; gui: string; guiStrong: string; chatConfigured: boolean; guiConfigured: boolean };
 }
 
-export async function createAdPilotSystem(options: { workspaceRoot?: string; env?: NodeJS.ProcessEnv } = {}): Promise<AdPilotSystem> {
+export async function createAdPilotSystem(options: { workspaceRoot?: string; env?: NodeJS.ProcessEnv; models?: Models } = {}): Promise<AdPilotSystem> {
   const baseEnv = options.env ?? process.env;
   const workspaceRoot = options.workspaceRoot ?? baseEnv.ADPILOT_WORKSPACE ?? resolve(process.cwd(), "workspace");
   const settings = new SettingsStore(workspaceRoot, baseEnv);
@@ -60,20 +60,29 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   const audit = new AuditLog(workspace);
   const approvals = new ApprovalService(workspace, secret);
   const experiments = new ExperimentStore(workspace);
-  const guiConfigured = Boolean(env.ADPILOT_GUI_BASE_URL && env.ADPILOT_GUI_API_KEY && env.ADPILOT_GUI_MODEL);
-  const computer = guiConfigured
+  const router = modelRouterFromEnv(env);
+  const models = options.models ?? createPiModels(env, credentials);
+  const fastRef = { provider: env.ADPILOT_FAST_PROVIDER ?? "openai", model: env.ADPILOT_FAST_MODEL ?? "gpt-5-mini" };
+  const strongRef = { provider: env.ADPILOT_STRONG_PROVIDER ?? fastRef.provider, model: env.ADPILOT_STRONG_MODEL ?? "gpt-5.2" };
+  const fastModel = resolvePiModel(models, fastRef);
+  const strongModel = resolvePiModel(models, strongRef);
+  const fastAuth = Boolean(await models.checkAuth(fastModel.provider).catch(() => undefined));
+  const strongAuth = fastModel.provider === strongModel.provider ? fastAuth : Boolean(await models.checkAuth(strongModel.provider).catch(() => undefined));
+  const primaryVision = fastModel.input.includes("image") ? fastModel : strongModel.input.includes("image") ? strongModel : undefined;
+  const strongVision = strongModel.input.includes("image") ? strongModel : primaryVision;
+  const visionAuth = primaryVision?.provider === fastModel.provider ? fastAuth : primaryVision?.provider === strongModel.provider ? strongAuth : false;
+  const guiConfigured = Boolean(primaryVision && strongVision && visionAuth);
+  const computer = primaryVision && strongVision && guiConfigured
     ? new VisualComputerRuntime(
         new UiTarsNativeOperator(),
-        new UiTarsGroundingModel({ baseURL: env.ADPILOT_GUI_BASE_URL!, apiKey: env.ADPILOT_GUI_API_KEY!, model: env.ADPILOT_GUI_MODEL!, ...(env.ADPILOT_GUI_STRONG_MODEL ? { strongModel: env.ADPILOT_GUI_STRONG_MODEL } : {}) }),
-        new OpenAICompatibleVisualVerifier({ baseURL: env.ADPILOT_GUI_BASE_URL!, apiKey: env.ADPILOT_GUI_API_KEY!, model: env.ADPILOT_GUI_MODEL! }),
+        new PiVisionModel(models, primaryVision, strongVision),
+        new PiVisionModel(models, primaryVision, strongVision),
         undefined,
         (event) => events.publish({ type: "computer", event })
       )
     : undefined;
   const tools = new AdPilotTools(workspace, audit, approvals, experiments, computer);
   const skills = new SkillRegistry();
-  const router = modelRouterFromEnv(env);
-  const models = createPiModels(env, credentials);
   const runtime = new PiAgentRuntime(models, router, workspace, skills, tools, [{
     name: "product-events",
     onError: (error) => events.publish({ type: "error", message: error.message, retryable: true })
@@ -94,10 +103,11 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     workspace, settings, credentials, models, audit, approvals, experiments, tools, skills, runtime, specialists, agent, computer, events,
     approvalTokens: new Map(),
     modelStatus: {
-      fast: `${env.ADPILOT_FAST_PROVIDER ?? "openai"}/${env.ADPILOT_FAST_MODEL ?? "gpt-5-mini"}`,
-      strong: `${env.ADPILOT_STRONG_PROVIDER ?? "openai"}/${env.ADPILOT_STRONG_MODEL ?? "gpt-5.2"}`,
-      gui: env.ADPILOT_GUI_MODEL ?? "not configured",
-      guiStrong: env.ADPILOT_GUI_STRONG_MODEL ?? env.ADPILOT_GUI_MODEL ?? "not configured",
+      fast: `${fastModel.provider}/${fastModel.id}`,
+      strong: `${strongModel.provider}/${strongModel.id}`,
+      gui: primaryVision ? `${primaryVision.provider}/${primaryVision.id}` : "not supported",
+      guiStrong: strongVision ? `${strongVision.provider}/${strongVision.id}` : "not supported",
+      chatConfigured: fastAuth,
       guiConfigured
     }
   };
