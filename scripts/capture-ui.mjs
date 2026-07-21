@@ -11,6 +11,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1, colorScheme: "dark" });
   await page.goto(url, { waitUntil: "domcontentloaded" });
   await page.waitForSelector(".shell");
+  await page.waitForTimeout(900);
   await page.screenshot({ path: output, fullPage: true });
   console.log(output);
 } finally {

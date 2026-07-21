@@ -10,5 +10,5 @@ coverage/
 workspace/clients/*/screenshots/*
 workspace/clients/*/traces/*
 workspace/clients/*/memory/*
+workspace/.adpilot/
 !workspace/clients/.gitkeep
-
