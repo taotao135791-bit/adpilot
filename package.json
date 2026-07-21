@@ -9,9 +9,9 @@
     "adpilot": "dist/cli/index.js"
   },
   "scripts": {
-    "adpilot": "tsx apps/cli/src/index.ts",
+    "adpilot": "pnpm build && node dist/cli/index.js",
     "dev": "tsx watch apps/cli/src/index.ts serve",
-    "build": "pnpm typecheck && tsup apps/cli/src/index.ts --format esm --platform node --out-dir dist/cli --banner.js '#!/usr/bin/env node' && vite build apps/desktop",
+    "build": "pnpm typecheck && tsup apps/cli/src/index.ts --format esm --platform node --out-dir dist/cli && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -23,6 +23,8 @@
     "@earendil-works/pi-ai": "0.80.10",
     "@fastify/cors": "^11.0.1",
     "@fastify/static": "^8.2.0",
+    "@fluentui/react-components": "9.74.4",
+    "@fluentui/react-icons": "2.0.316",
     "@ui-tars/action-parser": "1.2.3",
     "@ui-tars/operator-nut-js": "1.2.3",
     "@ui-tars/sdk": "1.2.3",

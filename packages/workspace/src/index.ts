@@ -131,6 +131,19 @@ export class WorkspaceStore {
     return this.readJson(clientId, join("tasks", `${taskId}.json`), TaskState);
   }
 
+  async listTasks(clientId: string): Promise<TaskStateType[]> {
+    const directory = this.resolveClientPath(clientId, "tasks");
+    const files = await readdir(directory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    const tasks = await Promise.all(files.filter((entry) => entry.isFile() && entry.name.endsWith(".json")).map(async (entry) => {
+      const id = entry.name.slice(0, -5);
+      try { return await this.readTask(clientId, id); } catch { return null; }
+    }));
+    return tasks.filter((task): task is TaskStateType => task !== null).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
   async appendJsonl(clientId: string, relativePath: string, value: unknown): Promise<void> {
     const path = this.resolveClientPath(clientId, relativePath);
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });

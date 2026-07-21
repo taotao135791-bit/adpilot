@@ -56,6 +56,7 @@ export class ApprovalService {
       createdAt: now, updatedAt: now
     });
     await this.persist(approval);
+    await this.workspace.appendJsonl(clientId, "approvals/index.jsonl", { id: approval.id });
     return approval;
   }
 
@@ -116,6 +117,12 @@ export class ApprovalService {
     return this.workspace.readJson(clientId, `approvals/${id}.json`, Approval);
   }
 
+  async list(clientId: string): Promise<Approval[]> {
+    const index = await this.workspace.readJsonl(clientId, "approvals/index.jsonl", z.object({ id: z.string().uuid() }));
+    const unique = [...new Set(index.map(({ id }) => id))];
+    return Promise.all(unique.map((id) => this.get(clientId, id)));
+  }
+
   private fingerprint(operation: ApprovalOperation): string {
     return this.sign(stableJson({
       account: operation.account,
@@ -146,4 +153,3 @@ function safeEqual(left: string, right: string): boolean {
   const b = Buffer.from(right);
   return a.length === b.length && timingSafeEqual(a, b);
 }
-
