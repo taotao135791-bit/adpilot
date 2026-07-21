@@ -204,7 +204,7 @@ function App() {
             {state.messages.map((item) => (
               <article className={`message ${item.role} ${item.status}`} key={item.id}>
                 <div className="message-avatar">{item.role === "system" ? <ErrorCircle24Regular /> : item.role === "assistant" ? <Bot24Regular /> : <span>{locale === "zh-CN" ? "你" : "Y"}</span>}</div>
-                <div><strong>{item.role === "user" ? copy.you : item.role === "system" ? copy.system : copy.agent}</strong><p>{item.content}</p><time>{formatTime(item.at, locale)}</time></div>
+                <div><strong>{item.role === "user" ? copy.you : item.role === "system" ? copy.system : copy.agent}</strong><MessageBody content={item.content} /><time>{formatTime(item.at, locale)}</time></div>
               </article>
             ))}
             {submitting && <div className="thinking"><span className="thinking-pulse" /><span>{copy.investigating}</span></div>}
@@ -307,6 +307,17 @@ function Metric({ label, value, compact = false }: { label: string; value: strin
 function Nav({ icon, label, count, active = false, onClick }: { icon: React.ReactNode; label: string; count?: number; active?: boolean; onClick: () => void }) { return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}>{icon}<span>{label}</span>{count !== undefined && count > 0 && <b>{count}</b>}</button>; }
 function ModelRow({ label, value, warn = false, empty }: { label: string; value: string; warn?: boolean; empty: string }) { return <div className="model-row"><span>{label}</span><strong className={warn ? "warn" : ""}>{!value || value === "not configured" ? empty : value}</strong></div>; }
 function Empty({ title, body }: { title: string; body: string }) { return <div className="empty"><i>—</i><strong>{title}</strong><span>{body}</span></div>; }
+function MessageBody({ content }: { content: string }) {
+  const blocks = content.trim().split(/\n{2,}/);
+  return <div className="message-body">{blocks.map((block, index) => {
+    const lines = block.split("\n");
+    if (block.startsWith("```") && block.endsWith("```")) return <pre key={index}>{block.replace(/^```[^\n]*\n?/, "").replace(/\n?```$/, "")}</pre>;
+    if (lines.every((line) => /^[-*]\s+/.test(line))) return <ul key={index}>{lines.map((line, lineIndex) => <li key={`${index}-${lineIndex}`}>{line.replace(/^[-*]\s+/, "")}</li>)}</ul>;
+    if (lines.every((line) => /^\d+[.)]\s+/.test(line))) return <ol key={index}>{lines.map((line, lineIndex) => <li key={`${index}-${lineIndex}`}>{line.replace(/^\d+[.)]\s+/, "")}</li>)}</ol>;
+    if (/^#{1,3}\s+/.test(block)) return <h4 key={index}>{block.replace(/^#{1,3}\s+/, "")}</h4>;
+    return <p key={index}>{block}</p>;
+  })}</div>;
+}
 function formatTime(value: string, locale: AppLocale) { return new Intl.DateTimeFormat(locale, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
 function roleLabel(role: string, locale: AppLocale) {
   const zh = { adpilot_agent: "AdPilot 智能体", account_operator: "账户操作员", performance_analyst: "效果分析师", media_buyer: "媒介投手", measurement_reviewer: "测量复核员", creative_strategist: "创意策略师", risk_reviewer: "风险复核员" } as Record<string, string>;

@@ -7,8 +7,8 @@ Run date: 2026-07-21. Environment: macOS arm64, Node 24.13.1 (product minimum No
 Command: `pnpm typecheck && pnpm test`
 
 - TypeScript strict typecheck: passed.
-- Vitest: 15 files, 36 tests, all passed.
-- Coverage includes action schema/policy, visual retries/timeouts/cancel, workspace isolation, audit redaction/hash chain, approval binding/expiry/caps, experiments, model routing, private settings and OAuth persistence, Skills, Pi runtime tool calls, specialist isolation, main-Agent approval creation, server token handling and local visual execution.
+- Vitest: 15 files, 39 tests, all passed.
+- Coverage includes action schema/policy, visual retries/timeouts/cancel, Pi code-model screenshot grounding and verification, first-launch Workspace creation, persistent natural-language conversation, workspace isolation, audit redaction/hash chain, approval binding/expiry/caps, experiments, model routing, private settings and OAuth persistence, Skills, Pi runtime tool calls, specialist isolation, main-Agent approval creation, server token handling and local visual execution.
 
 ## Advertising-core suite
 
@@ -37,6 +37,8 @@ Smoke checks:
 - `node scripts/verify-upstreams.mjs` matched both reviewed git pins.
 - A real headless Chrome session loaded the production UI and captured `docs/screenshots/adpilot-console.png`.
 - Bilingual settings smoke tests passed: Chinese and English shells contained only their selected interface language, all 36 Pi providers were selectable, OAuth controls rendered for OAuth providers, settings survived a process restart, and the 1440×1000 viewport had no horizontal overflow.
+- A real browser completed the primary chat flow against Pi's deterministic faux provider: automatic personal Workspace, user message, assistant response, persisted two-sided history, and reload through `/api/state`.
+- First-launch onboarding opened the model tab directly from “Configure model”; the Computer Use panel contained no separate VLM fields and reported the selected code model for screenshot grounding and verification.
 - Responsive UI checks passed at 1440×1000 and 390×844 with no horizontal overflow; the mobile command surface remains reachable above the fixed navigation.
 - The Electron development shell started the same local API on a random loopback port with sandboxing, context isolation and navigation restrictions enabled.
 - `pnpm desktop:dir` produced a runnable arm64 `AdPilot.app`; its packaged API, HTML, JavaScript and CSS assets all returned successfully.

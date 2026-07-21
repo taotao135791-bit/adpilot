@@ -10,6 +10,7 @@ describe("SettingsStore", () => {
     const store = new SettingsStore(root, { OPENAI_API_KEY: "ambient-secret" });
     const catalog = getModelCatalog();
     expect(catalog.providers.length).toBeGreaterThanOrEqual(30);
+    expect(catalog.computerFields).toEqual([]);
     expect(catalog.providers.find((provider) => provider.id === "openai")?.models.length).toBeGreaterThan(10);
     const initial = await store.publicView();
     expect(initial.configured.OPENAI_API_KEY).toBe(true);

@@ -219,12 +219,12 @@ button { -webkit-tap-highlight-color: transparent; }
 .task-ledger span { color: var(--faint); font-size: 8px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .task-ledger strong { font-size: 30px; font-weight: 520; letter-spacing: -.05em; }
 .task-ledger .compact strong { font-size: 11px; letter-spacing: -.01em; }
-.conversation { flex: 1; min-height: 240px; padding: 26px 0 12px; }
+.conversation { flex: 1; min-height: 240px; display: flex; flex-direction: column; padding: 36px 10px 18px; }
 .message { display: grid; grid-template-columns: 36px 1fr; gap: 13px; max-width: 800px; padding: 12px 0; }
 .message-avatar { width: 34px; height: 34px; display: grid; place-items: center; color: var(--accent); background: var(--surface-raised); border: 1px solid var(--line); border-radius: 11px; }
 .message-avatar svg { width: 17px; }
-.message strong { color: var(--faint); font-size: 8px; letter-spacing: .13em; }.message p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.65; white-space: pre-wrap; }.message time { display: block; margin-top: 7px; color: var(--faint); font: 6px/1 "SFMono-Regular", Consolas, monospace; }
-.message.user { grid-template-columns: 1fr 36px; margin-left: auto; }.message.user .message-avatar { grid-column: 2; color: #101408; background: var(--accent-bright); border-color: var(--accent-bright); font-size: 8px; font-weight: 800; }.message.user > div:last-child { grid-column: 1; grid-row: 1; text-align: right; }.message.user p { color: var(--ink); }
+.message strong { color: var(--faint); font-size: 8px; letter-spacing: .13em; }.message-body { max-width: 68ch; margin-top: 6px; color: var(--muted); font-size: 13px; line-height: 1.7; }.message-body p, .message-body ul, .message-body ol { margin: 0 0 9px; white-space: pre-wrap; }.message-body ul, .message-body ol { padding-left: 20px; }.message-body h4 { margin: 12px 0 6px; color: var(--ink); font-size: 14px; }.message-body pre { max-width: 100%; overflow: auto; padding: 12px; color: var(--ink); background: var(--surface-raised); border: 1px solid var(--line); border-radius: 9px; font: 10px/1.55 "SFMono-Regular", Consolas, monospace; }.message time { display: block; margin-top: 7px; color: var(--faint); font: 6px/1 "SFMono-Regular", Consolas, monospace; }
+.message.user { grid-template-columns: 1fr 36px; margin-left: auto; }.message.user .message-avatar { grid-column: 2; color: #101408; background: var(--accent-bright); border-color: var(--accent-bright); font-size: 8px; font-weight: 800; }.message.user > div:last-child { grid-column: 1; grid-row: 1; text-align: right; }.message.user .message-body { color: var(--ink); }
 .message.error .message-avatar { color: var(--danger); }
 .thinking { display: flex; align-items: center; gap: 9px; padding: 14px 0; color: var(--muted); font-size: 10px; }
 .thinking-pulse { width: 8px; height: 8px; border: 1px solid var(--accent); border-radius: 50%; box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 10%, transparent); }

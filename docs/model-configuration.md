@@ -1,6 +1,6 @@
 # Model configuration
 
-AdPilot uses Pi's provider registry and model objects. Open the gear menu in the web console or native app to configure language, appearance, model routing, provider credentials, OAuth, and Computer Use. Configuration selects three roles; it does not create three competing agent loops.
+AdPilot uses Pi's provider registry and model objects. Open the gear menu in the web console or native app to configure language, appearance, model routing, provider credentials, and OAuth. Configuration selects two code-model roles; Computer Use derives its visual model automatically.
 
 The catalog is generated from the installed Pi runtime, not maintained as a separate AdPilot allowlist. With Pi 0.80.10 it contains 36 providers and 1,072 static model entries: Amazon Bedrock, Ant Ling, Anthropic, Azure OpenAI, Cerebras, Cloudflare AI Gateway, Cloudflare Workers AI, DeepSeek, Fireworks, GitHub Copilot, Google, Google Vertex AI, Groq, Hugging Face, Kimi For Coding, MiniMax, MiniMax CN, Mistral, Moonshot AI, Moonshot AI CN, NVIDIA, OpenAI, OpenAI Codex, OpenCode Zen, OpenCode Zen Go, OpenRouter, Radius, Together, Vercel AI Gateway, xAI, Xiaomi and its three token-plan regions, Z.AI, and Z.AI Coding CN. Radius has a dynamic catalog that is fetched after authentication.
 
@@ -26,16 +26,11 @@ adpilot logout openai-codex
 
 Settings are stored in `<workspace>/.adpilot/settings.json`; Pi OAuth credentials are stored separately in `<workspace>/.adpilot/pi-auth.json`. Both are private `0600` files. The HTTP settings response contains only configured flags, credential types, and non-secret values.
 
-## GUI grounding and verification
+## Screenshot grounding and verification
 
-```dotenv
-ADPILOT_GUI_BASE_URL=https://your-openai-compatible-endpoint/v1
-ADPILOT_GUI_API_KEY=...
-ADPILOT_GUI_MODEL=your-ui-tars-model
-ADPILOT_GUI_STRONG_MODEL=your-stronger-ui-tars-model
-```
+There is no separate VLM configuration. If the daily code model accepts image input, AdPilot uses it for the first two screenshot-grounding attempts. Otherwise it uses the deep model when that model accepts images. The third attempt and before/after verification use the image-capable deep model when available. If neither selected model accepts images, conversation and analysis remain enabled while Computer Use reports that visual capability is unavailable.
 
-The endpoint must support the UI-TARS SDK request shape for grounding and OpenAI-compatible `chat/completions` with image inputs for before/after verification. The first two attempts use `ADPILOT_GUI_MODEL`; the third uses `ADPILOT_GUI_STRONG_MODEL`. If the strong name is omitted, AdPilot explicitly reports the primary model as the compatibility fallback. AdPilot invokes the grounding model for one micro-action only. It never delegates the full advertising goal to a GUI agent.
+The code model returns AdPilot's provider-independent `VisualAction` JSON. UI-TARS remains the native screenshot, coordinate conversion, mouse, keyboard, scroll, and action-execution layer; it does not own a second planning loop.
 
 ## Runtime controls
 
@@ -47,4 +42,4 @@ ADPILOT_PORT=4317
 ADPILOT_NO_OPEN=1
 ```
 
-If `ADPILOT_APPROVAL_SECRET` is absent, AdPilot generates a private local secret. `.env` is loaded by the Node 22 CLI. Values saved through Settings override matching model environment variables on the next launch. `adpilot doctor` reports selected model names and whether GUI configuration is complete without printing credentials.
+If `ADPILOT_APPROVAL_SECRET` is absent, AdPilot generates a private local secret. `.env` is loaded by the Node 22 CLI. Values saved through Settings override matching model environment variables on the next launch. `adpilot doctor` reports selected model names and whether chat and visual capability are ready without printing credentials.

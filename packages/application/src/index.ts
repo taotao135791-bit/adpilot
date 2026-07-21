@@ -68,10 +68,11 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   const strongModel = resolvePiModel(models, strongRef);
   const fastAuth = Boolean(await models.checkAuth(fastModel.provider).catch(() => undefined));
   const strongAuth = fastModel.provider === strongModel.provider ? fastAuth : Boolean(await models.checkAuth(strongModel.provider).catch(() => undefined));
-  const primaryVision = fastModel.input.includes("image") ? fastModel : strongModel.input.includes("image") ? strongModel : undefined;
-  const strongVision = strongModel.input.includes("image") ? strongModel : primaryVision;
-  const visionAuth = primaryVision?.provider === fastModel.provider ? fastAuth : primaryVision?.provider === strongModel.provider ? strongAuth : false;
-  const guiConfigured = Boolean(primaryVision && strongVision && visionAuth);
+  const primaryVisionCandidate = fastModel.input.includes("image") ? fastModel : strongModel.input.includes("image") ? strongModel : undefined;
+  const strongVisionCandidate = strongModel.input.includes("image") ? strongModel : primaryVisionCandidate;
+  const primaryVision = primaryVisionCandidate === fastModel ? (fastAuth ? fastModel : strongModel.input.includes("image") && strongAuth ? strongModel : undefined) : strongAuth ? primaryVisionCandidate : undefined;
+  const strongVision = strongVisionCandidate === strongModel && strongAuth ? strongModel : primaryVision;
+  const guiConfigured = Boolean(primaryVision && strongVision);
   const computer = primaryVision && strongVision && guiConfigured
     ? new VisualComputerRuntime(
         new UiTarsNativeOperator(),
@@ -105,8 +106,8 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     modelStatus: {
       fast: `${fastModel.provider}/${fastModel.id}`,
       strong: `${strongModel.provider}/${strongModel.id}`,
-      gui: primaryVision ? `${primaryVision.provider}/${primaryVision.id}` : "not supported",
-      guiStrong: strongVision ? `${strongVision.provider}/${strongVision.id}` : "not supported",
+      gui: primaryVisionCandidate ? `${primaryVisionCandidate.provider}/${primaryVisionCandidate.id}` : "not supported",
+      guiStrong: strongVisionCandidate ? `${strongVisionCandidate.provider}/${strongVisionCandidate.id}` : "not supported",
       chatConfigured: fastAuth,
       guiConfigured
     }
