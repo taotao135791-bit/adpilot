@@ -1,0 +1,6 @@
+[submodule "upstream/pi"]
+	path = upstream/pi
+	url = https://github.com/earendil-works/pi.git
+[submodule "upstream/ui-tars"]
+	path = upstream/ui-tars
+	url = https://github.com/bytedance/UI-TARS-desktop.git
