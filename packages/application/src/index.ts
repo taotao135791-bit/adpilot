@@ -77,7 +77,10 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     new CreativeStrategist(runtime),
     new RiskReviewer(runtime, tools)
   ]);
-  const agent = new AdPilotAgent(runtime, specialists, workspace, tools);
+  const agent = new AdPilotAgent(runtime, specialists, workspace, tools, (task) => events.publish({
+    type: "task", status: task.phase, taskId: task.id,
+    message: task.owner ? `${task.owner} is working` : task.nextStep ?? task.goal
+  }));
   return {
     workspace, audit, approvals, experiments, tools, skills, runtime, specialists, agent, computer, events,
     approvalTokens: new Map(),

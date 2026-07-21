@@ -22,12 +22,18 @@ const LongTermMemory = z.object({
 export type MainAgentOutput = z.infer<typeof MainAgentOutput>;
 
 export class AdPilotAgent {
-  constructor(private readonly runtime: PiAgentRuntime, private readonly specialists: SpecialistCoordinator, private readonly workspace: WorkspaceStore, private readonly tools: AdPilotTools) {}
+  constructor(
+    private readonly runtime: PiAgentRuntime,
+    private readonly specialists: SpecialistCoordinator,
+    private readonly workspace: WorkspaceStore,
+    private readonly tools: AdPilotTools,
+    private readonly onTaskState: (task: Task) => void | Promise<void> = () => undefined
+  ) {}
 
   async startTask(clientId: string, goal: string): Promise<Task> {
     const now = new Date().toISOString();
     const task = TaskState.parse({ id: crypto.randomUUID(), clientId, goal, phase: "intake", createdAt: now, updatedAt: now, nextStep: "Build an evidence-driven investigation tree" });
-    await this.workspace.saveTask(task);
+    await this.persistTask(task);
     return task;
   }
 
@@ -39,7 +45,7 @@ export class AdPilotAgent {
     const projectFacts = { client: clientContext, supplied: sharedFacts, recentMemory: memory.slice(-20) };
     let task = await this.startTask(clientId, goal);
     task = TaskState.parse({ ...task, phase: "investigating", owner: null, nextStep: "Dispatch specialists and collect evidence", updatedAt: new Date().toISOString() });
-    await this.workspace.saveTask(task);
+    await this.persistTask(task);
     const specialistResults: Record<string, unknown> = {};
     const createdApprovalIds: string[] = [];
     const dispatchTool: AgentTool = {
@@ -50,8 +56,12 @@ export class AdPilotAgent {
       executionMode: "sequential",
       execute: async (_id, raw) => {
         const params = z.object({ role: SpecialistRole, input: z.unknown() }).parse(raw);
+        task = TaskState.parse({ ...task, owner: params.role, updatedAt: new Date().toISOString() });
+        await this.persistTask(task);
         const output = await this.specialists.dispatch(params.role, { context: { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE" }, input: params.input, sharedFacts: projectFacts });
         specialistResults[params.role] = output;
+        task = TaskState.parse({ ...task, owner: null, updatedAt: new Date().toISOString() });
+        await this.persistTask(task);
         return { content: [{ type: "text", text: JSON.stringify(output) }], details: output };
       }
     };
@@ -68,17 +78,25 @@ export class AdPilotAgent {
         return { content: [{ type: "text", text: JSON.stringify({ approvalId: approval.id, status: approval.status }) }], details: { approvalId: approval.id, status: approval.status } };
       }
     };
-    const modelResult = await this.runtime.runStructured({
-      context: { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE", sessionId: crypto.randomUUID(), role: "adpilot_agent" },
-      systemPrompt: [
-        "You are AdPilot Agent, the single user-facing owner of an advertising account.",
-        "Maintain the goal and investigation tree, proactively gather evidence, use specialists as bounded experts, and make the final synthesis yourself.",
-        "Review measurement reliability before optimization. Never mutate an account from this conversational run.",
-        "For an executable operation, use prepare_approval exactly once per single-variable change. Never invent an approval id and never execute from this run."
-      ].join("\n"),
-      prompt: JSON.stringify({ goal, projectFacts, currentTask: task }),
-      signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool]
-    }, MainAgentOutput);
+    let modelResult: MainAgentOutput;
+    try {
+      modelResult = await this.runtime.runStructured({
+        context: { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE", sessionId: crypto.randomUUID(), role: "adpilot_agent" },
+        systemPrompt: [
+          "You are AdPilot Agent, the single user-facing owner of an advertising account.",
+          "Maintain the goal and investigation tree, proactively gather evidence, use specialists as bounded experts, and make the final synthesis yourself.",
+          "Review measurement reliability before optimization. Never mutate an account from this conversational run.",
+          "For an executable operation, use prepare_approval exactly once per single-variable change. Never invent an approval id and never execute from this run."
+        ].join("\n"),
+        prompt: JSON.stringify({ goal, projectFacts, currentTask: task }),
+        signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool]
+      }, MainAgentOutput);
+    } catch (error) {
+      const blocker = error instanceof Error ? error.message : String(error);
+      task = TaskState.parse({ ...task, phase: "blocked", owner: null, blockers: [...task.blockers, blocker], nextStep: "Resolve the recorded blocker and retry", updatedAt: new Date().toISOString() });
+      await this.persistTask(task);
+      throw error;
+    }
     const result = MainAgentOutput.parse({ ...modelResult, proposedApprovalIds: createdApprovalIds });
     task = TaskState.parse({
       ...task,
@@ -89,13 +107,18 @@ export class AdPilotAgent {
       blockers: result.investigationTree.filter((node) => node.status === "blocked").map((node) => node.conclusion ?? node.question),
       nextStep: result.nextStep, reviewAt: result.reviewAt, updatedAt: new Date().toISOString()
     });
-    await this.workspace.saveTask(task);
+    await this.persistTask(task);
     await this.workspace.appendJsonl(clientId, "decisions.jsonl", { taskId: task.id, at: new Date().toISOString(), goal, result });
     await this.workspace.appendJsonl(clientId, "memory/agent.jsonl", LongTermMemory.parse({
       taskId: task.id, at: new Date().toISOString(), goal, summary: result.summary,
       nextStep: result.nextStep, reviewAt: result.reviewAt, proposedApprovalIds: result.proposedApprovalIds
     }));
     return { task, result, specialistResults };
+  }
+
+  private async persistTask(task: Task): Promise<void> {
+    await this.workspace.saveTask(task);
+    await this.onTaskState(task);
   }
 }
 
