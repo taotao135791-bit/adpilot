@@ -87,11 +87,11 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const clients = await system.workspace.listClients();
     const clientId = query.clientId ?? clients[0]?.id;
     if (!clientId) return { clients, tasks: [], approvals: [], experiments: [], audit: [], messages: [], events: system.events.history(), models: system.modelStatus };
-    const [tasks, approvals, experiments, audit, messages] = await Promise.all([
+    const [tasks, approvals, experiments, audit, messages, settings] = await Promise.all([
       system.workspace.listTasks(clientId), system.approvals.list(clientId), system.experiments.list(clientId), system.audit.list(clientId),
-      system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage)
+      system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage), system.settings.publicView()
     ]);
-    return { clients, selectedClientId: clientId, tasks, approvals, experiments, audit, messages, events: system.events.history(), models: system.modelStatus };
+    return { clients, selectedClientId: clientId, tasks, approvals, experiments, audit, messages: messages.map((message) => sanitizeLegacyConversationError(message, settings.locale)), events: system.events.history(), models: system.modelStatus };
   });
 
   app.get("/events", async (_request, reply) => {
@@ -131,16 +131,22 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     await system.workspace.appendJsonl(clientId, "conversation.jsonl", userMessage);
     system.events.publish({ type: "task", status: "running", message: body.message });
     try {
-      const response = await system.agent.respond(clientId, body.message, { interfaceLocale: body.locale, recentConversation: existing.slice(-12).map(({ role, content }) => ({ role, content })) });
+      const response = await system.agent.respond(clientId, body.message, { interfaceLocale: body.locale, recentConversation: existing.slice(-12).map((item) => sanitizeLegacyConversationError(item, body.locale)).map(({ role, content }) => ({ role, content })) });
       const assistantMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, role: "assistant", content: response.reply, ...(response.task ? { taskId: response.task.id } : {}), at: new Date().toISOString() });
       await system.workspace.appendJsonl(clientId, "conversation.jsonl", assistantMessage);
       system.events.publish({ type: "task", status: response.task?.phase ?? "completed", ...(response.task ? { taskId: response.task.id } : {}), message: response.reply });
       reply.code(201); return { message: assistantMessage, task: response.task };
     } catch (error) {
-      const content = error instanceof Error ? error.message : String(error);
+      const incidentId = crypto.randomUUID();
+      const detail = error instanceof Error ? error.message : String(error);
+      const content = conversationErrorMessage(body.locale, detail, incidentId);
+      await system.workspace.appendJsonl(clientId, "diagnostics/errors.jsonl", {
+        id: incidentId, at: new Date().toISOString(), route: "/api/messages",
+        error: { name: error instanceof Error ? error.name : "Error", message: detail }
+      });
       await system.workspace.appendJsonl(clientId, "conversation.jsonl", ConversationMessage.parse({ id: crypto.randomUUID(), clientId, role: "system", content, status: "error", at: new Date().toISOString() }));
       system.events.publish({ type: "error", message: content, retryable: true });
-      throw error;
+      return reply.code(502).send({ error: content, incidentId });
     }
   });
 
@@ -223,4 +229,29 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     app.get("/*", async (_request, reply) => reply.sendFile("index.html"));
   }
   return app;
+}
+
+function conversationErrorMessage(locale: "zh-CN" | "en", detail: string, incidentId: string): string {
+  const reference = incidentId.slice(0, 8);
+  const authenticationFailure = /(?:401|403|unauthori[sz]ed|authentication|api[ _-]?key|credential|登录|认证|密钥)/i.test(detail);
+  if (locale === "en") {
+    return authenticationFailure
+      ? `The model connection was rejected. Check the provider credential in Settings and try again. Reference: ${reference}`
+      : `The model response could not be completed, so AdPilot stopped safely. Please retry; if it continues, try another model in Settings. Reference: ${reference}`;
+  }
+  return authenticationFailure
+    ? `模型连接被拒绝。请检查“设置”中的供应商凭据后重试。参考编号：${reference}`
+    : `这次模型响应未能完成，AdPilot 已安全停止。请重试；如果持续发生，请在“设置”中更换模型。参考编号：${reference}`;
+}
+
+function sanitizeLegacyConversationError(message: z.infer<typeof ConversationMessage>, locale: "zh-CN" | "en"): z.infer<typeof ConversationMessage> {
+  if (message.role !== "system" || message.status !== "error") return message;
+  const exposesInternalValidation = /(?:"code"\s*:\s*"invalid_type"|"expected"\s*:|ZodError|structured agent output|model response did not contain)/i.test(message.content);
+  if (!exposesInternalValidation) return message;
+  return {
+    ...message,
+    content: locale === "en"
+      ? "A previous model response used an unsupported format, so AdPilot stopped safely. Please send the message again."
+      : "上一次模型响应使用了不兼容的格式，AdPilot 已安全停止。请重新发送消息。"
+  };
 }

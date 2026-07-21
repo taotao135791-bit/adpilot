@@ -86,5 +86,11 @@ describe("AdPilotAgent integration", () => {
 
     faux.setResponses([fauxAssistantMessage('{"mode":"answer","reply":"You can ask me to diagnose performance or explain a metric.","goal":null}')]);
     await expect(agent.respond("client-a", "What can you do?", { interfaceLocale: "en" })).resolves.toMatchObject({ reply: "You can ask me to diagnose performance or explain a metric.", task: null });
+
+    faux.setResponses([fauxAssistantMessage('{"action":"answer","message":"你好！准备好优化广告时，随时告诉我。","console":"AdPilot 已就绪。"}')]);
+    await expect(agent.respond("client-a", "你好", { interfaceLocale: "zh-CN" })).resolves.toMatchObject({ reply: "你好！准备好优化广告时，随时告诉我。", task: null });
+
+    faux.setResponses([fauxAssistantMessage("Hello — tell me what you would like to work on.")]);
+    await expect(agent.respond("client-a", "Hello", { interfaceLocale: "en" })).resolves.toMatchObject({ reply: "Hello — tell me what you would like to work on.", task: null });
   });
 });

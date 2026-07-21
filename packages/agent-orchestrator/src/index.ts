@@ -37,18 +37,20 @@ export class AdPilotAgent {
 
   async respond(clientId: string, message: string, sharedFacts: Record<string, unknown> = {}): Promise<{ reply: string; task: Task | null; result?: MainAgentOutput }> {
     const client = await this.workspace.readClient(clientId);
-    const decision = await this.runtime.runStructured({
+    const decisionResult = await this.runtime.run({
       context: { clientId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", sessionId: crypto.randomUUID(), role: "adpilot_agent" },
       systemPrompt: [
         "You are AdPilot, the user's persistent advertising operator. Natural conversation is the primary interface.",
         "Choose answer for greetings, product usage, definitions, clarifying questions, and requests that do not require account evidence.",
         "Choose investigate for account-specific diagnosis, measurement review, optimization, creative analysis, or any request that should gather evidence or prepare an operation.",
         "Never claim you inspected an account in answer mode. Never mutate an account from this decision turn.",
-        "Use sharedFacts.interfaceLocale: Simplified Chinese for zh-CN and English for en. Keep the reply direct and useful."
+        "Use sharedFacts.interfaceLocale: Simplified Chinese for zh-CN and English for en. Keep the reply direct and useful.",
+        'Return exactly one JSON object: {"mode":"answer"|"investigate","reply":"user-facing text","goal":"investigation goal"|null}. Do not rename these fields or wrap the object in markdown.'
       ].join("\n"),
       prompt: JSON.stringify({ message, client, sharedFacts }),
       signals: { task: "conversation" }
-    }, ConversationDecision);
+    });
+    const decision = parseConversationDecision(decisionResult.text, message, sharedFacts.interfaceLocale);
     if (decision.mode === "answer") return { reply: decision.reply, task: null };
     const investigation = await this.runTask(clientId, decision.goal ?? message, sharedFacts);
     return { reply: investigation.result.summary, task: investigation.task, result: investigation.result };
@@ -145,6 +147,56 @@ export class AdPilotAgent {
     await this.workspace.saveTask(task);
     await this.onTaskState(task);
   }
+}
+
+function parseConversationDecision(text: string, userMessage: string, locale: unknown): z.infer<typeof ConversationDecision> {
+  const payload = parsePossibleJson(text);
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const record = payload as Record<string, unknown>;
+    const mode = normalizeDecisionMode(firstString(record.mode, record.action, record.intent, record.type));
+    const reply = firstString(record.reply, record.message, record.answer, record.response, record.content, record.text, record.summary);
+    const goal = firstString(record.goal, record.task, record.objective, record.instruction);
+    const parsed = ConversationDecision.safeParse({ mode: mode ?? fallbackDecisionMode(userMessage), reply, goal: goal ?? (mode === "investigate" ? userMessage : null) });
+    if (parsed.success) return parsed.data;
+    throw new Error("model response did not contain a usable conversational reply");
+  }
+
+  if (typeof payload === "string" && payload.trim()) {
+    const mode = fallbackDecisionMode(userMessage);
+    return ConversationDecision.parse({ mode, reply: payload.trim(), goal: mode === "investigate" ? userMessage : null });
+  }
+
+  throw new Error(locale === "en" ? "model returned an empty conversational response" : "模型没有返回可用的对话内容");
+}
+
+function parsePossibleJson(text: string): unknown {
+  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  if (!trimmed) return "";
+  try { return JSON.parse(trimmed); } catch {
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try { return JSON.parse(trimmed.slice(start, end + 1)); } catch { return trimmed; }
+    }
+    return trimmed;
+  }
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  return values.find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim();
+}
+
+function normalizeDecisionMode(value: string | undefined): "answer" | "investigate" | undefined {
+  if (!value) return undefined;
+  const normalized = value.toLowerCase().trim();
+  if (["answer", "reply", "respond", "chat", "回答", "回复"].includes(normalized)) return "answer";
+  if (["investigate", "analyze", "analyse", "audit", "diagnose", "task", "调查", "分析", "诊断"].includes(normalized)) return "investigate";
+  return undefined;
+}
+
+function fallbackDecisionMode(message: string): "answer" | "investigate" {
+  const investigationIntent = /(?:帮我|请|替我|我的|这个|当前).{0,12}(?:检查|查看|诊断|审计|分析|优化|调整|修改|暂停|开启)|(?:检查|查看|诊断|审计|优化|调整|修改|暂停|开启).{0,12}(?:账户|广告|系列|投放|预算|出价|素材|归因)|\b(?:diagnose|audit|inspect|optimi[sz]e|change|adjust|pause|enable|increase|decrease)\b.{0,40}\b(?:my|this|account|campaign|ads?|budget|bid|creative|attribution)\b/i;
+  return investigationIntent.test(message) ? "investigate" : "answer";
 }
 
 export { MainAgentOutput };

@@ -14,6 +14,14 @@ describe("product server", () => {
     const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
     const state = await server.inject({ method: "GET", url: "/api/state" });
     expect(state.json()).toMatchObject({ selectedClientId: "personal", clients: [{ id: "personal", name: "AdPilot" }], messages: [] });
+
+    await system.workspace.appendJsonl("personal", "conversation.jsonl", {
+      id: crypto.randomUUID(), clientId: "personal", role: "system", status: "error",
+      content: '[{"code":"invalid_type","expected":"answer | investigate"}]', at: new Date().toISOString()
+    });
+    const migratedState = await server.inject({ method: "GET", url: "/api/state" });
+    expect(migratedState.json().messages[0].content).toBe("上一次模型响应使用了不兼容的格式，AdPilot 已安全停止。请重新发送消息。");
+    expect(migratedState.json().messages[0].content).not.toContain("invalid_type");
     await server.close();
   });
 
@@ -21,7 +29,7 @@ describe("product server", () => {
     const root = await mkdtemp(join(tmpdir(), "adpilot-conversation-"));
     const faux = fauxProvider({ provider: "test", models: [{ id: "code", input: ["text", "image"] }] });
     const models = createModels(); models.setProvider(faux.provider);
-    faux.setResponses([fauxAssistantMessage('{"mode":"answer","reply":"Tell me the account symptom and I will investigate the evidence.","goal":null}')]);
+    faux.setResponses([fauxAssistantMessage('{"action":"answer","message":"Tell me the account symptom and I will investigate the evidence.","console":"ready"}')]);
     const system = await createAdPilotSystem({ workspaceRoot: root, env: { ADPILOT_FAST_PROVIDER: "test", ADPILOT_FAST_MODEL: "code", ADPILOT_STRONG_PROVIDER: "test", ADPILOT_STRONG_MODEL: "code" }, models });
     const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
     const response = await server.inject({ method: "POST", url: "/api/messages", payload: { message: "What can you do?", locale: "en" } });
@@ -30,6 +38,15 @@ describe("product server", () => {
     const state = await server.inject({ method: "GET", url: "/api/state" });
     expect(state.json().messages).toMatchObject([{ role: "user", content: "What can you do?" }, { role: "assistant" }]);
     expect(state.json().models).toMatchObject({ chatConfigured: true, guiConfigured: true, gui: "test/code" });
+
+    faux.setResponses([fauxAssistantMessage('{"action":"answer"}')]);
+    const failed = await server.inject({ method: "POST", url: "/api/messages", payload: { message: "Hello again", locale: "en" } });
+    expect(failed.statusCode).toBe(502);
+    expect(failed.json().error).toContain("stopped safely");
+    expect(failed.json().error).not.toContain("invalid_type");
+    const failedState = await server.inject({ method: "GET", url: "/api/state" });
+    expect(failedState.json().messages.at(-1)).toMatchObject({ role: "system", status: "error" });
+    expect(failedState.json().messages.at(-1).content).not.toContain("expected");
     await server.close();
   });
 
