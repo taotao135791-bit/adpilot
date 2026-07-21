@@ -76,7 +76,7 @@ export function SettingsPanel({ open, data, onClose, onSaved }: { open: boolean;
   }, [authSession?.id, authSession?.status, onSaved]);
 
   const selectedProvider = data?.catalog.providers.find((provider) => provider.id === credentialProvider);
-  const configuredCount = useMemo(() => Object.values(data?.configured ?? {}).filter(Boolean).length, [data]);
+  const configuredCount = useMemo(() => Object.values(data?.providerConfigured ?? {}).filter(Boolean).length, [data]);
   if (!open) return null;
 
   function providerModels(providerId: string): CatalogModel[] {
@@ -176,7 +176,7 @@ export function SettingsPanel({ open, data, onClose, onSaved }: { open: boolean;
             <div className="settings-divider" />
             <div className="subsection-heading"><div><span>{text.providerConnection}</span><h3>{text.credentials}</h3></div><small>{data.catalog.providers.length} {text.providers}</small></div>
             <label className="settings-field"><span>{text.provider}</span><select value={credentialProvider} onChange={(event) => setCredentialProvider(event.target.value)}>{data.catalog.providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></label>
-            {selectedProvider && <div className="provider-summary"><div><strong>{selectedProvider.name}</strong><span>{selectedProvider.models.length} {text.modelsCount} · {selectedProvider.auth.oauth ? "OAuth · " : ""}{selectedProvider.auth.apiKey ? text.apiKey : "OAuth"}</span></div><i data-ready={Boolean(data.providerConfigured[selectedProvider.id])} /></div>}
+            {selectedProvider && <div className="provider-summary"><div><strong>{selectedProvider.name}</strong><span>{selectedProvider.models.length} {text.modelsCount} · {selectedProvider.auth.apiKey ? text.apiKey : ""}{selectedProvider.auth.apiKey && selectedProvider.auth.oauth ? " · " : ""}{selectedProvider.auth.oauth ? "OAuth" : ""}</span></div><i data-ready={Boolean(data.providerConfigured[selectedProvider.id])} /></div>}
             {selectedProvider?.fields.length ? <div className="settings-fields">{selectedProvider.fields.map((field) => <CredentialField key={field.env} field={field} locale={locale} configured={Boolean(data.configured[field.env])} value={envDraft[field.env] ?? ""} cleared={cleared.has(field.env)} onChange={(value) => { setEnvDraft({ ...envDraft, [field.env]: value }); setCleared((items) => { const next = new Set(items); next.delete(field.env); return next; }); }} onClear={() => setCleared((items) => new Set(items).add(field.env))} />)}</div> : !selectedProvider?.auth.oauth && <div className="settings-note"><i />{text.noStaticModels}</div>}
             {selectedProvider?.auth.oauth && <OAuthConnection session={authSession?.providerId === selectedProvider.id ? authSession : undefined} connected={data.providerCredentials[selectedProvider.id] === "oauth"} input={authInput} text={text} onInput={setAuthInput} onStart={() => void startOAuth()} onRespond={(value) => void respondOAuth(value)} onDisconnect={() => void disconnectOAuth()} />}
           </SettingsSection>}

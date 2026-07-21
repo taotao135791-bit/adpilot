@@ -25,7 +25,7 @@ The runtime takes a fresh screenshot before every attempt. It stops after three 
 
 ## Local data and secrets
 
-- API keys are environment variables. `.env*` is ignored except `.env.example`.
+- API keys can come from environment variables or the local Settings store. Settings and Pi OAuth credentials are written under the active Workspace with `0600` permissions; the settings API returns configuration flags but never secret values. `.env*` is ignored except `.env.example`.
 - The approval secret is generated locally under `workspace/.adpilot/approval-secret` with private permissions when not explicitly configured.
 - Audit values redact credential-like keys, bearer tokens and six-digit verification codes.
 - Workspace path traversal and cross-client access are rejected.

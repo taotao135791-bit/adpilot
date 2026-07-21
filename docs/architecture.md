@@ -57,4 +57,4 @@ Each client lives under `workspace/clients/<client-id>/`. Profile, KPI, accounts
 - Strong: ambiguity, conflicts, failed visual retries and risk-sensitive reasoning.
 - GUI: UI-TARS-compatible visual grounding only.
 
-Provider/model names are environment configuration. Routing never changes Tool permissions.
+Provider/model names come from the persisted native Settings store or environment configuration. The catalog is read directly from Pi, and routing never changes Tool permissions.
