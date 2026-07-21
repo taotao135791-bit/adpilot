@@ -46,5 +46,28 @@ describe("visual action protocol", () => {
     expect(() => new VisualPolicy().check(action, before, { ...task, riskLevel: "mutate", permission: "OBSERVE" })).toThrow("does not allow");
     expect(() => new VisualPolicy().check({ ...action, risk_level: "interact" }, before, { ...task, surface: { ...task.surface, domain: "evil.example" } })).toThrow("not allowlisted");
   });
-});
 
+  it("stops immediately on timeout to avoid duplicate actions", async () => {
+    const runtime = new VisualComputerRuntime(
+      { capture: async () => new Promise<Screenshot>(() => undefined), execute: async () => undefined },
+      { ground: async () => { throw new Error("should not ground"); } },
+      { verify: async () => ({ matched: false, confidence: 0, reason: "not reached" }) },
+      new VisualPolicy(),
+      () => undefined,
+      5
+    );
+    await expect(runtime.runMicroTask(task)).resolves.toMatchObject({ status: "failed", attempts: 1, blocker: expect.stringContaining("timed out") });
+  });
+
+  it("honors user cancellation before taking a screenshot", async () => {
+    let captures = 0;
+    const runtime = new VisualComputerRuntime(
+      { capture: async () => { captures += 1; return before; }, execute: async () => undefined },
+      { ground: async () => ({ action: "done", target: "task", reason: "done", confidence: 1, expected_result: "done", risk_level: "observe" }) },
+      { verify: async () => ({ matched: true, confidence: 1, reason: "done" }) }
+    );
+    runtime.cancel();
+    await expect(runtime.runMicroTask(task)).resolves.toMatchObject({ status: "failed", attempts: 0, blocker: "user cancelled" });
+    expect(captures).toBe(0);
+  });
+});

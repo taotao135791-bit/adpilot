@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Local Ad Console</title>
+    <style>
+      :root { color-scheme: light; font: 14px/1.4 Inter, ui-sans-serif, system-ui, sans-serif; background: #f5f6f8; color: #18202a; }
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      header { height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; border-bottom: 1px solid #d9dde3; background: white; }
+      main { padding: 24px; }
+      button, input { font: inherit; }
+      button { min-height: 36px; padding: 0 14px; border: 1px solid #b9c0ca; border-radius: 6px; background: white; cursor: pointer; }
+      button.primary { border-color: #1769e0; background: #1769e0; color: white; }
+      .menu { position: absolute; right: 24px; top: 50px; display: none; width: 180px; padding: 8px; border: 1px solid #c9ced6; border-radius: 8px; background: white; box-shadow: 0 10px 30px #13233a24; }
+      .menu.open { display: grid; gap: 4px; }
+      .menu button { text-align: left; border: 0; }
+      .card { margin-top: 20px; overflow: hidden; border: 1px solid #d9dde3; border-radius: 8px; background: white; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { padding: 14px 16px; border-bottom: 1px solid #e6e9ed; text-align: right; }
+      th:first-child, td:first-child { text-align: left; }
+      dialog { width: 420px; border: 0; border-radius: 10px; padding: 0; box-shadow: 0 20px 70px #13233a3d; }
+      dialog::backdrop { background: #10182066; }
+      .dialog-body { display: grid; gap: 16px; padding: 24px; }
+      .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 16px 24px; border-top: 1px solid #e6e9ed; }
+      label { display: grid; gap: 6px; }
+      input { height: 38px; padding: 0 10px; border: 1px solid #aeb6c2; border-radius: 6px; }
+      #toast { position: fixed; right: 24px; bottom: 24px; display: none; padding: 12px 16px; border-radius: 7px; background: #163d2a; color: white; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>Local Ad Console</strong>
+      <button id="date-selector" aria-expanded="false">Last 30 days</button>
+      <div id="date-menu" class="menu" role="menu">
+        <button role="menuitem" data-range="Last 7 days">Last 7 days</button>
+        <button role="menuitem" data-range="Last 30 days">Last 30 days</button>
+      </div>
+    </header>
+    <main>
+      <h1>Campaigns</h1>
+      <div class="card">
+        <table aria-label="Campaign performance">
+          <thead><tr><th>Campaign</th><th>Spend</th><th>Conversions</th><th>CPA</th><th>Daily budget</th><th></th></tr></thead>
+          <tbody><tr><td>Android Growth</td><td>$640</td><td>42</td><td>$15.24</td><td id="budget-value">$100</td><td><button id="edit-budget">Edit</button></td></tr></tbody>
+        </table>
+      </div>
+    </main>
+    <dialog id="budget-dialog">
+      <form method="dialog">
+        <div class="dialog-body">
+          <h2>Edit daily budget</h2>
+          <label>Daily budget <input id="budget-input" type="number" min="1" value="100" /></label>
+          <small>The change is not applied until Save is selected.</small>
+        </div>
+        <div class="dialog-actions"><button value="cancel">Cancel</button><button id="save-budget" class="primary" value="save">Save</button></div>
+      </form>
+    </dialog>
+    <div id="toast" role="status">Budget saved</div>
+    <script>
+      const selector = document.querySelector('#date-selector');
+      const menu = document.querySelector('#date-menu');
+      selector.addEventListener('click', () => { menu.classList.toggle('open'); selector.setAttribute('aria-expanded', String(menu.classList.contains('open'))); });
+      menu.addEventListener('click', (event) => { const item = event.target.closest('[data-range]'); if (!item) return; selector.textContent = item.dataset.range; menu.classList.remove('open'); selector.setAttribute('aria-expanded', 'false'); });
+      const dialog = document.querySelector('#budget-dialog');
+      document.querySelector('#edit-budget').addEventListener('click', () => dialog.showModal());
+      dialog.addEventListener('close', () => { if (dialog.returnValue !== 'save') return; document.querySelector('#budget-value').textContent = `$${document.querySelector('#budget-input').value}`; const toast = document.querySelector('#toast'); toast.style.display = 'block'; });
+    </script>
+  </body>
+</html>

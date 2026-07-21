@@ -91,14 +91,15 @@ export class VisualPolicy {
     if (permissionRank[permission] < permissionRank[riskPermission[action.risk_level]]) {
       throw new Error(`${permission} does not allow ${action.risk_level} action`);
     }
-    if (action.risk_level !== task.riskLevel) throw new Error("grounded action changed the declared risk level");
+    const terminalOrUtility = ["done", "fail", "screenshot", "wait"].includes(action.action);
+    if (!terminalOrUtility && action.risk_level !== task.riskLevel) throw new Error("grounded action changed the declared risk level");
     const points: Array<[number, number]> = [];
     if ("x" in action && action.x !== undefined && "y" in action && action.y !== undefined) points.push([action.x, action.y]);
     if (action.action === "drag") points.push([action.end_x, action.end_y]);
     for (const [x, y] of points) {
       if (x < 0 || y < 0 || x >= screenshot.width || y >= screenshot.height) throw new Error("action coordinates are outside the screenshot");
     }
-    if (["done", "fail", "screenshot", "wait"].includes(action.action) && action.risk_level !== "observe") {
+    if (terminalOrUtility && action.risk_level !== "observe") {
       throw new Error(`${action.action} must be observe risk`);
     }
   }
@@ -122,7 +123,8 @@ export class VisualComputerRuntime {
     private readonly grounding: GroundingModel,
     private readonly verifier: VisualVerifier,
     private readonly policy = new VisualPolicy(),
-    private readonly onEvent: (event: VisualRuntimeEvent) => void | Promise<void> = () => undefined
+    private readonly onEvent: (event: VisualRuntimeEvent) => void | Promise<void> = () => undefined,
+    private readonly stepTimeoutMs = 20_000
   ) {}
 
   pause(): void { this.paused = true; }
@@ -134,28 +136,48 @@ export class VisualComputerRuntime {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       if (this.cancelled) return { status: "failed", attempts: attempt - 1, blocker: "user cancelled", ...(lastAction ? { lastAction } : {}) };
       if (this.paused) return { status: "failed", attempts: attempt - 1, blocker: "paused for user takeover", ...(lastAction ? { lastAction } : {}) };
-      const before = await this.operator.capture();
-      await this.onEvent({ type: "screenshot", phase: "before", screenshot: before });
       const tier: ModelTier = attempt >= 3 ? "strong" : "gui";
       try {
-        const action = VisualAction.parse(await this.grounding.ground(task, before, tier));
+        const before = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "screenshot capture");
+        await this.onEvent({ type: "screenshot", phase: "before", screenshot: before });
+        const action = VisualAction.parse(await withTimeout(this.grounding.ground(task, before, tier), this.stepTimeoutMs, "visual grounding"));
         lastAction = action;
         this.policy.check(action, before, task);
         await this.onEvent({ type: "grounded", attempt, tier, action });
         if (action.action === "fail") return { status: "failed", attempts: attempt, blocker: action.reason, lastAction: action };
         if (action.action === "done") return { status: "done", attempts: attempt, action, before, after: before };
-        await this.operator.execute(action, before);
+        await withTimeout(this.operator.execute(action, before), this.stepTimeoutMs, "native action");
         await this.onEvent({ type: "executed", attempt, action });
-        const after = await this.operator.capture();
+        const after = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "verification screenshot");
         await this.onEvent({ type: "screenshot", phase: "after", screenshot: after });
-        const verified = await this.verifier.verify(action.expected_result, before, after);
+        const verified = await withTimeout(this.verifier.verify(action.expected_result, before, after), this.stepTimeoutMs, "visual verification");
         await this.onEvent({ type: "verified", attempt, ...verified });
         if (verified.matched) return { status: "done", attempts: attempt, action, before, after };
       } catch (error) {
-        await this.onEvent({ type: "blocked", attempt, reason: error instanceof Error ? error.message : String(error) });
+        const reason = error instanceof Error ? error.message : String(error);
+        await this.onEvent({ type: "blocked", attempt, reason });
+        if (error instanceof VisualTimeoutError) {
+          return { status: "failed", attempts: attempt, blocker: `${reason}; stopped to avoid a duplicate or blind action`, ...(lastAction ? { lastAction } : {}) };
+        }
       }
     }
     return { status: "failed", attempts: 3, blocker: "visual action failed three times; blind operation stopped", ...(lastAction ? { lastAction } : {}) };
+  }
+}
+
+class VisualTimeoutError extends Error {}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new VisualTimeoutError(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 
@@ -308,4 +330,3 @@ export function assertScreenshotOutput(value: ScreenshotOutput): ScreenshotOutpu
   if (!value.base64 || !Number.isFinite(value.scaleFactor) || value.scaleFactor <= 0) throw new Error("invalid native screenshot");
   return value;
 }
-
