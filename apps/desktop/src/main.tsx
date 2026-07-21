@@ -245,10 +245,10 @@ function App() {
               <div><strong>{activeAgents.length ? activeAgents.map((role) => roleLabel(role, locale)).join(" · ") : copy.coordinatorReady}</strong><span>{currentTask ? copy.specialistsAttached : copy.waitingDirective}</span></div>
             </div>
             <div className="model-grid">
-              <ModelRow label={copy.fast} value={state.models.fast} empty={copy.unassigned} />
-              <ModelRow label={copy.deep} value={state.models.strong} empty={copy.unassigned} />
-              <ModelRow label={copy.vision} value={state.models.gui} warn={!state.models.guiConfigured} empty={copy.unassigned} />
-              <ModelRow label={copy.visionPlus} value={state.models.guiStrong} warn={!state.models.guiConfigured} empty={copy.unassigned} />
+              <ModelRow label={copy.fast} value={state.models.fast} empty={copy.unassigned} unsupported={copy.unsupported} />
+              <ModelRow label={copy.deep} value={state.models.strong} empty={copy.unassigned} unsupported={copy.unsupported} />
+              <ModelRow label={copy.vision} value={state.models.gui} warn={!state.models.guiConfigured} empty={copy.unassigned} unsupported={copy.unsupported} />
+              <ModelRow label={copy.visionPlus} value={state.models.guiStrong} warn={!state.models.guiConfigured} empty={copy.unassigned} unsupported={copy.unsupported} />
             </div>
           </section>
 
@@ -305,7 +305,10 @@ function MissionZero({ onPick, guiReady, clients, locale }: { onPick: (goal: str
 function Readiness({ label, value, ready }: { label: string; value: string; ready: boolean }) { return <div className="readiness"><span>{label}</span><strong><i data-ready={ready} />{value}</strong></div>; }
 function Metric({ label, value, compact = false }: { label: string; value: string; compact?: boolean }) { return <div className={compact ? "compact" : ""}><span>{label}</span><strong>{value}</strong></div>; }
 function Nav({ icon, label, count, active = false, onClick }: { icon: React.ReactNode; label: string; count?: number; active?: boolean; onClick: () => void }) { return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}>{icon}<span>{label}</span>{count !== undefined && count > 0 && <b>{count}</b>}</button>; }
-function ModelRow({ label, value, warn = false, empty }: { label: string; value: string; warn?: boolean; empty: string }) { return <div className="model-row"><span>{label}</span><strong className={warn ? "warn" : ""}>{!value || value === "not configured" ? empty : value}</strong></div>; }
+function ModelRow({ label, value, warn = false, empty, unsupported }: { label: string; value: string; warn?: boolean; empty: string; unsupported: string }) {
+  const displayValue = !value || value === "not configured" ? empty : value === "not supported" ? unsupported : value;
+  return <div className="model-row"><span>{label}</span><strong className={warn ? "warn" : ""}>{displayValue}</strong></div>;
+}
 function Empty({ title, body }: { title: string; body: string }) { return <div className="empty"><i>—</i><strong>{title}</strong><span>{body}</span></div>; }
 function MessageBody({ content }: { content: string }) {
   const blocks = content.trim().split(/\n{2,}/);
