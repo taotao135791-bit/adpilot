@@ -146,7 +146,7 @@ export function SettingsPanel({ open, data, initialTab = "general", onClose, onS
   return <div className="settings-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <header className="settings-header">
-        <div><span>ADPILOT / 0.1.0</span><h2 id="settings-title">{text.title}</h2></div>
+        <div><span>ADPILOT / 0.1.1</span><h2 id="settings-title">{text.title}</h2></div>
         <button className="settings-close" onClick={onClose} aria-label={text.close}>×</button>
       </header>
       <div className="settings-layout">

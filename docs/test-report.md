@@ -42,7 +42,7 @@ Smoke checks:
 - Responsive UI checks passed at 1440×1000 and 390×844 with no horizontal overflow; the mobile command surface remains reachable above the fixed navigation.
 - The Electron development shell started the same local API on a random loopback port with sandboxing, context isolation and navigation restrictions enabled.
 - `pnpm desktop:dir` produced a runnable arm64 `AdPilot.app`; its packaged API, HTML, JavaScript and CSS assets all returned successfully.
-- `pnpm desktop:dmg` produced `AdPilot-0.1.0-arm64.dmg`; `hdiutil verify` passed and the mounted image contained `AdPilot.app` plus the `/Applications` install link.
+- `pnpm desktop:dmg` produced `AdPilot-0.1.1-arm64.dmg`; `hdiutil verify` passed and the mounted image contained `AdPilot.app` plus the `/Applications` install link.
 
 ## Upstream audit baseline
 

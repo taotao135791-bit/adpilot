@@ -25,7 +25,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
 
   app.get("/api/health", async () => ({ status: "ok", chatConfigured: system.modelStatus.chatConfigured, guiConfigured: system.modelStatus.guiConfigured }));
   app.get("/api/about", async () => ({
-    name: "AdPilot", version: "0.1.0",
+    name: "AdPilot", version: "0.1.1",
     runtime: { name: "Pi", version: "0.80.10", license: "MIT" },
     computerUse: { name: "UI-TARS", version: "1.2.3", license: "Apache-2.0" },
     advertisingCore: { upstream: "codex-ads", version: "1.9.2", license: "MIT" }

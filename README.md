@@ -79,7 +79,7 @@ open release/mac-arm64/AdPilot.app
 
 ```bash
 pnpm desktop:dmg
-open release/AdPilot-0.1.0-arm64.dmg
+open release/AdPilot-0.1.1-arm64.dmg
 ```
 
 DMG 会使用 `build/icon.icns` 和标准拖拽到 Applications 的安装窗口。`pnpm icon:mac` 可从 `build/icon.svg` 重建图标。签名和 notarization 不是构建要求：开源发布可以直接分发未签名 DMG，但 macOS Gatekeeper 可能要求用户右键选择“打开”；只有追求无提示安装时才需要 Developer ID。原生应用的设置和 OAuth 凭据分别保存在 `~/Library/Application Support/AdPilot/workspace/.adpilot/settings.json` 与 `pi-auth.json`，文件权限为 `0600`。
