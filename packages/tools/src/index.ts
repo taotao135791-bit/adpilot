@@ -69,6 +69,17 @@ export class AdPilotTools {
   async executeVisualTask(context: ToolContext, task: VisualMicroTask): Promise<VisualStepResult> {
     if (!this.computer) throw new Error("native computer runtime is unavailable");
     if (task.permission !== context.permission) throw new Error("visual task permission differs from tool context");
+    const client = await this.workspace.readClient(context.clientId);
+    const profile = task.surface.browserProfile;
+    const domain = task.surface.domain?.toLowerCase();
+    const account = client.accounts?.accounts.find((candidate) => {
+      if (!profile || candidate.browserProfile !== profile) return false;
+      if (!domain) return true;
+      return candidate.allowedDomains.some((allowed) => domain === allowed.toLowerCase() || domain.endsWith(`.${allowed.toLowerCase()}`));
+    });
+    if (!account) throw new Error("visual surface is not bound to an allowed client browser profile and domain");
+    const overlyBroadDomain = task.surface.allowedDomains.some((candidate) => !account.allowedDomains.some((allowed) => candidate.toLowerCase() === allowed.toLowerCase()));
+    if (overlyBroadDomain) throw new Error("visual task attempted to broaden the client domain allowlist");
     const result = await this.computer.runMicroTask(task);
     if (result.status === "done") {
       await this.workspace.writeJson(context.clientId, `screenshots/${context.taskId}-${Date.now()}.json`, {
@@ -86,6 +97,8 @@ export class AdPilotTools {
 
   async commitApprovedVisualAction(context: ToolContext, approvalId: string, token: string, operation: ApprovalOperation, task: VisualMicroTask): Promise<VisualStepResult> {
     if (context.permission !== "MUTATE" && context.permission !== "DESTRUCTIVE") throw new Error("commit requires mutation permission");
+    const unfinished = (await this.experiments.list(context.clientId)).filter((item) => ["active", "waiting"].includes(item.status));
+    if (unfinished.length > 0) throw new Error("an unfinished experiment blocks a new mutation");
     const executing = await this.approvals.consume(context.clientId, approvalId, token, operation);
     try {
       const result = await this.executeVisualTask(context, task);

@@ -45,6 +45,7 @@ export type Screenshot = z.infer<typeof Screenshot>;
 export interface SurfaceContext {
   app: string;
   domain?: string;
+  browserProfile?: string;
   allowedApps: string[];
   allowedDomains: string[];
 }

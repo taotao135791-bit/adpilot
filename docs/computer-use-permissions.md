@@ -21,7 +21,7 @@ The declared task risk, grounded action risk and caller permission must agree. U
 
 ## Surface allowlists
 
-Each account entry in `accounts.yaml` names its browser Profile and allowed domains. Every visual microtask repeats the allowed app/domain set. A subdomain is allowed only when its parent is explicitly listed; an unrelated domain or application fails before execution.
+Each account entry in `accounts.yaml` names its browser Profile and allowed domains. Every visual microtask must name that exact Profile and may only narrow the stored domain allowlist. A subdomain is allowed only when its parent is explicitly listed; an unbound Profile, broader domain list, unrelated domain or application fails before execution.
 
 ## Failure behavior
 

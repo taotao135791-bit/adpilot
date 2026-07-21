@@ -26,6 +26,7 @@ export const ApprovalExecutionPlan = z.object({
   surface: z.object({
     app: z.string().min(1),
     domain: z.string().min(1).optional(),
+    browserProfile: z.string().min(1),
     allowedApps: z.array(z.string().min(1)).min(1),
     allowedDomains: z.array(z.string().min(1)).default([])
   }),

@@ -28,7 +28,7 @@ type DashboardState = {
   toast: boolean;
 };
 
-const surface = { app: "Local Ad Console", domain: "127.0.0.1", allowedApps: ["Local Ad Console"], allowedDomains: ["127.0.0.1"] };
+const surface = { app: "Local Ad Console", domain: "127.0.0.1", browserProfile: "local-test-profile", allowedApps: ["Local Ad Console"], allowedDomains: ["127.0.0.1"] };
 
 function screenshot(state: DashboardState): Screenshot {
   const content = JSON.stringify(state);
@@ -93,7 +93,10 @@ describe("local mock advertising console", () => {
     expect(operator.state.savedBudget).toBe(100);
 
     const workspace = new WorkspaceStore(await mkdtemp(join(tmpdir(), "adpilot-visual-")));
-    await workspace.initializeClient({ profile: { id: "visual-client", name: "Visual test" }, kpi: { primary: "CPA", target: 18 } });
+    await workspace.initializeClient({
+      profile: { id: "visual-client", name: "Visual test" }, kpi: { primary: "CPA", target: 18 },
+      accounts: { accounts: [{ platform: "local", accountRef: "mock-account", browserProfile: "local-test-profile", allowedDomains: ["127.0.0.1"] }] }
+    });
     const approvals = new ApprovalService(workspace, "0123456789abcdef0123456789abcdef");
     const tools = new AdPilotTools(workspace, new AuditLog(workspace), approvals, new ExperimentStore(workspace), runtime);
     const taskId = crypto.randomUUID();

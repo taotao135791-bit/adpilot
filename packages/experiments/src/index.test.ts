@@ -21,7 +21,7 @@ describe("ExperimentStore", () => {
     const first = await store.create(base);
     await store.start("client-a", first.id);
     await expect(store.create({ ...base, approvalId: crypto.randomUUID(), variable: "target_cpa" })).rejects.toThrow("single-variable");
+    await expect(store.create({ ...base, approvalId: crypto.randomUUID() })).rejects.toThrow("unfinished experiment");
     expect((await store.conclude("client-a", first.id, "won", "CPA held")).status).toBe("won");
   });
 });
-

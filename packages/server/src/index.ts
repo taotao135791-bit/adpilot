@@ -109,6 +109,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       expectedResult: approval.executionPlan.expectedResult,
       surface: {
         app: approval.executionPlan.surface.app,
+        browserProfile: approval.executionPlan.surface.browserProfile,
         allowedApps: approval.executionPlan.surface.allowedApps,
         allowedDomains: approval.executionPlan.surface.allowedDomains,
         ...(approval.executionPlan.surface.domain ? { domain: approval.executionPlan.surface.domain } : {})

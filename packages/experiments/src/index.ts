@@ -29,7 +29,7 @@ export class ExperimentStore {
 
   async create(input: Omit<Experiment, "id" | "status" | "finalConclusion" | "startedAt" | "completedAt" | "createdAt" | "updatedAt">): Promise<Experiment> {
     const active = (await this.list(input.clientId)).filter((item) => ["active", "waiting"].includes(item.status));
-    if (active.some((item) => item.variable !== input.variable)) throw new Error("single-variable principle blocks a second active variable");
+    if (active.length > 0) throw new Error("single-variable principle blocks a second unfinished experiment");
     const now = new Date().toISOString();
     const experiment = Experiment.parse({
       ...input, id: crypto.randomUUID(), status: "draft", finalConclusion: null,
@@ -73,4 +73,3 @@ export class ExperimentStore {
     return next;
   }
 }
-

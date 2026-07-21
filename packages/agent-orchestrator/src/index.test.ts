@@ -20,7 +20,10 @@ describe("AdPilotAgent integration", () => {
   it("uses Pi as the main loop, dispatches an isolated specialist, and persists task state", async () => {
     const root = await mkdtemp(join(tmpdir(), "adpilot-main-"));
     const workspace = new WorkspaceStore(root);
-    await workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
+    await workspace.initializeClient({
+      profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 },
+      accounts: { accounts: [{ platform: "google_ads", accountRef: "acct-1", browserProfile: "client-a-google", allowedDomains: ["ads.google.com"] }] }
+    });
     const faux = fauxProvider({ provider: "test", models: [{ id: "fast" }, { id: "strong", reasoning: true }] });
     const models = createModels(); models.setProvider(faux.provider);
     faux.setResponses([
@@ -28,7 +31,7 @@ describe("AdPilotAgent integration", () => {
       fauxAssistantMessage(fauxToolCall("dispatch_specialist", { role: "account_operator", input: { visualTask: {
         instruction: "Read the visible campaign table", target: "campaign table", expectedResult: "campaign table is visible",
         riskLevel: "observe", permission: "OBSERVE",
-        surface: { app: "Browser", domain: "ads.google.com", allowedApps: ["Browser"], allowedDomains: ["ads.google.com"] }
+        surface: { app: "Browser", domain: "ads.google.com", browserProfile: "client-a-google", allowedApps: ["Browser"], allowedDomains: ["ads.google.com"] }
       } } }), { stopReason: "toolUse" }),
       fauxAssistantMessage(fauxToolCall("prepare_approval", {
         operation: {
@@ -40,7 +43,7 @@ describe("AdPilotAgent integration", () => {
         },
         executionPlan: {
           instruction: "Set the daily budget to 110", target: "Save budget", expectedResult: "Daily budget shows 110",
-          surface: { app: "Browser", domain: "ads.google.com", allowedApps: ["Browser"], allowedDomains: ["ads.google.com"] },
+          surface: { app: "Browser", domain: "ads.google.com", browserProfile: "client-a-google", allowedApps: ["Browser"], allowedDomains: ["ads.google.com"] },
           experiment: {
             hypothesis: "A staged budget increase will add volume without breaching CPA", variable: "daily_budget",
             baseline: { dailyBudget: 100, cpa: 10 }, expected: "More conversions at stable CPA",
