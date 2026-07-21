@@ -10,6 +10,7 @@
   },
   "scripts": {
     "adpilot": "pnpm build && node dist/cli/index.js",
+    "capture:ui": "node scripts/capture-ui.mjs",
     "dev": "tsx watch apps/cli/src/index.ts serve",
     "build": "pnpm typecheck && tsup apps/cli/src/index.ts --format esm --platform node --out-dir dist/cli && vite build && node scripts/postbuild.mjs",
     "typecheck": "tsc --noEmit",

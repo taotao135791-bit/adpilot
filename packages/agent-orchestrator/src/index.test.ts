@@ -6,11 +6,12 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import { describe, expect, it } from "vitest";
 import { AuditLog } from "@adpilot/audit";
 import { ApprovalService } from "@adpilot/approvals";
+import { VisualComputerRuntime, type Screenshot } from "@adpilot/computer-use";
 import { ExperimentStore } from "@adpilot/experiments";
 import { ModelRouter } from "@adpilot/model-router";
 import { PiAgentRuntime } from "@adpilot/runtime";
 import { SkillRegistry } from "@adpilot/skills";
-import { SpecialistCoordinator, specialistSchemas, type SpecialistAgent } from "@adpilot/specialist-agents";
+import { AccountOperator, SpecialistCoordinator, specialistSchemas, type SpecialistAgent } from "@adpilot/specialist-agents";
 import { AdPilotTools } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
 import { AdPilotAgent } from "./index.js";
@@ -24,6 +25,11 @@ describe("AdPilotAgent integration", () => {
     const models = createModels(); models.setProvider(faux.provider);
     faux.setResponses([
       fauxAssistantMessage(fauxToolCall("dispatch_specialist", { role: "performance_analyst", input: { metrics: { spend: 100, conversions: 10, days: 7 }, target: 10, objective: "CPA" } }), { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxToolCall("dispatch_specialist", { role: "account_operator", input: { visualTask: {
+        instruction: "Read the visible campaign table", target: "campaign table", expectedResult: "campaign table is visible",
+        riskLevel: "observe", permission: "OBSERVE",
+        surface: { app: "Browser", domain: "ads.google.com", allowedApps: ["Browser"], allowedDomains: ["ads.google.com"] }
+      } } }), { stopReason: "toolUse" }),
       fauxAssistantMessage(fauxToolCall("prepare_approval", {
         operation: {
           account: "acct-1", campaign: "campaign-1", operation: "set_daily_budget",
@@ -51,16 +57,24 @@ describe("AdPilotAgent integration", () => {
     ]);
     const router = new ModelRouter({ fast: { provider: "test", model: "fast" }, strong: { provider: "test", model: "strong" }, gui: { provider: "test", model: "fast" } });
     const approvals = new ApprovalService(workspace, "0123456789abcdef0123456789abcdef");
-    const tools = new AdPilotTools(workspace, new AuditLog(workspace), approvals, new ExperimentStore(workspace));
+    const screenshot: Screenshot = { base64: "screen", width: 100, height: 100, scaleFactor: 1, capturedAt: "2026-01-01T00:00:00.000Z", sha256: "a".repeat(64) };
+    const computer = new VisualComputerRuntime(
+      { capture: async () => screenshot, execute: async () => undefined },
+      { ground: async () => ({ action: "done", target: "campaign table", reason: "table is visible", confidence: 1, expected_result: "campaign table is visible", risk_level: "observe" }) },
+      { verify: async () => ({ matched: true, confidence: 1, reason: "visible" }) }
+    );
+    const tools = new AdPilotTools(workspace, new AuditLog(workspace), approvals, new ExperimentStore(workspace), computer);
     const runtime = new PiAgentRuntime(models, router, workspace, new SkillRegistry(), tools);
     const specialist: SpecialistAgent = {
       role: "performance_analyst", inputSchema: specialistSchemas.PerformanceInput, outputSchema: specialistSchemas.PerformanceOutput,
       execute: async () => ({ calculated: { cpi: null, cpa: 10, roas: null }, findings: [], maturity: "mature", confidence: 1 })
     };
-    const agent = new AdPilotAgent(runtime, new SpecialistCoordinator([specialist]), workspace, tools);
+    const agent = new AdPilotAgent(runtime, new SpecialistCoordinator([specialist, new AccountOperator(tools)]), workspace, tools);
     const result = await agent.runTask("client-a", "Why is CPA high?", { targetCpa: 10 });
     expect(result.task.phase).toBe("awaiting_approval");
     expect(result.specialistResults.performance_analyst).toBeDefined();
+    expect(result.specialistResults.account_operator).toMatchObject({ status: "done" });
+    expect((result.specialistResults.account_operator as { evidence: string[] }).evidence).toContain(`screenshot:${"a".repeat(64)}`);
     expect(result.result.proposedApprovalIds).toHaveLength(1);
     await expect(approvals.list("client-a")).resolves.toMatchObject([{ status: "pending_risk_review", executionPlan: { target: "Save budget" } }]);
     expect((await workspace.readTask("client-a", result.task.id)).nextStep).toBe("Review again in seven days");

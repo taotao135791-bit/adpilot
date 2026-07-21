@@ -2,6 +2,8 @@
 
 AdPilot 是一个可本地运行、可审批、可审计的原生广告优化 Agent。Pi 是唯一主运行时；UI-TARS 只负责“截图到单个视觉动作”的 grounding；广告策略、成熟度、测量可信度、预算/出价安全门和 UAC 实验闭环由确定性内核执行。
 
+![AdPilot 控制台](docs/screenshots/adpilot-console.png)
+
 ## 当前能力
 
 - 一个面向用户的 AdPilot Agent，按调查树调度 Account Operator、Performance Analyst、Media Buyer、Measurement Reviewer、Creative Strategist 和独立 Risk Reviewer。
@@ -53,7 +55,7 @@ pnpm test:ads-core
 pnpm check
 ```
 
-本地视觉闭环使用 `apps/mock-ad-dashboard/index.html`，不会连接真实广告平台。架构边界见 [docs/architecture.md](docs/architecture.md)，安全模型见 [docs/security.md](docs/security.md)，上游升级流程见 [docs/upstream-sync.md](docs/upstream-sync.md)。
+本地视觉闭环使用 `apps/mock-ad-dashboard/index.html`，不会连接真实广告平台。架构边界见 [docs/architecture.md](docs/architecture.md)，模型配置见 [docs/model-configuration.md](docs/model-configuration.md)，Computer Use 权限见 [docs/computer-use-permissions.md](docs/computer-use-permissions.md)，安全模型见 [docs/security.md](docs/security.md)，上游升级流程见 [docs/upstream-sync.md](docs/upstream-sync.md)。测试结果和已知外部限制分别见 [docs/test-report.md](docs/test-report.md) 与 [docs/known-limitations.md](docs/known-limitations.md)。
 
 第三方署名与许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
