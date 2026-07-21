@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { AuditLog } from "@adpilot/audit";
 import { ApprovalService } from "@adpilot/approvals";
 import { VisualComputerRuntime, type Screenshot } from "@adpilot/computer-use";
@@ -81,5 +82,6 @@ describe("AdPilotAgent integration", () => {
     expect(result.result.proposedApprovalIds).toHaveLength(1);
     await expect(approvals.list("client-a")).resolves.toMatchObject([{ status: "pending_risk_review", executionPlan: { target: "Save budget" } }]);
     expect((await workspace.readTask("client-a", result.task.id)).nextStep).toBe("Review again in seven days");
+    await expect(workspace.readJsonl("client-a", "memory/agent.jsonl", z.object({ taskId: z.string().uuid(), summary: z.string() }))).resolves.toMatchObject([{ taskId: result.task.id, summary: "CPA is on target after deterministic review." }]);
   });
 });

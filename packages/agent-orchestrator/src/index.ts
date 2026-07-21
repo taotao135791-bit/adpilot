@@ -4,12 +4,21 @@ import { z } from "zod";
 import { ApprovalExecutionPlan, ApprovalOperation } from "@adpilot/approvals";
 import { PiAgentRuntime } from "@adpilot/runtime";
 import { SpecialistCoordinator } from "@adpilot/specialist-agents";
-import { SpecialistRole, TaskState, type TaskState as Task } from "@adpilot/shared";
+import { Evidence, SpecialistRole, TaskState, type TaskState as Task } from "@adpilot/shared";
 import { WorkspaceStore } from "@adpilot/workspace";
 import { AdPilotTools } from "@adpilot/tools";
 
 const InvestigationNode = z.object({ question: z.string().min(1), specialist: SpecialistRole, status: z.enum(["pending", "complete", "blocked"]), conclusion: z.string().optional() });
-const MainAgentOutput = z.object({ summary: z.string().min(1), investigationTree: z.array(InvestigationNode).min(1), nextStep: z.string().min(1), proposedApprovalIds: z.array(z.string().uuid()).default([]), reviewAt: z.string().datetime().nullable().default(null) });
+const MainAgentOutput = z.object({
+  summary: z.string().min(1), investigationTree: z.array(InvestigationNode).min(1),
+  evidence: z.array(Evidence).default([]), hypotheses: z.array(z.string().min(1)).default([]),
+  nextStep: z.string().min(1), proposedApprovalIds: z.array(z.string().uuid()).default([]),
+  reviewAt: z.string().datetime().nullable().default(null)
+});
+const LongTermMemory = z.object({
+  taskId: z.string().uuid(), at: z.string().datetime(), goal: z.string().min(1), summary: z.string().min(1),
+  nextStep: z.string().min(1), reviewAt: z.string().datetime().nullable(), proposedApprovalIds: z.array(z.string().uuid())
+});
 export type MainAgentOutput = z.infer<typeof MainAgentOutput>;
 
 export class AdPilotAgent {
@@ -23,6 +32,11 @@ export class AdPilotAgent {
   }
 
   async runTask(clientId: string, goal: string, sharedFacts: Record<string, unknown> = {}): Promise<{ task: Task; result: MainAgentOutput; specialistResults: Record<string, unknown> }> {
+    const [clientContext, memory] = await Promise.all([
+      this.workspace.readClient(clientId),
+      this.workspace.readJsonl(clientId, "memory/agent.jsonl", LongTermMemory)
+    ]);
+    const projectFacts = { client: clientContext, supplied: sharedFacts, recentMemory: memory.slice(-20) };
     let task = await this.startTask(clientId, goal);
     task = TaskState.parse({ ...task, phase: "investigating", owner: null, nextStep: "Dispatch specialists and collect evidence", updatedAt: new Date().toISOString() });
     await this.workspace.saveTask(task);
@@ -36,7 +50,7 @@ export class AdPilotAgent {
       executionMode: "sequential",
       execute: async (_id, raw) => {
         const params = z.object({ role: SpecialistRole, input: z.unknown() }).parse(raw);
-        const output = await this.specialists.dispatch(params.role, { context: { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE" }, input: params.input, sharedFacts });
+        const output = await this.specialists.dispatch(params.role, { context: { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE" }, input: params.input, sharedFacts: projectFacts });
         specialistResults[params.role] = output;
         return { content: [{ type: "text", text: JSON.stringify(output) }], details: output };
       }
@@ -62,7 +76,7 @@ export class AdPilotAgent {
         "Review measurement reliability before optimization. Never mutate an account from this conversational run.",
         "For an executable operation, use prepare_approval exactly once per single-variable change. Never invent an approval id and never execute from this run."
       ].join("\n"),
-      prompt: JSON.stringify({ goal, sharedFacts, currentTask: task }),
+      prompt: JSON.stringify({ goal, projectFacts, currentTask: task }),
       signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool]
     }, MainAgentOutput);
     const result = MainAgentOutput.parse({ ...modelResult, proposedApprovalIds: createdApprovalIds });
@@ -70,11 +84,17 @@ export class AdPilotAgent {
       ...task,
       phase: result.proposedApprovalIds.length ? "awaiting_approval" : "completed",
       completedSteps: result.investigationTree.filter((node) => node.status === "complete").map((node) => node.question),
+      evidence: result.evidence,
+      hypotheses: result.hypotheses,
       blockers: result.investigationTree.filter((node) => node.status === "blocked").map((node) => node.conclusion ?? node.question),
       nextStep: result.nextStep, reviewAt: result.reviewAt, updatedAt: new Date().toISOString()
     });
     await this.workspace.saveTask(task);
     await this.workspace.appendJsonl(clientId, "decisions.jsonl", { taskId: task.id, at: new Date().toISOString(), goal, result });
+    await this.workspace.appendJsonl(clientId, "memory/agent.jsonl", LongTermMemory.parse({
+      taskId: task.id, at: new Date().toISOString(), goal, summary: result.summary,
+      nextStep: result.nextStep, reviewAt: result.reviewAt, proposedApprovalIds: result.proposedApprovalIds
+    }));
     return { task, result, specialistResults };
   }
 }
