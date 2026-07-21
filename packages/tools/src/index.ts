@@ -2,7 +2,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import { AuditLog } from "@adpilot/audit";
-import { ApprovalService, type ApprovalOperation } from "@adpilot/approvals";
+import { ApprovalService, type ApprovalExecutionPlan, type ApprovalOperation } from "@adpilot/approvals";
 import {
   CampaignMetrics,
   calculateMetrics,
@@ -53,9 +53,9 @@ export class AdPilotTools {
     return decision;
   }
 
-  async createApproval(context: ToolContext, operation: ApprovalOperation) {
+  async createApproval(context: ToolContext, operation: ApprovalOperation, executionPlan?: ApprovalExecutionPlan) {
     if (context.permission !== "OBSERVE" && context.permission !== "INTERACT" && context.permission !== "MUTATE" && context.permission !== "DESTRUCTIVE") throw new Error("invalid permission context");
-    const approval = await this.approvals.create(context.clientId, context.taskId, operation);
+    const approval = await this.approvals.create(context.clientId, context.taskId, operation, executionPlan);
     await this.audit.append({ clientId: context.clientId, taskId: context.taskId, actor: context.actor, action: "create_approval", status: "succeeded", details: { approvalId: approval.id, operation: approval.operation } });
     return approval;
   }
@@ -70,19 +70,34 @@ export class AdPilotTools {
     if (!this.computer) throw new Error("native computer runtime is unavailable");
     if (task.permission !== context.permission) throw new Error("visual task permission differs from tool context");
     const result = await this.computer.runMicroTask(task);
+    if (result.status === "done") {
+      await this.workspace.writeJson(context.clientId, `screenshots/${context.taskId}-${Date.now()}.json`, {
+        task: { target: task.target, expectedResult: task.expectedResult, riskLevel: task.riskLevel },
+        before: result.before, after: result.after
+      });
+    }
     await this.audit.append({
       clientId: context.clientId, taskId: context.taskId, actor: context.actor,
       action: "execute_visual_task", status: result.status === "done" ? "succeeded" : "failed",
-      details: { status: result.status, attempts: result.attempts, ...(result.status === "failed" ? { blocker: result.blocker } : { action: result.action.action }) }
+      details: { status: result.status, attempts: result.attempts, ...(result.status === "failed" ? { blocker: result.blocker } : { action: result.action.action, beforeHash: result.before.sha256, afterHash: result.after.sha256 }) }
     });
     return result;
   }
 
   async commitApprovedVisualAction(context: ToolContext, approvalId: string, token: string, operation: ApprovalOperation, task: VisualMicroTask): Promise<VisualStepResult> {
     if (context.permission !== "MUTATE" && context.permission !== "DESTRUCTIVE") throw new Error("commit requires mutation permission");
-    await this.approvals.consume(context.clientId, approvalId, token, operation);
+    const executing = await this.approvals.consume(context.clientId, approvalId, token, operation);
     try {
       const result = await this.executeVisualTask(context, task);
+      if (result.status === "done" && executing.executionPlan) {
+        const experiment = await this.experiments.create({
+          ...executing.executionPlan.experiment,
+          clientId: context.clientId,
+          taskId: context.taskId,
+          approvalId
+        });
+        await this.experiments.start(context.clientId, experiment.id);
+      }
       await this.approvals.finish(context.clientId, approvalId, result.status === "done");
       return result;
     } catch (error) {

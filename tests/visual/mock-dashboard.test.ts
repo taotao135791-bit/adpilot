@@ -104,7 +104,15 @@ describe("local mock advertising console", () => {
       expectedImpact: "Increase conversion volume", observationWindow: "7 days",
       rollbackCondition: "CPA rises more than 20%", riskLevel: "mutate" as const
     };
-    const approval = await approvals.create("visual-client", taskId, operation);
+    const approval = await approvals.create("visual-client", taskId, operation, {
+      instruction: "Save the drafted daily budget", target: "Save budget", expectedResult: "budget is saved as 120", surface,
+      experiment: {
+        hypothesis: "A 20% budget increase adds volume without breaking CPA", variable: "daily_budget",
+        baseline: { dailyBudget: 100, cpa: 15.24 }, expected: "More conversions at stable CPA",
+        successCriteria: "CPA stays below 18", failureCriteria: "CPA exceeds 18",
+        maturityWindowDays: 7, rollbackCondition: "CPA rises more than 20%", reviewAt: "2026-08-01T00:00:00.000Z"
+      }
+    });
     await approvals.recordRiskReview("visual-client", approval.id, true, "Within policy and single-variable guardrail");
     const { token } = await approvals.approveByUser("visual-client", approval.id, "test-owner");
     await expect(tools.commitApprovedVisualAction(
@@ -113,6 +121,7 @@ describe("local mock advertising console", () => {
     )).resolves.toMatchObject({ status: "done" });
     expect(operator.state).toMatchObject({ savedBudget: 120, dialog: false, toast: true });
     await expect(approvals.get("visual-client", approval.id)).resolves.toMatchObject({ status: "executed" });
+    await expect(new ExperimentStore(workspace).list("visual-client")).resolves.toMatchObject([{ status: "active", variable: "daily_budget" }]);
   });
 
   it("fails closed for invalid grounding and unexpected popups", async () => {

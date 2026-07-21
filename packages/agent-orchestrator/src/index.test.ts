@@ -24,6 +24,25 @@ describe("AdPilotAgent integration", () => {
     const models = createModels(); models.setProvider(faux.provider);
     faux.setResponses([
       fauxAssistantMessage(fauxToolCall("dispatch_specialist", { role: "performance_analyst", input: { metrics: { spend: 100, conversions: 10, days: 7 }, target: 10, objective: "CPA" } }), { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxToolCall("prepare_approval", {
+        operation: {
+          account: "acct-1", campaign: "campaign-1", operation: "set_daily_budget",
+          currentValue: 100, proposedValue: 110, changePercentage: 10,
+          reason: "Mature performance supports a staged increase", evidence: [`screenshot:${"a".repeat(64)}`],
+          expectedImpact: "Increase qualified volume", observationWindow: "7 days",
+          rollbackCondition: "CPA rises more than 20%", riskLevel: "mutate"
+        },
+        executionPlan: {
+          instruction: "Set the daily budget to 110", target: "Save budget", expectedResult: "Daily budget shows 110",
+          surface: { app: "Browser", domain: "ads.google.com", allowedApps: ["Browser"], allowedDomains: ["ads.google.com"] },
+          experiment: {
+            hypothesis: "A staged budget increase will add volume without breaching CPA", variable: "daily_budget",
+            baseline: { dailyBudget: 100, cpa: 10 }, expected: "More conversions at stable CPA",
+            successCriteria: "CPA remains at or below 12", failureCriteria: "CPA rises above 12",
+            maturityWindowDays: 7, rollbackCondition: "CPA rises more than 20%", reviewAt: "2026-01-08T00:00:00.000Z"
+          }
+        }
+      }), { stopReason: "toolUse" }),
       fauxAssistantMessage(JSON.stringify({
         summary: "CPA is on target after deterministic review.",
         investigationTree: [{ question: "Is performance on target?", specialist: "performance_analyst", status: "complete", conclusion: "CPA equals target" }],
@@ -31,17 +50,19 @@ describe("AdPilotAgent integration", () => {
       }))
     ]);
     const router = new ModelRouter({ fast: { provider: "test", model: "fast" }, strong: { provider: "test", model: "strong" }, gui: { provider: "test", model: "fast" } });
-    const tools = new AdPilotTools(workspace, new AuditLog(workspace), new ApprovalService(workspace, "0123456789abcdef0123456789abcdef"), new ExperimentStore(workspace));
+    const approvals = new ApprovalService(workspace, "0123456789abcdef0123456789abcdef");
+    const tools = new AdPilotTools(workspace, new AuditLog(workspace), approvals, new ExperimentStore(workspace));
     const runtime = new PiAgentRuntime(models, router, workspace, new SkillRegistry(), tools);
     const specialist: SpecialistAgent = {
       role: "performance_analyst", inputSchema: specialistSchemas.PerformanceInput, outputSchema: specialistSchemas.PerformanceOutput,
       execute: async () => ({ calculated: { cpi: null, cpa: 10, roas: null }, findings: [], maturity: "mature", confidence: 1 })
     };
-    const agent = new AdPilotAgent(runtime, new SpecialistCoordinator([specialist]), workspace);
+    const agent = new AdPilotAgent(runtime, new SpecialistCoordinator([specialist]), workspace, tools);
     const result = await agent.runTask("client-a", "Why is CPA high?", { targetCpa: 10 });
-    expect(result.task.phase).toBe("completed");
+    expect(result.task.phase).toBe("awaiting_approval");
     expect(result.specialistResults.performance_analyst).toBeDefined();
+    expect(result.result.proposedApprovalIds).toHaveLength(1);
+    await expect(approvals.list("client-a")).resolves.toMatchObject([{ status: "pending_risk_review", executionPlan: { target: "Save budget" } }]);
     expect((await workspace.readTask("client-a", result.task.id)).nextStep).toBe("Review again in seven days");
   });
 });
-

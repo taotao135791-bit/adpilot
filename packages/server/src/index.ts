@@ -5,7 +5,7 @@ import fastifyStatic from "@fastify/static";
 import Fastify from "fastify";
 import { z } from "zod";
 import type { AdPilotSystem } from "@adpilot/application";
-import { ApprovalOperation } from "@adpilot/approvals";
+import { ApprovalExecutionPlan, ApprovalOperation } from "@adpilot/approvals";
 
 export async function createServer(system: AdPilotSystem, options: { uiRoot?: string } = {}) {
   const app = Fastify({ logger: false });
@@ -61,16 +61,28 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
   app.post("/api/computer/resume", async () => { system.computer?.resume(); return { status: "running" }; });
 
   app.post("/api/approvals", async (request, reply) => {
-    const body = z.object({ clientId: z.string(), taskId: z.string().uuid(), operation: ApprovalOperation }).parse(request.body);
-    const approval = await system.tools.createApproval({ clientId: body.clientId, taskId: body.taskId, actor: "adpilot_agent", permission: "OBSERVE" }, body.operation);
+    const body = z.object({ clientId: z.string(), taskId: z.string().uuid(), operation: ApprovalOperation, executionPlan: ApprovalExecutionPlan.optional() }).parse(request.body);
+    const approval = await system.tools.createApproval({ clientId: body.clientId, taskId: body.taskId, actor: "adpilot_agent", permission: "OBSERVE" }, body.operation, body.executionPlan);
     system.events.publish({ type: "approval", approvalId: approval.id, status: approval.status });
     reply.code(201); return approval;
   });
 
   app.post("/api/approvals/:id/risk-review", async (request) => {
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
-    const body = z.object({ clientId: z.string(), taskId: z.string().uuid(), review: z.record(z.unknown()) }).parse(request.body);
-    const result = await system.specialists.dispatch("risk_reviewer", { context: { clientId: body.clientId, taskId: body.taskId, actor: "adpilot_agent", permission: "OBSERVE" }, input: { ...body.review, approvalId: params.id }, sharedFacts: {} });
+    const body = z.object({ clientId: z.string() }).parse(request.body);
+    const approval = await system.approvals.get(body.clientId, params.id);
+    const result = await system.specialists.dispatch("risk_reviewer", {
+      context: { clientId: body.clientId, taskId: approval.taskId, actor: "adpilot_agent", permission: "OBSERVE" },
+      input: {
+        approvalId: params.id, guardrailAllowed: true, guardrailReasons: [],
+        evidenceCount: approval.operation.evidence.length,
+        hasBeforeScreenshot: approval.operation.evidence.some((item) => /^screenshot:[a-f0-9]{64}$/i.test(item)),
+        executionPlanPresent: approval.executionPlan !== null,
+        singleVariable: true, rollbackDefined: Boolean(approval.operation.rollbackCondition),
+        operationSummary: `${approval.operation.operation} ${approval.operation.campaign}`
+      },
+      sharedFacts: {}
+    });
     system.events.publish({ type: "approval", approvalId: params.id, status: (result as { approved: boolean }).approved ? "pending_user" : "rejected" });
     return result;
   });
@@ -86,10 +98,25 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
 
   app.post("/api/approvals/:id/commit", async (request) => {
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
-    const body = z.object({ clientId: z.string(), taskId: z.string().uuid(), operation: ApprovalOperation, visualTask: z.any() }).parse(request.body);
+    const body = z.object({ clientId: z.string() }).parse(request.body);
+    const approval = await system.approvals.get(body.clientId, params.id);
+    if (!approval.executionPlan) throw new Error("approved operation has no visual execution plan");
+    if (approval.operation.riskLevel !== "mutate" && approval.operation.riskLevel !== "destructive") throw new Error("commit endpoint only accepts mutations");
     const token = system.approvalTokens.get(params.id); if (!token) throw new Error("approval token is absent or already consumed");
     system.approvalTokens.delete(params.id);
-    const result = await system.tools.commitApprovedVisualAction({ clientId: body.clientId, taskId: body.taskId, actor: "account_operator", permission: body.operation.riskLevel === "destructive" ? "DESTRUCTIVE" : "MUTATE" }, params.id, token, body.operation, body.visualTask);
+    const visualTask = {
+      instruction: approval.executionPlan.instruction, target: approval.executionPlan.target,
+      expectedResult: approval.executionPlan.expectedResult,
+      surface: {
+        app: approval.executionPlan.surface.app,
+        allowedApps: approval.executionPlan.surface.allowedApps,
+        allowedDomains: approval.executionPlan.surface.allowedDomains,
+        ...(approval.executionPlan.surface.domain ? { domain: approval.executionPlan.surface.domain } : {})
+      },
+      riskLevel: approval.operation.riskLevel,
+      permission: approval.operation.riskLevel === "destructive" ? "DESTRUCTIVE" as const : "MUTATE" as const
+    };
+    const result = await system.tools.commitApprovedVisualAction({ clientId: body.clientId, taskId: approval.taskId, actor: "account_operator", permission: visualTask.permission }, params.id, token, approval.operation, visualTask);
     system.events.publish({ type: "approval", approvalId: params.id, status: result.status === "done" ? "executed" : "failed" });
     return result;
   });

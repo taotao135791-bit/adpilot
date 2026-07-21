@@ -19,11 +19,36 @@ export const ApprovalOperation = z.object({
 });
 export type ApprovalOperation = z.infer<typeof ApprovalOperation>;
 
+export const ApprovalExecutionPlan = z.object({
+  instruction: z.string().min(1),
+  target: z.string().min(1),
+  expectedResult: z.string().min(1),
+  surface: z.object({
+    app: z.string().min(1),
+    domain: z.string().min(1).optional(),
+    allowedApps: z.array(z.string().min(1)).min(1),
+    allowedDomains: z.array(z.string().min(1)).default([])
+  }),
+  experiment: z.object({
+    hypothesis: z.string().min(1),
+    variable: z.string().min(1),
+    baseline: z.record(z.number()),
+    expected: z.string().min(1),
+    successCriteria: z.string().min(1),
+    failureCriteria: z.string().min(1),
+    maturityWindowDays: z.number().int().positive(),
+    rollbackCondition: z.string().min(1),
+    reviewAt: z.string().datetime()
+  })
+});
+export type ApprovalExecutionPlan = z.infer<typeof ApprovalExecutionPlan>;
+
 export const Approval = z.object({
   id: z.string().uuid(),
   clientId: z.string().min(1),
   taskId: z.string().uuid(),
   operation: ApprovalOperation,
+  executionPlan: ApprovalExecutionPlan.nullable().default(null),
   fingerprint: z.string().min(1),
   status: z.enum(["pending_risk_review", "rejected", "pending_user", "approved", "executing", "executed", "failed", "expired", "cancelled"]),
   riskReview: z.object({ reviewer: z.literal("risk_reviewer"), approved: z.boolean(), reason: z.string().min(1), at: z.string().datetime() }).nullable(),
@@ -46,11 +71,13 @@ export class ApprovalService {
     if (secret.length < 32) throw new Error("approval secret must be at least 32 characters");
   }
 
-  async create(clientId: string, taskId: string, operationInput: ApprovalOperation): Promise<Approval> {
+  async create(clientId: string, taskId: string, operationInput: ApprovalOperation, planInput?: ApprovalExecutionPlan): Promise<Approval> {
     const operation = ApprovalOperation.parse(operationInput);
+    validateNumericChange(operation);
+    const executionPlan = planInput ? ApprovalExecutionPlan.parse(planInput) : null;
     const now = this.clock.now().toISOString();
     const approval = Approval.parse({
-      id: crypto.randomUUID(), clientId, taskId, operation,
+      id: crypto.randomUUID(), clientId, taskId, operation, executionPlan,
       fingerprint: this.fingerprint(operation), status: "pending_risk_review",
       riskReview: null, userApproval: null, tokenNonceHash: null, tokenExpiresAt: null,
       createdAt: now, updatedAt: now
@@ -152,4 +179,14 @@ function safeEqual(left: string, right: string): boolean {
   const a = Buffer.from(left);
   const b = Buffer.from(right);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function validateNumericChange(operation: ApprovalOperation): void {
+  if (typeof operation.currentValue !== "number" || typeof operation.proposedValue !== "number") return;
+  const calculated = ((operation.proposedValue - operation.currentValue) / operation.currentValue) * 100;
+  if (!Number.isFinite(calculated)) throw new ApprovalError("numeric approval values must produce a finite change");
+  if (operation.changePercentage === null || Math.abs(calculated - operation.changePercentage) > 0.01) {
+    throw new ApprovalError("change percentage does not match current and proposed values");
+  }
+  if (Math.abs(calculated) > 20.0001) throw new ApprovalError("change exceeds the 20% deterministic safety cap");
 }

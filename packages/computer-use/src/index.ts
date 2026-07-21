@@ -223,6 +223,7 @@ export class UiTarsNativeOperator implements NativeOperator {
       scaleFactor: screenshot.scaleFactor,
       factors: [1000, 1000]
     });
+    await new Promise((resolve) => setTimeout(resolve, 350));
   }
 }
 

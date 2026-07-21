@@ -37,7 +37,7 @@ import "./styles.css";
 
 type Client = { id: string; name: string; industry: string; timezone: string };
 type Task = { id: string; goal: string; phase: string; completedSteps: string[]; blockers: string[]; nextStep: string | null; owner: string | null; reviewAt: string | null; updatedAt: string };
-type Approval = { id: string; taskId: string; status: string; operation: { account: string; campaign: string; operation: string; currentValue: unknown; proposedValue: unknown; changePercentage: number | null; reason: string; evidence: string[]; expectedImpact: string; observationWindow: string; rollbackCondition: string; riskLevel: string } };
+type Approval = { id: string; taskId: string; status: string; executionPlan: { target: string } | null; operation: { account: string; campaign: string; operation: string; currentValue: unknown; proposedValue: unknown; changePercentage: number | null; reason: string; evidence: string[]; expectedImpact: string; observationWindow: string; rollbackCondition: string; riskLevel: string } };
 type Experiment = { id: string; hypothesis: string; variable: string; status: string; reviewAt: string };
 type Audit = { id: string; actor: string; action: string; status: string; at: string };
 type ProductEvent = { type: string; status?: string; message?: string; approvalId?: string; event?: { type: string; phase?: string; attempt?: number; screenshot?: { base64: string; capturedAt: string }; action?: { action: string; target: string; reason: string }; reason?: string } };
@@ -103,16 +103,18 @@ function App() {
   }
 
   async function riskReview(approval: Approval) {
-    const response = await fetch(`/api/approvals/${approval.id}/risk-review`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
-      clientId, taskId: approval.taskId,
-      review: { guardrailAllowed: true, guardrailReasons: [], evidenceCount: approval.operation.evidence.length, hasBeforeScreenshot: Boolean(latestShot), singleVariable: true, rollbackDefined: Boolean(approval.operation.rollbackCondition), operationSummary: `${approval.operation.operation} ${approval.operation.campaign}` }
-    }) });
+    const response = await fetch(`/api/approvals/${approval.id}/risk-review`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId }) });
     const body = await response.json(); if (!response.ok) setError(body.error ?? "风险复核失败"); await loadState(clientId);
   }
 
   async function approve(approval: Approval) {
     const response = await fetch(`/api/approvals/${approval.id}/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId, approvedBy: "workspace-owner" }) });
     const body = await response.json(); if (!response.ok) setError(body.error ?? "审批失败"); await loadState(clientId);
+  }
+
+  async function commit(approval: Approval) {
+    const response = await fetch(`/api/approvals/${approval.id}/commit`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId }) });
+    const body = await response.json(); if (!response.ok) setError(body.error ?? "执行失败"); await loadState(clientId);
   }
 
   if (loading) return <FluentProvider theme={theme === "dark" ? webDarkTheme : webLightTheme}><div className="boot"><Spinner label="正在载入 AdPilot Workspace" /></div></FluentProvider>;
@@ -215,6 +217,7 @@ function App() {
                 <dl><div><dt>当前</dt><dd>{String(approval.operation.currentValue)}</dd></div><div><dt>建议</dt><dd>{String(approval.operation.proposedValue)}</dd></div></dl>
                 {approval.status === "pending_risk_review" && <Button size="small" onClick={() => void riskReview(approval)}>运行独立风险复核</Button>}
                 {approval.status === "pending_user" && <Button size="small" appearance="primary" onClick={() => void approve(approval)}>批准一次性执行</Button>}
+                {approval.status === "approved" && <Button size="small" appearance="primary" disabled={!approval.executionPlan} onClick={() => void commit(approval)}>{approval.executionPlan ? "执行已批准操作" : "缺少执行计划"}</Button>}
               </article>
             )) : <Empty title="没有待审批操作" body="所有真实修改都会先出现在这里。" />}
           </section>

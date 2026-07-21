@@ -31,7 +31,7 @@ export class AccountOperator implements SpecialistAgent<z.infer<typeof AccountOp
     const input = this.inputSchema.parse(request.input);
     const result = await this.tools.executeVisualTask(request.context, input.visualTask);
     return this.outputSchema.parse(result.status === "done"
-      ? { status: "done", attempts: result.attempts, action: result.action, evidence: [result.before.sha256, result.after.sha256] }
+      ? { status: "done", attempts: result.attempts, action: result.action, evidence: [`screenshot:${result.before.sha256}`, `screenshot:${result.after.sha256}`] }
       : { status: "blocked", attempts: result.attempts, evidence: [], blocker: result.blocker });
   }
 }
@@ -88,7 +88,7 @@ export class CreativeStrategist extends PiSpecialist<z.infer<typeof CreativeInpu
   readonly allowedSkills = ["detect-creative-fatigue"]; readonly mission = "Analyze creative angle, fatigue and performance, then propose single-variable creative tests.";
 }
 
-const RiskInput = z.object({ approvalId: z.string().uuid(), guardrailAllowed: z.boolean(), guardrailReasons: z.array(z.string()), evidenceCount: z.number().int().nonnegative(), hasBeforeScreenshot: z.boolean(), singleVariable: z.boolean(), rollbackDefined: z.boolean(), operationSummary: z.string().min(1) });
+const RiskInput = z.object({ approvalId: z.string().uuid(), guardrailAllowed: z.boolean(), guardrailReasons: z.array(z.string()), evidenceCount: z.number().int().nonnegative(), hasBeforeScreenshot: z.boolean(), executionPlanPresent: z.boolean(), singleVariable: z.boolean(), rollbackDefined: z.boolean(), operationSummary: z.string().min(1) });
 const RiskOutput = z.object({ approved: z.boolean(), reason: z.string().min(1), vetoes: z.array(z.string()), requiredChecks: z.array(z.string()) });
 export class RiskReviewer extends PiSpecialist<z.infer<typeof RiskInput>, z.infer<typeof RiskOutput>> {
   readonly role = "risk_reviewer" as const; readonly inputSchema = RiskInput; readonly outputSchema = RiskOutput;
@@ -99,6 +99,7 @@ export class RiskReviewer extends PiSpecialist<z.infer<typeof RiskInput>, z.infe
     if (!input.guardrailAllowed) vetoes.push(...input.guardrailReasons.length ? input.guardrailReasons : ["deterministic guardrail denied the operation"]);
     if (input.evidenceCount < 1) vetoes.push("no evidence is attached");
     if (!input.hasBeforeScreenshot) vetoes.push("before screenshot is missing");
+    if (!input.executionPlanPresent) vetoes.push("visual execution plan is missing");
     if (!input.singleVariable) vetoes.push("operation changes more than one variable");
     if (!input.rollbackDefined) vetoes.push("rollback condition is missing");
     const result = vetoes.length

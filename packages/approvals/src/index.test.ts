@@ -45,5 +45,10 @@ describe("ApprovalService", () => {
     now = new Date("2026-01-01T00:06:00Z");
     await expect(service.consume("client-a", created.id, token, operation)).rejects.toThrow("expired");
   });
-});
 
+  it("rejects inconsistent or over-cap numeric proposals before review", async () => {
+    const { service } = await fixture();
+    await expect(service.create("client-a", crypto.randomUUID(), { ...operation, proposedValue: 130, changePercentage: 10 })).rejects.toThrow("does not match");
+    await expect(service.create("client-a", crypto.randomUUID(), { ...operation, proposedValue: 130, changePercentage: 30 })).rejects.toThrow("20%");
+  });
+});

@@ -1,17 +1,19 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { z } from "zod";
+import { ApprovalExecutionPlan, ApprovalOperation } from "@adpilot/approvals";
 import { PiAgentRuntime } from "@adpilot/runtime";
 import { SpecialistCoordinator } from "@adpilot/specialist-agents";
 import { SpecialistRole, TaskState, type TaskState as Task } from "@adpilot/shared";
 import { WorkspaceStore } from "@adpilot/workspace";
+import { AdPilotTools } from "@adpilot/tools";
 
 const InvestigationNode = z.object({ question: z.string().min(1), specialist: SpecialistRole, status: z.enum(["pending", "complete", "blocked"]), conclusion: z.string().optional() });
 const MainAgentOutput = z.object({ summary: z.string().min(1), investigationTree: z.array(InvestigationNode).min(1), nextStep: z.string().min(1), proposedApprovalIds: z.array(z.string().uuid()).default([]), reviewAt: z.string().datetime().nullable().default(null) });
 export type MainAgentOutput = z.infer<typeof MainAgentOutput>;
 
 export class AdPilotAgent {
-  constructor(private readonly runtime: PiAgentRuntime, private readonly specialists: SpecialistCoordinator, private readonly workspace: WorkspaceStore) {}
+  constructor(private readonly runtime: PiAgentRuntime, private readonly specialists: SpecialistCoordinator, private readonly workspace: WorkspaceStore, private readonly tools: AdPilotTools) {}
 
   async startTask(clientId: string, goal: string): Promise<Task> {
     const now = new Date().toISOString();
@@ -25,6 +27,7 @@ export class AdPilotAgent {
     task = TaskState.parse({ ...task, phase: "investigating", owner: null, nextStep: "Dispatch specialists and collect evidence", updatedAt: new Date().toISOString() });
     await this.workspace.saveTask(task);
     const specialistResults: Record<string, unknown> = {};
+    const createdApprovalIds: string[] = [];
     const dispatchTool: AgentTool = {
       name: "dispatch_specialist",
       label: "Dispatch an isolated specialist",
@@ -38,17 +41,31 @@ export class AdPilotAgent {
         return { content: [{ type: "text", text: JSON.stringify(output) }], details: output };
       }
     };
-    const result = await this.runtime.runStructured({
+    const prepareApprovalTool: AgentTool = {
+      name: "prepare_approval",
+      label: "Prepare an approval request",
+      description: "Persist one exact, evidence-backed advertising operation and its visual execution plan. This does not approve or execute it.",
+      parameters: Type.Object({ operation: Type.Unknown(), executionPlan: Type.Unknown() }),
+      executionMode: "sequential",
+      execute: async (_id, raw) => {
+        const params = z.object({ operation: ApprovalOperation, executionPlan: ApprovalExecutionPlan }).parse(raw);
+        const approval = await this.tools.createApproval({ clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE" }, params.operation, params.executionPlan);
+        createdApprovalIds.push(approval.id);
+        return { content: [{ type: "text", text: JSON.stringify({ approvalId: approval.id, status: approval.status }) }], details: { approvalId: approval.id, status: approval.status } };
+      }
+    };
+    const modelResult = await this.runtime.runStructured({
       context: { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE", sessionId: crypto.randomUUID(), role: "adpilot_agent" },
       systemPrompt: [
         "You are AdPilot Agent, the single user-facing owner of an advertising account.",
         "Maintain the goal and investigation tree, proactively gather evidence, use specialists as bounded experts, and make the final synthesis yourself.",
         "Review measurement reliability before optimization. Never mutate an account from this conversational run.",
-        "For operation ideas, create a structured recommendation and leave execution to the approval queue."
+        "For an executable operation, use prepare_approval exactly once per single-variable change. Never invent an approval id and never execute from this run."
       ].join("\n"),
       prompt: JSON.stringify({ goal, sharedFacts, currentTask: task }),
-      signals: { task: "planning" }, tools: [dispatchTool]
+      signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool]
     }, MainAgentOutput);
+    const result = MainAgentOutput.parse({ ...modelResult, proposedApprovalIds: createdApprovalIds });
     task = TaskState.parse({
       ...task,
       phase: result.proposedApprovalIds.length ? "awaiting_approval" : "completed",
@@ -63,4 +80,3 @@ export class AdPilotAgent {
 }
 
 export { MainAgentOutput };
-

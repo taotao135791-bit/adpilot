@@ -75,6 +75,9 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^3.2.4
         version: 3.2.7(vitest@3.2.7(@types/node@24.13.3)(tsx@4.23.1)(yaml@2.9.0))
+      playwright-core:
+        specifier: 1.56.0
+        version: 1.56.0
       tsup:
         specifier: ^8.5.0
         version: 8.5.1(postcss@8.5.20)(tsx@4.23.1)(typescript@5.9.3)(yaml@2.9.0)
@@ -91,9 +94,15 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@24.13.3)(tsx@4.23.1)(yaml@2.9.0)
 
+  apps/cli: {}
+
+  apps/desktop: {}
+
   packages/advertising-core: {}
 
   packages/agent-orchestrator: {}
+
+  packages/application: {}
 
   packages/approvals: {}
 
@@ -106,6 +115,8 @@ importers:
   packages/model-router: {}
 
   packages/runtime: {}
+
+  packages/server: {}
 
   packages/shared: {}
 
@@ -2768,6 +2779,11 @@ packages:
 
   pkg-types@1.3.1:
     resolution: {integrity: sha512-/Jm5M4RvtBFVkKWRu2BLUTNP8/M2a+UwuAX+ae4770q1qVGtfjG+WTCupoZixokjmHiry8uI+dlY8KXYV5HVVQ==}
+
+  playwright-core@1.56.0:
+    resolution: {integrity: sha512-1SXl7pMfemAMSDn5rkPeZljxOCYAmQnYLBTExuh6E8USHXGSX3dx6lYZN/xPpTz1vimXmPA9CDnILvmJaB8aSQ==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   pngjs@3.4.0:
     resolution: {integrity: sha512-NCrCHhWmnQklfH4MtJMRjZ2a8c80qXeMlQMv2uVp9ISJMTt562SbGd6n2oq0PaPgKm7Z6pL9E2UlLIhC+SHL3w==}
@@ -6820,6 +6836,8 @@ snapshots:
       confbox: 0.1.8
       mlly: 1.8.2
       pathe: 2.0.3
+
+  playwright-core@1.56.0: {}
 
   pngjs@3.4.0: {}
 
