@@ -12,6 +12,7 @@ import { SkillRegistry } from "@adpilot/skills";
 import { AccountOperator, CreativeStrategist, MediaBuyer, MeasurementReviewer, PerformanceAnalyst, RiskReviewer, SpecialistCoordinator } from "@adpilot/specialist-agents";
 import { AdPilotTools } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
+import { SettingsStore } from "@adpilot/configuration";
 
 export type ProductEvent =
   | { type: "task"; status: string; taskId?: string; message: string }
@@ -29,6 +30,7 @@ export class ProductEventBus {
 
 export interface AdPilotSystem {
   workspace: WorkspaceStore;
+  settings: SettingsStore;
   audit: AuditLog;
   approvals: ApprovalService;
   experiments: ExperimentStore;
@@ -44,10 +46,13 @@ export interface AdPilotSystem {
 }
 
 export async function createAdPilotSystem(options: { workspaceRoot?: string; env?: NodeJS.ProcessEnv } = {}): Promise<AdPilotSystem> {
-  const env = options.env ?? process.env;
-  const workspace = new WorkspaceStore(options.workspaceRoot ?? env.ADPILOT_WORKSPACE ?? resolve(process.cwd(), "workspace"));
+  const baseEnv = options.env ?? process.env;
+  const workspaceRoot = options.workspaceRoot ?? baseEnv.ADPILOT_WORKSPACE ?? resolve(process.cwd(), "workspace");
+  const settings = new SettingsStore(workspaceRoot, baseEnv);
+  const env = await settings.effectiveEnv();
+  const workspace = new WorkspaceStore(workspaceRoot);
   const events = new ProductEventBus();
-  const secret = await loadApprovalSecret(options.workspaceRoot ?? env.ADPILOT_WORKSPACE ?? resolve(process.cwd(), "workspace"), env.ADPILOT_APPROVAL_SECRET);
+  const secret = await loadApprovalSecret(workspaceRoot, env.ADPILOT_APPROVAL_SECRET);
   const audit = new AuditLog(workspace);
   const approvals = new ApprovalService(workspace, secret);
   const experiments = new ExperimentStore(workspace);
@@ -82,7 +87,7 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     message: task.owner ? `${task.owner} is working` : task.nextStep ?? task.goal
   }));
   return {
-    workspace, audit, approvals, experiments, tools, skills, runtime, specialists, agent, computer, events,
+    workspace, settings, audit, approvals, experiments, tools, skills, runtime, specialists, agent, computer, events,
     approvalTokens: new Map(),
     modelStatus: {
       fast: `${env.ADPILOT_FAST_PROVIDER ?? "openai"}/${env.ADPILOT_FAST_MODEL ?? "gpt-5-mini"}`,

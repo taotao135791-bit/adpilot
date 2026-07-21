@@ -17,6 +17,17 @@ describe("product server", () => {
     const about = await server.inject({ method: "GET", url: "/api/about" });
     expect(about.statusCode).toBe(200);
     expect(about.json()).toMatchObject({ name: "AdPilot", runtime: { name: "Pi" }, computerUse: { name: "UI-TARS" } });
+    const settings = await server.inject({ method: "GET", url: "/api/settings" });
+    expect(settings.statusCode).toBe(200);
+    expect(settings.json().catalog.providers.length).toBeGreaterThanOrEqual(30);
+    const savedSettings = await server.inject({
+      method: "PUT", url: "/api/settings",
+      payload: { locale: "zh-CN", appearance: "dark", models: { fast: { provider: "openai", model: "gpt-5-mini" }, strong: { provider: "openai", model: "gpt-5.2" } }, env: { OPENAI_API_KEY: "private-value" } }
+    });
+    expect(savedSettings.json()).toEqual({ saved: true, restartRequired: true });
+    const updatedSettings = await server.inject({ method: "GET", url: "/api/settings" });
+    expect(updatedSettings.json().configured.OPENAI_API_KEY).toBe(true);
+    expect(JSON.stringify(updatedSettings.json())).not.toContain("private-value");
 
     const taskId = crypto.randomUUID();
     const operation = {

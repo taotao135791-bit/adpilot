@@ -6,6 +6,7 @@ import Fastify from "fastify";
 import { z } from "zod";
 import type { AdPilotSystem } from "@adpilot/application";
 import { ApprovalExecutionPlan, ApprovalOperation } from "@adpilot/approvals";
+import { SettingsUpdate } from "@adpilot/configuration";
 
 export async function createServer(system: AdPilotSystem, options: { uiRoot?: string } = {}) {
   const app = Fastify({ logger: false });
@@ -18,6 +19,12 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     computerUse: { name: "UI-TARS", version: "1.2.3", license: "Apache-2.0" },
     advertisingCore: { upstream: "codex-ads", version: "1.9.2", license: "MIT" }
   }));
+  app.get("/api/settings", async () => system.settings.publicView());
+  app.put("/api/settings", async (request) => {
+    const body = SettingsUpdate.parse(request.body);
+    await system.settings.save(body);
+    return { saved: true, restartRequired: true };
+  });
   app.get("/api/state", async (request) => {
     const query = z.object({ clientId: z.string().optional() }).parse(request.query);
     const clients = await system.workspace.listClients();
