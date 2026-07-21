@@ -4,12 +4,15 @@ import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import Fastify from "fastify";
 import { z } from "zod";
+import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import type { AdPilotSystem } from "@adpilot/application";
 import { ApprovalExecutionPlan, ApprovalOperation } from "@adpilot/approvals";
 import { SettingsUpdate } from "@adpilot/configuration";
 
-export async function createServer(system: AdPilotSystem, options: { uiRoot?: string } = {}) {
+export async function createServer(system: AdPilotSystem, options: { uiRoot?: string; onRestartRequested?: () => void } = {}) {
   const app = Fastify({ logger: false });
+  type AuthSession = { id: string; providerId: string; status: "running" | "complete" | "failed"; events: AuthEvent[]; prompt?: AuthPrompt; answer?: (value: string) => void; error?: string };
+  const authSessions = new Map<string, AuthSession>();
   await app.register(cors, { origin: false });
 
   app.get("/api/health", async () => ({ status: "ok", guiConfigured: system.modelStatus.guiConfigured }));
@@ -19,11 +22,57 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     computerUse: { name: "UI-TARS", version: "1.2.3", license: "Apache-2.0" },
     advertisingCore: { upstream: "codex-ads", version: "1.9.2", license: "MIT" }
   }));
-  app.get("/api/settings", async () => system.settings.publicView());
+  app.get("/api/settings", async () => {
+    const view = await system.settings.publicView();
+    const credentialList = await system.credentials.list();
+    const stored = new Set(credentialList.map((item) => item.providerId));
+    const providerConfigured = Object.fromEntries(view.catalog.providers.map((provider) => [provider.id, stored.has(provider.id) || provider.fields.some((field) => view.configured[field.env])]));
+    return { ...view, providerConfigured, providerCredentials: Object.fromEntries(credentialList.map((item) => [item.providerId, item.type])), restartAvailable: Boolean(options.onRestartRequested) };
+  });
   app.put("/api/settings", async (request) => {
     const body = SettingsUpdate.parse(request.body);
     await system.settings.save(body);
     return { saved: true, restartRequired: true };
+  });
+  app.post("/api/settings/restart", async (_request, reply) => {
+    if (!options.onRestartRequested) return reply.code(409).send({ error: "restart is only available in the native desktop app" });
+    reply.send({ restarting: true });
+    setTimeout(options.onRestartRequested, 80);
+  });
+  app.post("/api/settings/oauth/:providerId", async (request, reply) => {
+    const { providerId } = z.object({ providerId: z.string() }).parse(request.params);
+    const provider = system.models.getProvider(providerId);
+    if (!provider?.auth.oauth) return reply.code(400).send({ error: "provider does not support OAuth" });
+    const id = crypto.randomUUID();
+    const session: AuthSession = { id, providerId, status: "running", events: [] };
+    authSessions.set(id, session);
+    void system.models.login(providerId, "oauth", {
+      notify: (event) => { session.events.push(event); },
+      prompt: (prompt) => new Promise<string>((resolve, reject) => {
+        session.prompt = prompt;
+        session.answer = (value) => { delete session.prompt; delete session.answer; resolve(value); };
+        prompt.signal?.addEventListener("abort", () => reject(new Error("authorization prompt cancelled")), { once: true });
+      })
+    }).then(() => { session.status = "complete"; }).catch((error) => { session.status = "failed"; session.error = error instanceof Error ? error.message : String(error); });
+    reply.code(202); return { id };
+  });
+  app.get("/api/settings/oauth/session/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const session = authSessions.get(id);
+    if (!session) return reply.code(404).send({ error: "authorization session not found" });
+    return { id: session.id, providerId: session.providerId, status: session.status, events: session.events, prompt: session.prompt ? { ...session.prompt, signal: undefined } : undefined, error: session.error };
+  });
+  app.post("/api/settings/oauth/session/:id/respond", async (request, reply) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const { value } = z.object({ value: z.string() }).parse(request.body);
+    const session = authSessions.get(id);
+    if (!session?.answer) return reply.code(409).send({ error: "authorization is not waiting for input" });
+    session.answer(value); return { accepted: true };
+  });
+  app.delete("/api/settings/oauth/:providerId", async (request) => {
+    const { providerId } = z.object({ providerId: z.string() }).parse(request.params);
+    await system.models.logout(providerId);
+    return { disconnected: true };
   });
   app.get("/api/state", async (request) => {
     const query = z.object({ clientId: z.string().optional() }).parse(request.query);

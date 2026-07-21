@@ -2,7 +2,7 @@ import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { getModelCatalog, SettingsStore } from "./index.js";
+import { getModelCatalog, SettingsStore, WorkspaceCredentialStore } from "./index.js";
 
 describe("SettingsStore", () => {
   it("publishes the Pi catalog without exposing secrets and persists valid routing", async () => {
@@ -32,5 +32,16 @@ describe("SettingsStore", () => {
     const store = new SettingsStore(root, {});
     await expect(store.save({ locale: "zh-CN", appearance: "dark", models: { fast: { provider: "openai", model: "not-real" }, strong: { provider: "openai", model: "gpt-5.2" } }, env: {} })).rejects.toThrow("model not found");
     await expect(store.save({ locale: "zh-CN", appearance: "dark", models: { fast: { provider: "openai", model: "gpt-5-mini" }, strong: { provider: "openai", model: "gpt-5.2" } }, env: { PATH: "/tmp" } })).rejects.toThrow("unsupported setting");
+  });
+
+  it("persists Pi OAuth credentials privately for the CLI and desktop runtime", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-auth-"));
+    const store = new WorkspaceCredentialStore(root);
+    await store.modify("openai-codex", async () => ({ type: "oauth", access: "access-secret", refresh: "refresh-secret", expires: Date.now() + 60_000 }));
+    expect(await store.list()).toEqual([{ providerId: "openai-codex", type: "oauth" }]);
+    expect(await store.read("openai-codex")).toMatchObject({ type: "oauth", access: "access-secret" });
+    expect((await stat(store.path)).mode & 0o777).toBe(0o600);
+    await store.delete("openai-codex");
+    expect(await store.read("openai-codex")).toBeUndefined();
   });
 });

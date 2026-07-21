@@ -12,7 +12,8 @@ import { SkillRegistry } from "@adpilot/skills";
 import { AccountOperator, CreativeStrategist, MediaBuyer, MeasurementReviewer, PerformanceAnalyst, RiskReviewer, SpecialistCoordinator } from "@adpilot/specialist-agents";
 import { AdPilotTools } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
-import { SettingsStore } from "@adpilot/configuration";
+import { SettingsStore, WorkspaceCredentialStore } from "@adpilot/configuration";
+import type { Models } from "@earendil-works/pi-ai";
 
 export type ProductEvent =
   | { type: "task"; status: string; taskId?: string; message: string }
@@ -31,6 +32,8 @@ export class ProductEventBus {
 export interface AdPilotSystem {
   workspace: WorkspaceStore;
   settings: SettingsStore;
+  credentials: WorkspaceCredentialStore;
+  models: Models;
   audit: AuditLog;
   approvals: ApprovalService;
   experiments: ExperimentStore;
@@ -49,6 +52,7 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   const baseEnv = options.env ?? process.env;
   const workspaceRoot = options.workspaceRoot ?? baseEnv.ADPILOT_WORKSPACE ?? resolve(process.cwd(), "workspace");
   const settings = new SettingsStore(workspaceRoot, baseEnv);
+  const credentials = new WorkspaceCredentialStore(workspaceRoot);
   const env = await settings.effectiveEnv();
   const workspace = new WorkspaceStore(workspaceRoot);
   const events = new ProductEventBus();
@@ -69,7 +73,7 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   const tools = new AdPilotTools(workspace, audit, approvals, experiments, computer);
   const skills = new SkillRegistry();
   const router = modelRouterFromEnv(env);
-  const models = createPiModels();
+  const models = createPiModels(env, credentials);
   const runtime = new PiAgentRuntime(models, router, workspace, skills, tools, [{
     name: "product-events",
     onError: (error) => events.publish({ type: "error", message: error.message, retryable: true })
@@ -87,7 +91,7 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     message: task.owner ? `${task.owner} is working` : task.nextStep ?? task.goal
   }));
   return {
-    workspace, settings, audit, approvals, experiments, tools, skills, runtime, specialists, agent, computer, events,
+    workspace, settings, credentials, models, audit, approvals, experiments, tools, skills, runtime, specialists, agent, computer, events,
     approvalTokens: new Map(),
     modelStatus: {
       fast: `${env.ADPILOT_FAST_PROVIDER ?? "openai"}/${env.ADPILOT_FAST_MODEL ?? "gpt-5-mini"}`,

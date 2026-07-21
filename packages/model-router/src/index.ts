@@ -1,5 +1,5 @@
 import { access } from "node:fs/promises";
-import { createModels, type Model, type Api, type Models } from "@earendil-works/pi-ai";
+import { createModels, type Model, type Api, type CredentialStore, type Models } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { ModelTier } from "@adpilot/shared";
 
@@ -54,10 +54,11 @@ export class ModelRouter {
   }
 }
 
-export function createPiModels(): Models {
+export function createPiModels(env: NodeJS.ProcessEnv = process.env, credentials?: CredentialStore): Models {
   const models = createModels({
+    ...(credentials ? { credentials } : {}),
     authContext: {
-      env: async (name) => process.env[name],
+      env: async (name) => env[name],
       fileExists: async (path) => access(path).then(() => true).catch(() => false)
     }
   });
@@ -80,4 +81,3 @@ export function modelRouterFromEnv(env: NodeJS.ProcessEnv = process.env): ModelR
     gui: { provider: "ui-grounding", model: env.ADPILOT_GUI_MODEL ?? "ui-tars-1.5" }
   });
 }
-

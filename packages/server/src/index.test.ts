@@ -9,8 +9,11 @@ describe("product server", () => {
   it("serves workspace state and keeps one-time approval tokens off the HTTP response", async () => {
     const root = await mkdtemp(join(tmpdir(), "adpilot-server-"));
     const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+    await system.credentials.modify("openai-codex", async () => ({ type: "oauth", access: "oauth-access-secret", refresh: "oauth-refresh-secret", expires: Date.now() + 60_000 }));
     await system.workspace.initializeClient({ profile: { id: "client-a", name: "Example" }, kpi: { primary: "CPA", target: 10 } });
-    const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
+    let signalRestart: (() => void) | undefined;
+    const restarted = new Promise<void>((resolve) => { signalRestart = resolve; });
+    const server = await createServer(system, { uiRoot: join(root, "missing-ui"), onRestartRequested: () => signalRestart?.() });
     const state = await server.inject({ method: "GET", url: "/api/state?clientId=client-a" });
     expect(state.statusCode).toBe(200);
     expect(state.json().clients[0].name).toBe("Example");
@@ -20,6 +23,9 @@ describe("product server", () => {
     const settings = await server.inject({ method: "GET", url: "/api/settings" });
     expect(settings.statusCode).toBe(200);
     expect(settings.json().catalog.providers.length).toBeGreaterThanOrEqual(30);
+    expect(settings.json().restartAvailable).toBe(true);
+    expect(settings.json().providerCredentials["openai-codex"]).toBe("oauth");
+    expect(JSON.stringify(settings.json())).not.toContain("oauth-access-secret");
     const savedSettings = await server.inject({
       method: "PUT", url: "/api/settings",
       payload: { locale: "zh-CN", appearance: "dark", models: { fast: { provider: "openai", model: "gpt-5-mini" }, strong: { provider: "openai", model: "gpt-5.2" } }, env: { OPENAI_API_KEY: "private-value" } }
@@ -28,6 +34,9 @@ describe("product server", () => {
     const updatedSettings = await server.inject({ method: "GET", url: "/api/settings" });
     expect(updatedSettings.json().configured.OPENAI_API_KEY).toBe(true);
     expect(JSON.stringify(updatedSettings.json())).not.toContain("private-value");
+    const restart = await server.inject({ method: "POST", url: "/api/settings/restart" });
+    expect(restart.json()).toEqual({ restarting: true });
+    await restarted;
 
     const taskId = crypto.randomUUID();
     const operation = {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 import { z } from "zod";
 
 export type Locale = "zh-CN" | "en";
@@ -119,6 +120,12 @@ const StoredSettings = z.object({
 });
 type StoredSettingsData = z.infer<typeof StoredSettings>;
 
+const PiCredential = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("api_key"), key: z.string().optional(), env: z.record(z.string(), z.string()).optional() }),
+  z.object({ type: z.literal("oauth"), refresh: z.string(), access: z.string(), expires: z.number() }).passthrough()
+]);
+const StoredCredentials = z.object({ version: z.literal(1), credentials: z.record(z.string(), PiCredential).default({}) });
+
 export interface ModelCatalog {
   providers: Array<{
     id: string;
@@ -217,6 +224,75 @@ export class SettingsStore {
     const temporary = `${this.path}.${randomUUID()}.tmp`;
     await writeFile(temporary, `${JSON.stringify(this.data, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     await rename(temporary, this.path);
+  }
+}
+
+/** Persistent Pi credentials shared by the CLI and native desktop runtime. */
+export class WorkspaceCredentialStore implements CredentialStore {
+  readonly path: string;
+  private data: Record<string, Credential> | undefined;
+  private readonly chains = new Map<string, Promise<unknown>>();
+  private writeChain: Promise<void> = Promise.resolve();
+
+  constructor(readonly workspaceRoot: string) {
+    this.path = resolve(workspaceRoot, ".adpilot", "pi-auth.json");
+  }
+
+  async read(providerId: string): Promise<Credential | undefined> {
+    const credential = (await this.load())[providerId];
+    return credential ? structuredClone(credential) : undefined;
+  }
+
+  async list(): Promise<readonly CredentialInfo[]> {
+    return Object.entries(await this.load()).map(([providerId, credential]) => ({ providerId, type: credential.type }));
+  }
+
+  modify(providerId: string, fn: (current: Credential | undefined) => Promise<Credential | undefined>): Promise<Credential | undefined> {
+    return this.enqueue(providerId, async () => {
+      const credentials = await this.load();
+      const current = credentials[providerId];
+      const next = await fn(current ? structuredClone(current) : undefined);
+      if (next === undefined) return current ? structuredClone(current) : undefined;
+      credentials[providerId] = PiCredential.parse(next) as Credential;
+      await this.persist();
+      return structuredClone(credentials[providerId]);
+    });
+  }
+
+  delete(providerId: string): Promise<void> {
+    return this.enqueue(providerId, async () => {
+      const credentials = await this.load();
+      if (!(providerId in credentials)) return;
+      delete credentials[providerId];
+      await this.persist();
+    });
+  }
+
+  private async load(): Promise<Record<string, Credential>> {
+    if (this.data) return this.data;
+    try { this.data = StoredCredentials.parse(JSON.parse(await readFile(this.path, "utf8"))).credentials as Record<string, Credential>; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      this.data = {};
+    }
+    return this.data;
+  }
+
+  private async persist(): Promise<void> {
+    this.writeChain = this.writeChain.then(async () => {
+      await mkdir(resolve(this.workspaceRoot, ".adpilot"), { recursive: true, mode: 0o700 });
+      const temporary = `${this.path}.${randomUUID()}.tmp`;
+      await writeFile(temporary, `${JSON.stringify({ version: 1, credentials: this.data }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+      await rename(temporary, this.path);
+    });
+    return this.writeChain;
+  }
+
+  private enqueue<T>(providerId: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.chains.get(providerId) ?? Promise.resolve();
+    const next = (async () => { await previous.catch(() => undefined); return task(); })();
+    this.chains.set(providerId, next.catch(() => undefined));
+    return next;
   }
 }
 

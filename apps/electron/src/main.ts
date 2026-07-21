@@ -36,7 +36,10 @@ async function openDesktop(): Promise<void> {
   loadEnvironment();
   const workspaceRoot = process.env.ADPILOT_WORKSPACE ?? join(app.getPath("userData"), "workspace");
   const system = await createAdPilotSystem({ workspaceRoot });
-  localServer = await createServer(system, { uiRoot: desktopUiRoot() });
+  localServer = await createServer(system, {
+    uiRoot: desktopUiRoot(),
+    onRestartRequested: () => { app.relaunch(); app.quit(); }
+  });
   const localUrl = await localServer.listen({ host: "127.0.0.1", port: 0 });
 
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
