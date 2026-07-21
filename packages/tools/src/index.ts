@@ -1,0 +1,141 @@
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { Type } from "@earendil-works/pi-ai";
+import { z } from "zod";
+import { AuditLog } from "@adpilot/audit";
+import { ApprovalService, type ApprovalOperation } from "@adpilot/approvals";
+import {
+  CampaignMetrics,
+  calculateMetrics,
+  assessMaturity,
+  reviewMeasurementReliability,
+  evaluateChangeGuardrail,
+  ChangeGuardrailInput
+} from "@adpilot/advertising-core";
+import { ExperimentStore, type Experiment } from "@adpilot/experiments";
+import { WorkspaceStore } from "@adpilot/workspace";
+import { VisualComputerRuntime, type VisualMicroTask, type VisualStepResult } from "@adpilot/computer-use";
+import type { PermissionLevel } from "@adpilot/shared";
+
+export interface ToolContext {
+  clientId: string;
+  taskId: string;
+  actor: string;
+  permission: PermissionLevel;
+}
+
+export class AdPilotTools {
+  constructor(
+    readonly workspace: WorkspaceStore,
+    readonly audit: AuditLog,
+    readonly approvals: ApprovalService,
+    readonly experiments: ExperimentStore,
+    readonly computer?: VisualComputerRuntime
+  ) {}
+
+  async readWorkspace(context: ToolContext) {
+    const client = await this.workspace.readClient(context.clientId);
+    await this.audit.append({ clientId: context.clientId, taskId: context.taskId, actor: context.actor, action: "read_workspace", status: "succeeded", details: {} });
+    return client;
+  }
+
+  analyzePerformance(context: ToolContext, input: z.input<typeof CampaignMetrics>) {
+    const metrics = CampaignMetrics.parse(input);
+    const calculated = calculateMetrics(metrics);
+    const maturity = assessMaturity(metrics);
+    const reliability = reviewMeasurementReliability(metrics);
+    void this.audit.append({ clientId: context.clientId, taskId: context.taskId, actor: context.actor, action: "analyze_performance", status: "succeeded", details: { calculated, maturity, reliability } });
+    return { metrics, calculated, maturity, reliability };
+  }
+
+  evaluateChange(context: ToolContext, input: z.input<typeof ChangeGuardrailInput>) {
+    const decision = evaluateChangeGuardrail(ChangeGuardrailInput.parse(input));
+    void this.audit.append({ clientId: context.clientId, taskId: context.taskId, actor: context.actor, action: "evaluate_change_guardrail", status: decision.allowed ? "succeeded" : "denied", details: decision });
+    return decision;
+  }
+
+  async createApproval(context: ToolContext, operation: ApprovalOperation) {
+    if (context.permission !== "OBSERVE" && context.permission !== "INTERACT" && context.permission !== "MUTATE" && context.permission !== "DESTRUCTIVE") throw new Error("invalid permission context");
+    const approval = await this.approvals.create(context.clientId, context.taskId, operation);
+    await this.audit.append({ clientId: context.clientId, taskId: context.taskId, actor: context.actor, action: "create_approval", status: "succeeded", details: { approvalId: approval.id, operation: approval.operation } });
+    return approval;
+  }
+
+  async writeExperiment(context: ToolContext, input: Omit<Experiment, "id" | "status" | "finalConclusion" | "startedAt" | "completedAt" | "createdAt" | "updatedAt">) {
+    const experiment = await this.experiments.create(input);
+    await this.audit.append({ clientId: context.clientId, taskId: context.taskId, actor: context.actor, action: "write_experiment", status: "succeeded", details: { experimentId: experiment.id, variable: experiment.variable } });
+    return experiment;
+  }
+
+  async executeVisualTask(context: ToolContext, task: VisualMicroTask): Promise<VisualStepResult> {
+    if (!this.computer) throw new Error("native computer runtime is unavailable");
+    if (task.permission !== context.permission) throw new Error("visual task permission differs from tool context");
+    const result = await this.computer.runMicroTask(task);
+    await this.audit.append({
+      clientId: context.clientId, taskId: context.taskId, actor: context.actor,
+      action: "execute_visual_task", status: result.status === "done" ? "succeeded" : "failed",
+      details: { status: result.status, attempts: result.attempts, ...(result.status === "failed" ? { blocker: result.blocker } : { action: result.action.action }) }
+    });
+    return result;
+  }
+
+  async commitApprovedVisualAction(context: ToolContext, approvalId: string, token: string, operation: ApprovalOperation, task: VisualMicroTask): Promise<VisualStepResult> {
+    if (context.permission !== "MUTATE" && context.permission !== "DESTRUCTIVE") throw new Error("commit requires mutation permission");
+    await this.approvals.consume(context.clientId, approvalId, token, operation);
+    try {
+      const result = await this.executeVisualTask(context, task);
+      await this.approvals.finish(context.clientId, approvalId, result.status === "done");
+      return result;
+    } catch (error) {
+      await this.approvals.finish(context.clientId, approvalId, false);
+      throw error;
+    }
+  }
+
+  toPiTools(context: ToolContext): AgentTool[] {
+    return [
+      {
+        name: "read_workspace",
+        label: "Read client workspace",
+        description: "Read the current client's profile, KPI, accounts and constraints.",
+        parameters: Type.Object({}),
+        executionMode: "parallel",
+        execute: async () => textResult(await this.readWorkspace(context))
+      },
+      {
+        name: "analyze_campaign_metrics",
+        label: "Analyze campaign metrics",
+        description: "Deterministically calculate CPA, CPI, ROAS, maturity and measurement reliability.",
+        parameters: Type.Object({
+          spend: Type.Number({ minimum: 0 }), impressions: Type.Number({ minimum: 0 }), clicks: Type.Number({ minimum: 0 }),
+          installs: Type.Number({ minimum: 0 }), conversions: Type.Number({ minimum: 0 }), revenue: Type.Number({ minimum: 0 }),
+          days: Type.Number({ minimum: 1 }), conversionDelayDays: Type.Optional(Type.Number({ minimum: 0 })),
+          dailyConversions: Type.Optional(Type.Array(Type.Number({ minimum: 0 }))),
+          currencyConsistency: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
+          missingValueRate: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
+          reconciliationDifference: Type.Optional(Type.Number({ minimum: 0, maximum: 1 }))
+        }),
+        executionMode: "parallel",
+        execute: async (_id, params) => textResult(this.analyzePerformance(context, CampaignMetrics.parse(params)))
+      },
+      {
+        name: "evaluate_change_guardrail",
+        label: "Evaluate budget or bid change",
+        description: "Apply deterministic maturity, learning, measurement, single-variable, and magnitude gates.",
+        parameters: Type.Object({
+          kind: Type.Union([Type.Literal("budget"), Type.Literal("bid"), Type.Literal("target_cpa"), Type.Literal("target_roas")]),
+          currentValue: Type.Number({ exclusiveMinimum: 0 }), proposedValue: Type.Number({ exclusiveMinimum: 0 }),
+          maxChangePercent: Type.Optional(Type.Number({ minimum: 0, maximum: 100 })),
+          activeExperimentVariables: Type.Optional(Type.Array(Type.String())),
+          measurementStatus: Type.Union([Type.Literal("reliable"), Type.Literal("warning"), Type.Literal("blocked")]),
+          mature: Type.Boolean(), learning: Type.Optional(Type.Boolean())
+        }),
+        executionMode: "sequential",
+        execute: async (_id, params) => textResult(this.evaluateChange(context, ChangeGuardrailInput.parse(params)))
+      }
+    ];
+  }
+}
+
+function textResult(details: unknown) {
+  return { content: [{ type: "text" as const, text: JSON.stringify(details) }], details };
+}
