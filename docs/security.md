@@ -12,16 +12,27 @@ A real change requires all of the following:
 2. Deterministic maturity, learning, measurement, magnitude and single-variable checks.
 3. An independent Risk Reviewer decision persisted before user review.
 4. Explicit user approval.
-5. A five-minute HMAC token bound to approval id, client, platform, account, Campaign, operation, current/proposed values, risk, live native-surface fingerprint, expiry and exactly one attempt.
-6. Token consumption before execution and terminal `executed` or `failed` state afterward.
+5. A strict `VisualExecutionPlan` bound to client/task/plan, platform, Profile, application/window, domain/application allowlists, account/Campaign/page, operation and values, instruction, target, expected result, allowed ROI, risk, surface/account fingerprints, creation and expiry.
+6. Two separately invoked visual reviewers agree on the currently visible platform, account name/id, Campaign name/id, page, operation, current/proposed values and target control with confidence `>= 0.85`.
+7. A five-minute HMAC token containing the canonical SHA-256 execution-plan fingerprint and exactly one attempt.
+8. The live screenshot and identity are projected back into a complete actual plan and compared byte-for-byte by fingerprint before token consumption, followed by terminal `executed` or `failed` state.
 
-The token is stored only in server memory, is never returned to the browser, and is never included in a model prompt. Any changed binding, malformed signature, expiry, replay, cancellation, second attempt, or changed live surface burns or invalidates it. Approval creation obtains the fingerprint from the native operator rather than trusting model output, and consumption re-identifies the foreground surface before execution.
+The token is stored only in server memory, is never returned to the browser, and is never included in a model prompt. A changed instruction, target, expected result, ROI, Profile, window, page, account, Campaign, value, identity result or surface; malformed signature; expiry; replay; cancellation; or second attempt burns or invalidates it. Native and visual fields come from the managed live browser and screenshot rather than from model assertions.
 
 ## Computer Use
 
-The runtime obtains the active application, bundle id, PID, window title/id, window bounds, screen identity and DPR through native macOS APIs, then captures that window. Every action is bound to task id, step id and its full surface fingerprint. It re-identifies immediately before execution, validates screenshot/window coordinates and DPR, refuses repeated coordinates, and never retries a mutation or timeout. A different app/window/PID/screen is a typed `SURFACE_CHANGED` blocker; an expected title change inside the same native window can proceed to visual verification.
+AdPilot launches a dedicated browser Profile per client and persists its process id, application id, native window id/bounds and platform. The runtime obtains application, bundle id, PID, title/id, bounds, screen identity and DPR through native macOS APIs, then captures only that bound window. It validates the durable session before and after capture and immediately before native input. A closed/replaced window, changed PID/Profile/application, foreground switch or ambiguous restart is `BROWSER_SESSION_LOST`; it never rebinds automatically.
 
-`ImageChangeVerifier` is a conservative fallback for local tests. Production configuration uses an OpenAI-compatible visual verifier to check the declared expected result against before/after screenshots.
+Every action is bound to task id, step id, plan id, full surface fingerprint, account fingerprint and allowed region. The policy validates screenshot/window coordinates and DPR, refuses repeated coordinates, executes one action at a time, takes a fresh screenshot after failure, escalates only the third non-mutating attempt, and never retries a mutation or timeout.
+
+`ImageChangeVerifier` is limited to local tests. Production uses a separately invoked visual verifier, either an advanced endpoint or the configured image-capable Deep code model, to check the declared result against before/after ROIs.
+
+## Screenshot privacy
+
+- Full screenshots are local artifacts with private file permissions and are never returned by settings/session APIs.
+- Model calls receive only a bounded ROI. Default masks cover browser chrome, system menus, avatar/email regions, unrelated notifications and other task-irrelevant areas.
+- Every disclosure records model provider/id, call role, screenshot id, ROI, masks, whether data left the machine and retention policy.
+- Remote providers are blocked from receiving a full window. `local-only` privacy mode rejects remote screenshot calls entirely.
 
 ## Local data and secrets
 
@@ -29,7 +40,7 @@ The runtime obtains the active application, bundle id, PID, window title/id, win
 - The approval secret is generated locally under `workspace/.adpilot/approval-secret` with private permissions when not explicitly configured.
 - Audit values redact credential-like keys, bearer tokens and six-digit verification codes.
 - Workspace path traversal and cross-client access are rejected.
-- Use a dedicated browser Profile. Never save credentials, cookies or OTPs into prompts, task facts, screenshots metadata, or reports.
+- Advertising login is always manual inside the managed browser. AdPilot never reads or stores passwords, cookies, localStorage, OTPs, CAPTCHA answers or advertising-platform OAuth tokens.
 
 ## Operational guidance
 

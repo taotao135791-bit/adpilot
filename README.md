@@ -9,10 +9,12 @@ AdPilot 是一个可本地运行、可审批、可审计的原生广告优化 Ag
 - 一个面向用户的 AdPilot Agent，按调查树调度 Account Operator、Performance Analyst、Media Buyer、Measurement Reviewer、Creative Strategist 和独立 Risk Reviewer。
 - 客户隔离 Workspace，保存任务、证据、截图、审计链、审批、实验、报告和记忆。
 - 自然语言对话是主入口：首次启动自动建立本地 Workspace，用户可以直接提问、追问或下达调查任务；对话、任务和结果都会持久化。
-- 日常 / 深度模型负责对话与推理；Computer Use 可选专用 UI-TARS 定位与独立视觉复核端点，并按“专用 GUI → 强化 GUI → 支持图像的代码模型”失败关闭路由。
+- 用户只需选择日常 / 深度代码模型；内置 Computer Use 会自动检测图像能力并组成定位、失败升级和独立复核链路。专用 UI-TARS / Verifier 端点只属于高级覆盖项。
 - 持久 Pi Session 按客户和对话恢复；长对话执行真实 compaction 并保留未完成任务、审批、实验、证据引用、恢复点与最后已验证动作。
-- 原生 Computer Use：每次严格执行 `活动窗口识别 -> 窗口截图 -> 单步 grounding -> 策略检查 -> 原生动作 -> 再截图 -> 独立结果验证`。动作绑定 task、step、窗口指纹并检查坐标/DPR。
-- 真实修改必须经过确定性 guardrail、Risk Reviewer、用户批准和五分钟一次性令牌；令牌精确绑定平台、账户、Campaign、操作、前后值、风险、实时窗口和单次执行机会。
+- 原生 Computer Use：产品为每个客户主动启动独立浏览器 Profile，并严格执行 `绑定 PID/窗口/Profile -> 截图 -> 单步 grounding -> 策略检查 -> 原生动作 -> 再截图 -> 独立结果验证`。窗口切换会立即返回 `BROWSER_SESSION_LOST`。
+- 真实修改必须经过确定性 guardrail、Risk Reviewer、用户批准和五分钟一次性令牌；令牌指纹覆盖完整视觉计划、账户/Campaign、前后值、目标控件、允许区域、浏览器窗口和单次执行机会。执行前还需两次独立视觉身份判断一致。
+- `VisualTableReader` 通过截图 ROI 读取表头、单元格和滚动重叠行，独立复核后才写入有截图与 Bounding Box 的 `SharedFact`；低置信度数值不会进入专家决策。
+- 完整截图只保存在本地 Workspace；模型仅接收任务 ROI 和遮挡后的图像。`local-only` 隐私模式会阻止所有远程截图 Provider。
 - Google App Campaign 的规范化、诊断、版本化数值策略、实验账本、doctor 和历史回放内核；保留 410 项上游契约测试。
 - React + Fluent UI 控制台、SSE 实时状态、CLI、本地 mock 广告后台和失败关闭测试。
 
@@ -21,7 +23,7 @@ AdPilot 是一个可本地运行、可审批、可审计的原生广告优化 Ag
 需要 Node.js 22+、pnpm 10+、Git。若要运行 UAC Python 契约测试，还需要 Python 3.10+。
 
 ```bash
-git clone --recurse-submodules <your-adpilot-repository> adpilot
+git clone --recurse-submodules https://github.com/taotao135791-bit/adpilot.git adpilot
 cd adpilot
 corepack enable
 pnpm install --frozen-lockfile
@@ -42,15 +44,26 @@ adpilot doctor
 adpilot init demo-client --name "Demo Client" --kpi CPA --target 20 --currency USD
 ```
 
-启动后点右上角齿轮进入“设置”。“模型”页选择日常/深度代码模型并配置供应商 API 密钥或 OAuth；“电脑控制”页可填写 UI-TARS/OpenAI-compatible 定位端点和独立视觉复核端点。留空时才复用支持图像输入的代码模型。保存后按提示重启即可生效，密钥不会由设置接口返回明文。
+启动后点右上角齿轮进入“设置”。“模型”页选择日常/深度代码模型并连接模型供应商；Computer Use 会自动复用支持图像输入的代码模型。GUI Endpoint、坐标协议和 Verifier 等实现细节只在高级开发者设置中出现，普通用户无需安装或拼接额外服务。保存后按提示重启即可生效，密钥不会由设置接口返回明文。
 
-CLI 同样能查看 Pi 供应商并完成 OAuth 登录；CLI 和 DMG 共用各自活动 Workspace 内的安全凭据格式：
+CLI 同样能查看 Pi 供应商并完成模型供应商自己的 OAuth 登录；这不是广告账户授权。CLI 和 DMG 共用各自活动 Workspace 内的安全凭据格式：
 
 ```bash
 adpilot providers
 adpilot login openai-codex
 adpilot logout openai-codex
 ```
+
+为客户启动产品管理的 Google Ads 浏览器窗口后，由用户在该窗口手动完成登录、OTP 或 CAPTCHA：
+
+```bash
+adpilot browser start --client demo-client --profile demo-client-google-ads
+adpilot browser status --client demo-client
+# 使用完毕后
+adpilot browser close --client demo-client --profile demo-client-google-ads
+```
+
+浏览器的固定 Profile 目录、PID、Window ID 和客户绑定由 AdPilot 管理；产品不读取 Cookie、localStorage、密码或页面 DOM。
 
 自动化部署仍可复制 `.env.example` 为 `.env` 或设置同名环境变量。设置页保存的值优先于启动时环境变量。
 
@@ -87,7 +100,7 @@ DMG 会使用 `build/icon.icns` 和标准拖拽到 Applications 的安装窗口�
 
 ## macOS 权限
 
-原生 Computer Use 需要给实际启动 `adpilot` 的 Terminal/运行器，或打包后的 `AdPilot.app`，授予“辅助功能”和“屏幕录制”权限。建议使用独立浏览器 Profile，只登录获授权的广告账户，并在客户 `accounts.yaml` 中限制应用与域名。所选代码模型不支持图像时，产品仍可正常对话和分析，但不会执行视觉任务。
+原生 Computer Use 需要给实际启动 `adpilot` 的 Terminal/运行器，或打包后的 `AdPilot.app`，授予“辅助功能”和“屏幕录制”权限。请只在产品启动的独立浏览器 Profile 中手动登录相应广告账户，并在客户 `accounts.yaml` 中限制域名。所选代码模型不支持图像时，产品仍可正常对话和分析，但不会执行视觉任务。
 
 ## 验证
 
@@ -98,14 +111,14 @@ pnpm test:ads-core
 pnpm check
 ```
 
-在已获授权、已登录且置于前台的 Google Ads 浏览器窗口上，可运行显式的原生验证；命令不会使用 DOM 自动化：
+先用设置页或 `adpilot browser start` 启动受管浏览器，再在其中手动登录 Google Ads。随后可运行显式的纯视觉验证；命令不会使用 DOM 自动化：
 
 ```bash
 pnpm validate:google-ads:readonly -- --client <id> --browser-profile <profile> --campaign "Campaign name"
 pnpm validate:google-ads:prepare -- --client <id> --browser-profile <profile> --campaign "Campaign name" --draft-budget 120
 ```
 
-第二条命令只填写未提交的预算草稿，禁止 Save / Apply / Publish。证据写入 `artifacts/validation/`；没有真实授权账户时不会声称线上验证通过。
+第二条命令要求用户先手动打开并聚焦预算输入框；运行时只允许一次 `type` 和一次只读确认，代码层禁止 Click、Hotkey、Enter、重试以及 Save / Apply / Publish。证据写入 `artifacts/visual-validation/`；没有已登录浏览器环境时不会声称真实浏览器验证通过。
 
 本地视觉闭环使用 `apps/mock-ad-dashboard/index.html`，不会连接真实广告平台。架构边界见 [docs/architecture.md](docs/architecture.md)，模型配置见 [docs/model-configuration.md](docs/model-configuration.md)，Computer Use 权限见 [docs/computer-use-permissions.md](docs/computer-use-permissions.md)，安全模型见 [docs/security.md](docs/security.md)，上游升级流程见 [docs/upstream-sync.md](docs/upstream-sync.md)。测试结果和已知外部限制分别见 [docs/test-report.md](docs/test-report.md) 与 [docs/known-limitations.md](docs/known-limitations.md)。
 
@@ -113,4 +126,4 @@ pnpm validate:google-ads:prepare -- --client <id> --browser-profile <profile> --
 
 ## English quick start
 
-AdPilot is a local-first, approval-gated advertising optimization agent. Install with Node 22 and pnpm, run `pnpm install --frozen-lockfile && pnpm build && npm install --global .`, then launch with `adpilot` and start chatting. Persistent Pi sessions survive restarts. Settings expose the Pi provider catalog, API-key/OAuth connections, optional dedicated UI-TARS grounding, independent visual verification, language, and appearance. Image-capable code models are the fallback. No live mutation can bypass deterministic policy, independent risk review, live native-surface binding, user approval, and a one-attempt token.
+AdPilot is a local-first, approval-gated advertising optimization agent. Install with Node 22 and pnpm, run `pnpm install --frozen-lockfile && pnpm build && npm install --global .`, then launch with `adpilot` and start chatting. Choose Daily and Deep code models; the built-in Computer Use plugin automatically reuses their image capability. Start a managed browser with `adpilot browser start --client <id>`, then log in manually. No advertising API or advertising-account OAuth is used, and no live mutation can bypass deterministic policy, dual visual identity review, exact-plan user approval, and a one-attempt token.

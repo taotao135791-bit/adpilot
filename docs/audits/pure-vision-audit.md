@@ -28,3 +28,18 @@ Date: 2026-07-22. Scope: application composition, computer use, tools, approvals
 - Deterministic advertising guardrails, independent risk review, explicit user approval, one-attempt execution, experiment tracking, and audit remain product-owned.
 
 This document records the code state at the start of the remediation. Current behavior and validation evidence are maintained in the architecture, security, and test-report documents.
+
+## Remediation state
+
+| Finding | Implemented production control |
+| --- | --- |
+| Incomplete approval binding | Strict `VisualExecutionPlan` plus canonical SHA-256 fingerprint covers every native, identity, instruction, target, value, result, ROI, risk and lifetime field; mismatch burns the one-attempt token. |
+| Weak mutation identity | `VisualAccountFingerprint` combines native surface evidence with two separately invoked pixel reviewers at confidence `>= 0.85`; conflicts, truncation, changed values and obscured identity fail closed. |
+| Manual Computer Use composition | Daily/Deep code-model image capability is detected automatically. Normal settings show readiness and route; protocol/endpoints live under advanced controls. |
+| Arbitrary foreground browser | `BrowserSessionManager` launches a dedicated Profile/window, persists client/PID/window/bounds/platform and requires exact foreground identity before capture and action. |
+| Generic table reading | `VisualTableReader` reads ROI headers/cells and bounding boxes, normalizes advertising values, aligns scroll overlap and uses an independently invoked verification role before producing facts. |
+| Legacy fact path | A durable `SharedFactLedger` drives root prompts and specialist packets; only same-client/task, verified, unexpired facts with screenshot evidence are usable. Legacy objects remain migration-only. |
+| Full screenshot disclosure | Full PNGs stay local with private permissions. Grounding, verification, identity and table roles receive audited, masked ROIs; remote full-window and local-only/remote combinations are blocked. |
+| Missing regression boundary | Architecture tests scan production modules for browser automation, DOM/CDP/accessibility and advertising API imports/calls. |
+| Ambiguous evaluation claims | The report has separate Corpus Validation, Offline Prediction Eval, Live Model Eval and Real Browser Validation sections. Unconfigured external calls remain `not-run`, never inferred from oracle passes. |
+| Unsafe validation preparation | Both harnesses require the managed browser. Prepare permits one `type` action and an observe-only confirmation, with no click/hotkey/Enter/retry path. Artifacts use `artifacts/visual-validation/`. |
