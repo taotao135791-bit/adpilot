@@ -76,7 +76,12 @@ export const ScreenshotModelCallAudit = z.object({
   clientId: z.string().min(1),
   taskId: z.string().min(1),
   purpose: z.enum(["grounding", "verification", "table_read", "account_identity", "other"]),
-  callRole: z.enum(["table_reader", "table_verifier", "identity_locator", "identity_verifier"]).optional(),
+  callRole: z.enum([
+    "table_reader", "table_verifier",
+    "identity_locator", "identity_verifier",
+    "grounding_locator", "grounding_target",
+    "verification_monitor", "verification_target"
+  ]).optional(),
   modelProvider: z.string().min(1),
   modelId: z.string().min(1),
   screenshotId: z.string().uuid(),
@@ -278,16 +283,19 @@ export class ScreenshotPrivacyPipeline {
       throw new ScreenshotMinimizationError("remote providers may not receive an uncropped full-window screenshot");
     }
     if (model.location === "remote" && requiresSemanticMinimization(input.purpose)) {
-      const identityDiscovery = input.purpose === "account_identity" && input.callRole === "identity_locator";
-      const missingIdentityRegions = input.purpose === "account_identity" && !identityDiscovery && requiredVisibleRegions.length !== 4;
+      const regionDiscovery = (input.purpose === "account_identity" && input.callRole === "identity_locator")
+        || (input.purpose === "grounding" && input.callRole === "grounding_locator")
+        || (input.purpose === "verification" && input.callRole === "verification_monitor");
+      const missingIdentityRegions = input.purpose === "account_identity" && !regionDiscovery && requiredVisibleRegions.length !== 4;
       const hasUnprotectedPixels = !requiredVisibleRegions.some((region) => contains(region, roi));
       const missingSemanticMasks = hasUnprotectedPixels
+        && !regionDiscovery
         && (input.purpose === "grounding" || input.purpose === "verification" || input.purpose === "table_read")
         && !(["other_campaign", "unrelated_financial_data"] as const)
           .every((category) => appliedMasks.some((mask) => mask.category === category));
       const invalidVisibleRegion = requiredVisibleRegions.some((region) => !contains(roi, region));
       const obscuredVisibleRegion = requiredVisibleRegions.some((region) => appliedMasks.some((mask) => intersection(region, mask.region) !== undefined));
-      if ((!requiredVisibleRegions.length && !identityDiscovery) || missingIdentityRegions || missingSemanticMasks || invalidVisibleRegion || obscuredVisibleRegion) {
+      if ((!requiredVisibleRegions.length && !regionDiscovery) || missingIdentityRegions || missingSemanticMasks || invalidVisibleRegion || obscuredVisibleRegion) {
         const audit = ScreenshotModelCallAudit.parse({ ...baseAudit, leftLocal: false, outcome: "blocked" });
         await this.audits.append(audit);
         const requirement = input.purpose === "account_identity"
@@ -344,15 +352,17 @@ export class PrivacyAwareGroundingProvider implements VisualGroundingProvider {
   }
 
   async ground(task: VisualMicroTask, screenshot: Screenshot, tier: ModelTier): Promise<VisualAction> {
+    const targetsBound = Boolean(task.allowedRegion);
     const prepared = await this.privacy.prepareForModel({
       clientId: this.clientId(task),
       taskId: task.taskId ?? privacyTaskId(task),
       purpose: "grounding",
+      callRole: targetsBound ? "grounding_target" : "grounding_locator",
       screenshot,
       roi: await this.roi(task, screenshot, tier),
       sensitiveRegions: await this.masks(task, screenshot, tier),
       requiredVisibleRegions: taskAllowedScreenshotRegion(task, screenshot),
-      includeDefaultMasks: false,
+      includeDefaultMasks: !targetsBound,
       model: this.model(tier),
       privacyMode: this.privacyMode()
     });
@@ -383,26 +393,29 @@ export class PrivacyAwareVisualVerifier implements VisualVerifier {
   async verify(expectedResult: string, before: Screenshot, after: Screenshot, task?: VisualMicroTask): Promise<{ matched: boolean; confidence: number; reason: string }> {
     const context = this.context(expectedResult, task);
     const regions = await this.roi(expectedResult, before, after, task);
+    const targetsBound = Boolean(task?.allowedRegion);
     const [privateBefore, privateAfter] = await Promise.all([
       this.privacy.prepareForModel({
         ...context,
         purpose: "verification",
+        callRole: targetsBound ? "verification_target" : "verification_monitor",
         screenshot: before,
         roi: regions.before,
         sensitiveRegions: await this.masks(expectedResult, before, "before", task),
         requiredVisibleRegions: taskAllowedScreenshotRegion(task, before),
-        includeDefaultMasks: false,
+        includeDefaultMasks: !targetsBound,
         model: this.model,
         privacyMode: this.privacyMode()
       }),
       this.privacy.prepareForModel({
         ...context,
         purpose: "verification",
+        callRole: targetsBound ? "verification_target" : "verification_monitor",
         screenshot: after,
         roi: regions.after,
         sensitiveRegions: await this.masks(expectedResult, after, "after", task),
         requiredVisibleRegions: taskAllowedScreenshotRegion(task, after),
-        includeDefaultMasks: false,
+        includeDefaultMasks: !targetsBound,
         model: this.model,
         privacyMode: this.privacyMode()
       })

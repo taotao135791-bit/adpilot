@@ -200,6 +200,34 @@ describe("screenshot privacy pipeline", () => {
     await expect(privateGrounding.ground(task, await screenshot(), "gui")).resolves.toMatchObject({ x: 26, y: 18 });
   });
 
+  it("uses an audited cropped locator view before a visual task has a target region", async () => {
+    const { pipeline, audits } = await fixture();
+    const underlying: VisualGroundingProvider = {
+      id: "remote-code-model", kind: "pi-vision",
+      ground: vi.fn(async (_task, shot) => {
+        expect(shot).toMatchObject({ width: 100, height: 70 });
+        return { action: "done" as const, target: "campaign table", reason: "visible", confidence: 1, expected_result: "visible", risk_level: "observe" as const };
+      })
+    };
+    const grounding = new PrivacyAwareGroundingProvider(
+      underlying,
+      pipeline,
+      () => "client-a",
+      (_task, shot) => defaultBrowserContentRoi(shot.width, shot.height),
+      () => remoteModel
+    );
+    await grounding.ground({
+      taskId: "task-locate", instruction: "find the campaign table", target: "campaign table",
+      expectedResult: "visible", riskLevel: "observe", permission: "OBSERVE",
+      surface: { app: "Browser", allowedApps: ["Browser"], allowedDomains: [] }
+    }, await screenshot(), "gui");
+    expect(await audits.list("client-a")).toEqual([expect.objectContaining({
+      taskId: "task-locate", purpose: "grounding", callRole: "grounding_locator",
+      sentRoi: { x: 0, y: 10, width: 100, height: 70 }, requiredVisibleRegions: [],
+      leftLocal: true, outcome: "prepared"
+    })]);
+  });
+
   it("gives a verifier only minimized before/after images and audits both", async () => {
     const { pipeline, audits } = await fixture();
     const verify = vi.fn(async (_expected: string, before: Screenshot, after: Screenshot) => {

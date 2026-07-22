@@ -403,7 +403,7 @@ export function identitySensitiveMasks(expected: ExpectedVisualIdentity, width: 
 
 function taskModelRoi(task: VisualMicroTask | undefined, screenshot: Screenshot) {
   const target = taskAllowedPixelRegion(task, screenshot);
-  if (!target) return { x: 0, y: 0, width: screenshot.width, height: screenshot.height };
+  if (!target) return defaultBrowserContentRoi(screenshot.width, screenshot.height);
   const { x, y, width, height } = target;
   const marginX = Math.max(8, Math.min(24, Math.round(width * 0.25)));
   const marginY = Math.max(8, Math.min(24, Math.round(height * 0.25)));
