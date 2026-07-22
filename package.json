@@ -21,6 +21,8 @@
   "scripts": {
     "adpilot": "pnpm build && node dist/cli/index.js",
     "capture:ui": "node scripts/capture-ui.mjs",
+    "fixtures:visual": "node scripts/generate-visual-fixtures.mjs",
+    "eval:gui": "node scripts/evaluate-visual-replay.mjs",
     "icon:mac": "bash scripts/build-macos-icon.sh",
     "dev": "tsx watch apps/cli/src/index.ts serve",
     "build": "pnpm typecheck && pnpm build:cli && pnpm build:desktop && pnpm build:electron && node scripts/postbuild.mjs",
@@ -33,6 +35,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:ads-core": "python3 -m pytest packages/advertising-core/python/tests/uac -q",
+    "test:visual-replay": "vitest run evals/computer-use-replay/replay.test.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "check": "pnpm typecheck && pnpm test && pnpm test:ads-core && pnpm build"

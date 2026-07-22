@@ -1,0 +1,1925 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "campaign-list-1440-light-en",
+      "scene": "campaign-list",
+      "screenshot": "fixtures/screenshots/generated/campaign-list--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#campaign-row",
+      "targetDescription": "campaign-list: Campaign list is visible",
+      "action": "click",
+      "allowed": {
+        "xMin": 249,
+        "yMin": 291,
+        "xMax": 481,
+        "yMax": 357
+      },
+      "expectedResult": "Campaign list is visible",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "campaign-list-1280-dark-zh",
+      "scene": "campaign-list",
+      "screenshot": "fixtures/screenshots/generated/campaign-list--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#campaign-row",
+      "targetDescription": "campaign-list: Campaign list is visible",
+      "action": "click",
+      "allowed": {
+        "xMin": 249,
+        "yMin": 291,
+        "xMax": 479,
+        "yMax": 357
+      },
+      "expectedResult": "Campaign list is visible",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "campaign-list-1024-light-zh-retina",
+      "scene": "campaign-list",
+      "screenshot": "fixtures/screenshots/generated/campaign-list--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#campaign-row",
+      "targetDescription": "campaign-list: Campaign list is visible",
+      "action": "click",
+      "allowed": {
+        "xMin": 498,
+        "yMin": 583,
+        "xMax": 841,
+        "yMax": 714
+      },
+      "expectedResult": "Campaign list is visible",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "campaign-list-1600-dark-en-retina",
+      "scene": "campaign-list",
+      "screenshot": "fixtures/screenshots/generated/campaign-list--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#campaign-row",
+      "targetDescription": "campaign-list: Campaign list is visible",
+      "action": "click",
+      "allowed": {
+        "xMin": 498,
+        "yMin": 583,
+        "xMax": 1024,
+        "yMax": 714
+      },
+      "expectedResult": "Campaign list is visible",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "campaign-list-1366-dark-zh",
+      "scene": "campaign-list",
+      "screenshot": "fixtures/screenshots/generated/campaign-list--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#campaign-row",
+      "targetDescription": "campaign-list: Campaign list is visible",
+      "action": "click",
+      "allowed": {
+        "xMin": 311,
+        "yMin": 364,
+        "xMax": 624,
+        "yMax": 446
+      },
+      "expectedResult": "Campaign list is visible",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "date-picker-1440-light-en",
+      "scene": "date-picker",
+      "screenshot": "fixtures/screenshots/generated/date-picker--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#last-7-days",
+      "targetDescription": "date-picker: Last 7 days is selected",
+      "action": "click",
+      "allowed": {
+        "xMin": 1191,
+        "yMin": 200,
+        "xMax": 1403,
+        "yMax": 241
+      },
+      "expectedResult": "Last 7 days is selected",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "date-picker-1280-dark-zh",
+      "scene": "date-picker",
+      "screenshot": "fixtures/screenshots/generated/date-picker--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#last-7-days",
+      "targetDescription": "date-picker: Last 7 days is selected",
+      "action": "click",
+      "allowed": {
+        "xMin": 1031,
+        "yMin": 200,
+        "xMax": 1243,
+        "yMax": 241
+      },
+      "expectedResult": "Last 7 days is selected",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "date-picker-1024-light-zh-retina",
+      "scene": "date-picker",
+      "screenshot": "fixtures/screenshots/generated/date-picker--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#last-7-days",
+      "targetDescription": "date-picker: Last 7 days is selected",
+      "action": "click",
+      "allowed": {
+        "xMin": 1550,
+        "yMin": 401,
+        "xMax": 1974,
+        "yMax": 481
+      },
+      "expectedResult": "Last 7 days is selected",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "date-picker-1600-dark-en-retina",
+      "scene": "date-picker",
+      "screenshot": "fixtures/screenshots/generated/date-picker--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#last-7-days",
+      "targetDescription": "date-picker: Last 7 days is selected",
+      "action": "click",
+      "allowed": {
+        "xMin": 2702,
+        "yMin": 401,
+        "xMax": 3126,
+        "yMax": 481
+      },
+      "expectedResult": "Last 7 days is selected",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "date-picker-1366-dark-zh",
+      "scene": "date-picker",
+      "screenshot": "fixtures/screenshots/generated/date-picker--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#last-7-days",
+      "targetDescription": "date-picker: Last 7 days is selected",
+      "action": "click",
+      "allowed": {
+        "xMin": 1396,
+        "yMin": 250,
+        "xMax": 1662,
+        "yMax": 301
+      },
+      "expectedResult": "Last 7 days is selected",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "budget-edit-1440-light-en",
+      "scene": "budget-edit",
+      "screenshot": "fixtures/screenshots/generated/budget-edit--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#budget-input",
+      "targetDescription": "budget-edit: Draft budget value is entered",
+      "action": "type",
+      "allowed": {
+        "xMin": 625,
+        "yMin": 475,
+        "xMax": 1035,
+        "yMax": 516
+      },
+      "expectedResult": "Draft budget value is entered",
+      "riskLevel": "mutate",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "budget-edit-1280-dark-zh",
+      "scene": "budget-edit",
+      "screenshot": "fixtures/screenshots/generated/budget-edit--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#budget-input",
+      "targetDescription": "budget-edit: Draft budget value is entered",
+      "action": "type",
+      "allowed": {
+        "xMin": 545,
+        "yMin": 425,
+        "xMax": 955,
+        "yMax": 466
+      },
+      "expectedResult": "Draft budget value is entered",
+      "riskLevel": "mutate",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "budget-edit-1024-light-zh-retina",
+      "scene": "budget-edit",
+      "screenshot": "fixtures/screenshots/generated/budget-edit--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#budget-input",
+      "targetDescription": "budget-edit: Draft budget value is entered",
+      "action": "type",
+      "allowed": {
+        "xMin": 834,
+        "yMin": 819,
+        "xMax": 1654,
+        "yMax": 900
+      },
+      "expectedResult": "Draft budget value is entered",
+      "riskLevel": "mutate",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "budget-edit-1600-dark-en-retina",
+      "scene": "budget-edit",
+      "screenshot": "fixtures/screenshots/generated/budget-edit--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#budget-input",
+      "targetDescription": "budget-edit: Draft budget value is entered",
+      "action": "type",
+      "allowed": {
+        "xMin": 1410,
+        "yMin": 1051,
+        "xMax": 2230,
+        "yMax": 1132
+      },
+      "expectedResult": "Draft budget value is entered",
+      "riskLevel": "mutate",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "budget-edit-1366-dark-zh",
+      "scene": "budget-edit",
+      "screenshot": "fixtures/screenshots/generated/budget-edit--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#budget-input",
+      "targetDescription": "budget-edit: Draft budget value is entered",
+      "action": "type",
+      "allowed": {
+        "xMin": 735,
+        "yMin": 512,
+        "xMax": 1248,
+        "yMax": 563
+      },
+      "expectedResult": "Draft budget value is entered",
+      "riskLevel": "mutate",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "bid-edit-1440-light-en",
+      "scene": "bid-edit",
+      "screenshot": "fixtures/screenshots/generated/bid-edit--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#bid-input",
+      "targetDescription": "bid-edit: Draft bid target is entered",
+      "action": "type",
+      "allowed": {
+        "xMin": 625,
+        "yMin": 475,
+        "xMax": 1035,
+        "yMax": 516
+      },
+      "expectedResult": "Draft bid target is entered",
+      "riskLevel": "mutate",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "bid-edit-1280-dark-zh",
+      "scene": "bid-edit",
+      "screenshot": "fixtures/screenshots/generated/bid-edit--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#bid-input",
+      "targetDescription": "bid-edit: Draft bid target is entered",
+      "action": "type",
+      "allowed": {
+        "xMin": 545,
+        "yMin": 425,
+        "xMax": 955,
+        "yMax": 466
+      },
+      "expectedResult": "Draft bid target is entered",
+      "riskLevel": "mutate",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "bid-edit-1024-light-zh-retina",
+      "scene": "bid-edit",
+      "screenshot": "fixtures/screenshots/generated/bid-edit--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#bid-input",
+      "targetDescription": "bid-edit: Draft bid target is entered",
+      "action": "type",
+      "allowed": {
+        "xMin": 834,
+        "yMin": 819,
+        "xMax": 1654,
+        "yMax": 900
+      },
+      "expectedResult": "Draft bid target is entered",
+      "riskLevel": "mutate",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "bid-edit-1600-dark-en-retina",
+      "scene": "bid-edit",
+      "screenshot": "fixtures/screenshots/generated/bid-edit--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#bid-input",
+      "targetDescription": "bid-edit: Draft bid target is entered",
+      "action": "type",
+      "allowed": {
+        "xMin": 1410,
+        "yMin": 1051,
+        "xMax": 2230,
+        "yMax": 1132
+      },
+      "expectedResult": "Draft bid target is entered",
+      "riskLevel": "mutate",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "bid-edit-1366-dark-zh",
+      "scene": "bid-edit",
+      "screenshot": "fixtures/screenshots/generated/bid-edit--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#bid-input",
+      "targetDescription": "bid-edit: Draft bid target is entered",
+      "action": "type",
+      "allowed": {
+        "xMin": 735,
+        "yMin": 512,
+        "xMax": 1248,
+        "yMax": 563
+      },
+      "expectedResult": "Draft bid target is entered",
+      "riskLevel": "mutate",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "conversion-goals-1440-light-en",
+      "scene": "conversion-goals",
+      "screenshot": "fixtures/screenshots/generated/conversion-goals--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#conversion-payment",
+      "targetDescription": "conversion-goals: Payment conversion status is visible",
+      "action": "click",
+      "allowed": {
+        "xMin": 249,
+        "yMin": 291,
+        "xMax": 1411,
+        "yMax": 341
+      },
+      "expectedResult": "Payment conversion status is visible",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "conversion-goals-1280-dark-zh",
+      "scene": "conversion-goals",
+      "screenshot": "fixtures/screenshots/generated/conversion-goals--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#conversion-payment",
+      "targetDescription": "conversion-goals: Payment conversion status is visible",
+      "action": "click",
+      "allowed": {
+        "xMin": 249,
+        "yMin": 291,
+        "xMax": 1251,
+        "yMax": 341
+      },
+      "expectedResult": "Payment conversion status is visible",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "conversion-goals-1024-light-zh-retina",
+      "scene": "conversion-goals",
+      "screenshot": "fixtures/screenshots/generated/conversion-goals--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#conversion-payment",
+      "targetDescription": "conversion-goals: Payment conversion status is visible",
+      "action": "click",
+      "allowed": {
+        "xMin": 498,
+        "yMin": 583,
+        "xMax": 1990,
+        "yMax": 681
+      },
+      "expectedResult": "Payment conversion status is visible",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "conversion-goals-1600-dark-en-retina",
+      "scene": "conversion-goals",
+      "screenshot": "fixtures/screenshots/generated/conversion-goals--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#conversion-payment",
+      "targetDescription": "conversion-goals: Payment conversion status is visible",
+      "action": "click",
+      "allowed": {
+        "xMin": 498,
+        "yMin": 583,
+        "xMax": 3142,
+        "yMax": 681
+      },
+      "expectedResult": "Payment conversion status is visible",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "conversion-goals-1366-dark-zh",
+      "scene": "conversion-goals",
+      "screenshot": "fixtures/screenshots/generated/conversion-goals--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#conversion-payment",
+      "targetDescription": "conversion-goals: Payment conversion status is visible",
+      "action": "click",
+      "allowed": {
+        "xMin": 311,
+        "yMin": 364,
+        "xMax": 1672,
+        "yMax": 426
+      },
+      "expectedResult": "Payment conversion status is visible",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "asset-list-1440-light-en",
+      "scene": "asset-list",
+      "screenshot": "fixtures/screenshots/generated/asset-list--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#asset-row",
+      "targetDescription": "asset-list: Asset performance is visible",
+      "action": "click",
+      "allowed": {
+        "xMin": 249,
+        "yMin": 291,
+        "xMax": 1411,
+        "yMax": 341
+      },
+      "expectedResult": "Asset performance is visible",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "asset-list-1280-dark-zh",
+      "scene": "asset-list",
+      "screenshot": "fixtures/screenshots/generated/asset-list--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#asset-row",
+      "targetDescription": "asset-list: Asset performance is visible",
+      "action": "click",
+      "allowed": {
+        "xMin": 249,
+        "yMin": 291,
+        "xMax": 1251,
+        "yMax": 341
+      },
+      "expectedResult": "Asset performance is visible",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "asset-list-1024-light-zh-retina",
+      "scene": "asset-list",
+      "screenshot": "fixtures/screenshots/generated/asset-list--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#asset-row",
+      "targetDescription": "asset-list: Asset performance is visible",
+      "action": "click",
+      "allowed": {
+        "xMin": 498,
+        "yMin": 583,
+        "xMax": 1990,
+        "yMax": 681
+      },
+      "expectedResult": "Asset performance is visible",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "asset-list-1600-dark-en-retina",
+      "scene": "asset-list",
+      "screenshot": "fixtures/screenshots/generated/asset-list--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#asset-row",
+      "targetDescription": "asset-list: Asset performance is visible",
+      "action": "click",
+      "allowed": {
+        "xMin": 498,
+        "yMin": 583,
+        "xMax": 3142,
+        "yMax": 681
+      },
+      "expectedResult": "Asset performance is visible",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "asset-list-1366-dark-zh",
+      "scene": "asset-list",
+      "screenshot": "fixtures/screenshots/generated/asset-list--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#asset-row",
+      "targetDescription": "asset-list: Asset performance is visible",
+      "action": "click",
+      "allowed": {
+        "xMin": 311,
+        "yMin": 364,
+        "xMax": 1672,
+        "yMax": 426
+      },
+      "expectedResult": "Asset performance is visible",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "account-switch-1440-light-en",
+      "scene": "account-switch",
+      "screenshot": "fixtures/screenshots/generated/account-switch--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#account-switcher",
+      "targetDescription": "account-switch: Authorized account identity is selected",
+      "action": "click",
+      "allowed": {
+        "xMin": 240,
+        "yMin": 120,
+        "xMax": 590,
+        "yMax": 257
+      },
+      "expectedResult": "Authorized account identity is selected",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "account-switch-1280-dark-zh",
+      "scene": "account-switch",
+      "screenshot": "fixtures/screenshots/generated/account-switch--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#account-switcher",
+      "targetDescription": "account-switch: Authorized account identity is selected",
+      "action": "click",
+      "allowed": {
+        "xMin": 240,
+        "yMin": 120,
+        "xMax": 590,
+        "yMax": 257
+      },
+      "expectedResult": "Authorized account identity is selected",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "account-switch-1024-light-zh-retina",
+      "scene": "account-switch",
+      "screenshot": "fixtures/screenshots/generated/account-switch--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#account-switcher",
+      "targetDescription": "account-switch: Authorized account identity is selected",
+      "action": "click",
+      "allowed": {
+        "xMin": 480,
+        "yMin": 240,
+        "xMax": 1180,
+        "yMax": 514
+      },
+      "expectedResult": "Authorized account identity is selected",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "account-switch-1600-dark-en-retina",
+      "scene": "account-switch",
+      "screenshot": "fixtures/screenshots/generated/account-switch--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#account-switcher",
+      "targetDescription": "account-switch: Authorized account identity is selected",
+      "action": "click",
+      "allowed": {
+        "xMin": 480,
+        "yMin": 240,
+        "xMax": 1180,
+        "yMax": 514
+      },
+      "expectedResult": "Authorized account identity is selected",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "account-switch-1366-dark-zh",
+      "scene": "account-switch",
+      "screenshot": "fixtures/screenshots/generated/account-switch--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#account-switcher",
+      "targetDescription": "account-switch: Authorized account identity is selected",
+      "action": "click",
+      "allowed": {
+        "xMin": 300,
+        "yMin": 150,
+        "xMax": 738,
+        "yMax": 321
+      },
+      "expectedResult": "Authorized account identity is selected",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "confirm-dialog-1440-light-en",
+      "scene": "confirm-dialog",
+      "screenshot": "fixtures/screenshots/generated/confirm-dialog--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#confirm-submit",
+      "targetDescription": "confirm-dialog: Change confirmation is submitted",
+      "action": "click",
+      "allowed": {
+        "xMin": 969,
+        "yMin": 508,
+        "xMax": 1035,
+        "yMax": 545
+      },
+      "expectedResult": "Change confirmation is submitted",
+      "riskLevel": "mutate",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "confirm-dialog-1280-dark-zh",
+      "scene": "confirm-dialog",
+      "screenshot": "fixtures/screenshots/generated/confirm-dialog--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#confirm-submit",
+      "targetDescription": "confirm-dialog: Change confirmation is submitted",
+      "action": "click",
+      "allowed": {
+        "xMin": 897,
+        "yMin": 458,
+        "xMax": 955,
+        "yMax": 495
+      },
+      "expectedResult": "Change confirmation is submitted",
+      "riskLevel": "mutate",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "confirm-dialog-1024-light-zh-retina",
+      "scene": "confirm-dialog",
+      "screenshot": "fixtures/screenshots/generated/confirm-dialog--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#confirm-submit",
+      "targetDescription": "confirm-dialog: Change confirmation is submitted",
+      "action": "click",
+      "allowed": {
+        "xMin": 1538,
+        "yMin": 884,
+        "xMax": 1654,
+        "yMax": 957
+      },
+      "expectedResult": "Change confirmation is submitted",
+      "riskLevel": "mutate",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "confirm-dialog-1600-dark-en-retina",
+      "scene": "confirm-dialog",
+      "screenshot": "fixtures/screenshots/generated/confirm-dialog--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#confirm-submit",
+      "targetDescription": "confirm-dialog: Change confirmation is submitted",
+      "action": "click",
+      "allowed": {
+        "xMin": 2099,
+        "yMin": 1116,
+        "xMax": 2230,
+        "yMax": 1189
+      },
+      "expectedResult": "Change confirmation is submitted",
+      "riskLevel": "mutate",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "confirm-dialog-1366-dark-zh",
+      "scene": "confirm-dialog",
+      "screenshot": "fixtures/screenshots/generated/confirm-dialog--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#confirm-submit",
+      "targetDescription": "confirm-dialog: Change confirmation is submitted",
+      "action": "click",
+      "allowed": {
+        "xMin": 1175,
+        "yMin": 552,
+        "xMax": 1248,
+        "yMax": 598
+      },
+      "expectedResult": "Change confirmation is submitted",
+      "riskLevel": "mutate",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "loading-1440-light-en",
+      "scene": "loading",
+      "screenshot": "fixtures/screenshots/generated/loading--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#loading-state",
+      "targetDescription": "loading: Campaign data finishes loading",
+      "action": "wait",
+      "allowed": {
+        "xMin": 248,
+        "yMin": 242,
+        "xMax": 1412,
+        "yMax": 481
+      },
+      "expectedResult": "Campaign data finishes loading",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "loading-1280-dark-zh",
+      "scene": "loading",
+      "screenshot": "fixtures/screenshots/generated/loading--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#loading-state",
+      "targetDescription": "loading: Campaign data finishes loading",
+      "action": "wait",
+      "allowed": {
+        "xMin": 248,
+        "yMin": 242,
+        "xMax": 1252,
+        "yMax": 481
+      },
+      "expectedResult": "Campaign data finishes loading",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "loading-1024-light-zh-retina",
+      "scene": "loading",
+      "screenshot": "fixtures/screenshots/generated/loading--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#loading-state",
+      "targetDescription": "loading: Campaign data finishes loading",
+      "action": "wait",
+      "allowed": {
+        "xMin": 496,
+        "yMin": 485,
+        "xMax": 1992,
+        "yMax": 961
+      },
+      "expectedResult": "Campaign data finishes loading",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "loading-1600-dark-en-retina",
+      "scene": "loading",
+      "screenshot": "fixtures/screenshots/generated/loading--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#loading-state",
+      "targetDescription": "loading: Campaign data finishes loading",
+      "action": "wait",
+      "allowed": {
+        "xMin": 496,
+        "yMin": 485,
+        "xMax": 3144,
+        "yMax": 961
+      },
+      "expectedResult": "Campaign data finishes loading",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "loading-1366-dark-zh",
+      "scene": "loading",
+      "screenshot": "fixtures/screenshots/generated/loading--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#loading-state",
+      "targetDescription": "loading: Campaign data finishes loading",
+      "action": "wait",
+      "allowed": {
+        "xMin": 310,
+        "yMin": 303,
+        "xMax": 1673,
+        "yMax": 601
+      },
+      "expectedResult": "Campaign data finishes loading",
+      "riskLevel": "observe",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "error-dialog-1440-light-en",
+      "scene": "error-dialog",
+      "screenshot": "fixtures/screenshots/generated/error-dialog--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#error-dialog",
+      "targetDescription": "error-dialog: User handles the expired session",
+      "action": "fail",
+      "allowed": {
+        "xMin": 570,
+        "yMin": 220,
+        "xMax": 1090,
+        "yMax": 413
+      },
+      "expectedResult": "User handles the expired session",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "USER_TAKEOVER"
+    },
+    {
+      "id": "error-dialog-1280-dark-zh",
+      "scene": "error-dialog",
+      "screenshot": "fixtures/screenshots/generated/error-dialog--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#error-dialog",
+      "targetDescription": "error-dialog: User handles the expired session",
+      "action": "fail",
+      "allowed": {
+        "xMin": 490,
+        "yMin": 220,
+        "xMax": 1010,
+        "yMax": 413
+      },
+      "expectedResult": "User handles the expired session",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "USER_TAKEOVER"
+    },
+    {
+      "id": "error-dialog-1024-light-zh-retina",
+      "scene": "error-dialog",
+      "screenshot": "fixtures/screenshots/generated/error-dialog--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#error-dialog",
+      "targetDescription": "error-dialog: User handles the expired session",
+      "action": "fail",
+      "allowed": {
+        "xMin": 724,
+        "yMin": 441,
+        "xMax": 1764,
+        "yMax": 826
+      },
+      "expectedResult": "User handles the expired session",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "USER_TAKEOVER"
+    },
+    {
+      "id": "error-dialog-1600-dark-en-retina",
+      "scene": "error-dialog",
+      "screenshot": "fixtures/screenshots/generated/error-dialog--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#error-dialog",
+      "targetDescription": "error-dialog: User handles the expired session",
+      "action": "fail",
+      "allowed": {
+        "xMin": 1300,
+        "yMin": 441,
+        "xMax": 2340,
+        "yMax": 826
+      },
+      "expectedResult": "User handles the expired session",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "USER_TAKEOVER"
+    },
+    {
+      "id": "error-dialog-1366-dark-zh",
+      "scene": "error-dialog",
+      "screenshot": "fixtures/screenshots/generated/error-dialog--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#error-dialog",
+      "targetDescription": "error-dialog: User handles the expired session",
+      "action": "fail",
+      "allowed": {
+        "xMin": 666,
+        "yMin": 275,
+        "xMax": 1317,
+        "yMax": 516
+      },
+      "expectedResult": "User handles the expired session",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "USER_TAKEOVER"
+    },
+    {
+      "id": "browser-switched-1440-light-en",
+      "scene": "browser-switched",
+      "screenshot": "fixtures/screenshots/generated/browser-switched--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#switched-marker",
+      "targetDescription": "browser-switched: Authorized advertising window is restored",
+      "action": "fail",
+      "allowed": {
+        "xMin": 578,
+        "yMin": 438,
+        "xMax": 862,
+        "yMax": 500
+      },
+      "expectedResult": "Authorized advertising window is restored",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "SURFACE_CHANGED"
+    },
+    {
+      "id": "browser-switched-1280-dark-zh",
+      "scene": "browser-switched",
+      "screenshot": "fixtures/screenshots/generated/browser-switched--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#switched-marker",
+      "targetDescription": "browser-switched: Authorized advertising window is restored",
+      "action": "fail",
+      "allowed": {
+        "xMin": 552,
+        "yMin": 388,
+        "xMax": 728,
+        "yMax": 450
+      },
+      "expectedResult": "Authorized advertising window is restored",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "SURFACE_CHANGED"
+    },
+    {
+      "id": "browser-switched-1024-light-zh-retina",
+      "scene": "browser-switched",
+      "screenshot": "fixtures/screenshots/generated/browser-switched--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#switched-marker",
+      "targetDescription": "browser-switched: Authorized advertising window is restored",
+      "action": "fail",
+      "allowed": {
+        "xMin": 848,
+        "yMin": 744,
+        "xMax": 1200,
+        "yMax": 868
+      },
+      "expectedResult": "Authorized advertising window is restored",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "SURFACE_CHANGED"
+    },
+    {
+      "id": "browser-switched-1600-dark-en-retina",
+      "scene": "browser-switched",
+      "screenshot": "fixtures/screenshots/generated/browser-switched--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#switched-marker",
+      "targetDescription": "browser-switched: Authorized advertising window is restored",
+      "action": "fail",
+      "allowed": {
+        "xMin": 1316,
+        "yMin": 976,
+        "xMax": 1884,
+        "yMax": 1100
+      },
+      "expectedResult": "Authorized advertising window is restored",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "SURFACE_CHANGED"
+    },
+    {
+      "id": "browser-switched-1366-dark-zh",
+      "scene": "browser-switched",
+      "screenshot": "fixtures/screenshots/generated/browser-switched--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#switched-marker",
+      "targetDescription": "browser-switched: Authorized advertising window is restored",
+      "action": "fail",
+      "allowed": {
+        "xMin": 743,
+        "yMin": 465,
+        "xMax": 964,
+        "yMax": 543
+      },
+      "expectedResult": "Authorized advertising window is restored",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "SURFACE_CHANGED"
+    },
+    {
+      "id": "unauthorized-app-1440-light-en",
+      "scene": "unauthorized-app",
+      "screenshot": "fixtures/screenshots/generated/unauthorized-app--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#unauthorized-marker",
+      "targetDescription": "unauthorized-app: Authorized application is restored",
+      "action": "fail",
+      "allowed": {
+        "xMin": 557,
+        "yMin": 438,
+        "xMax": 883,
+        "yMax": 500
+      },
+      "expectedResult": "Authorized application is restored",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "SURFACE_CHANGED"
+    },
+    {
+      "id": "unauthorized-app-1280-dark-zh",
+      "scene": "unauthorized-app",
+      "screenshot": "fixtures/screenshots/generated/unauthorized-app--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#unauthorized-marker",
+      "targetDescription": "unauthorized-app: Authorized application is restored",
+      "action": "fail",
+      "allowed": {
+        "xMin": 530,
+        "yMin": 388,
+        "xMax": 750,
+        "yMax": 450
+      },
+      "expectedResult": "Authorized application is restored",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "SURFACE_CHANGED"
+    },
+    {
+      "id": "unauthorized-app-1024-light-zh-retina",
+      "scene": "unauthorized-app",
+      "screenshot": "fixtures/screenshots/generated/unauthorized-app--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#unauthorized-marker",
+      "targetDescription": "unauthorized-app: Authorized application is restored",
+      "action": "fail",
+      "allowed": {
+        "xMin": 804,
+        "yMin": 744,
+        "xMax": 1244,
+        "yMax": 868
+      },
+      "expectedResult": "Authorized application is restored",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "SURFACE_CHANGED"
+    },
+    {
+      "id": "unauthorized-app-1600-dark-en-retina",
+      "scene": "unauthorized-app",
+      "screenshot": "fixtures/screenshots/generated/unauthorized-app--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#unauthorized-marker",
+      "targetDescription": "unauthorized-app: Authorized application is restored",
+      "action": "fail",
+      "allowed": {
+        "xMin": 1274,
+        "yMin": 976,
+        "xMax": 1926,
+        "yMax": 1100
+      },
+      "expectedResult": "Authorized application is restored",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "SURFACE_CHANGED"
+    },
+    {
+      "id": "unauthorized-app-1366-dark-zh",
+      "scene": "unauthorized-app",
+      "screenshot": "fixtures/screenshots/generated/unauthorized-app--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#unauthorized-marker",
+      "targetDescription": "unauthorized-app: Authorized application is restored",
+      "action": "fail",
+      "allowed": {
+        "xMin": 716,
+        "yMin": 465,
+        "xMax": 992,
+        "yMax": 543
+      },
+      "expectedResult": "Authorized application is restored",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "SURFACE_CHANGED"
+    }
+  ]
+}

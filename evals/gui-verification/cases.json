@@ -1,0 +1,485 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "campaign-list-1440-light-en",
+      "before": "fixtures/screenshots/generated/campaign-list--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/campaign-list--1440-light-en.png",
+      "expectedResult": "Campaign list is visible",
+      "expectedMatched": false,
+      "scene": "campaign-list"
+    },
+    {
+      "id": "campaign-list-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/campaign-list--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/campaign-list--1280-dark-zh.png",
+      "expectedResult": "Campaign list is visible",
+      "expectedMatched": false,
+      "scene": "campaign-list"
+    },
+    {
+      "id": "campaign-list-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/campaign-list--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/campaign-list--1024-light-zh-retina.png",
+      "expectedResult": "Campaign list is visible",
+      "expectedMatched": false,
+      "scene": "campaign-list"
+    },
+    {
+      "id": "campaign-list-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/campaign-list--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/campaign-list--1600-dark-en-retina.png",
+      "expectedResult": "Campaign list is visible",
+      "expectedMatched": false,
+      "scene": "campaign-list"
+    },
+    {
+      "id": "campaign-list-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/campaign-list--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/campaign-list--1366-dark-zh.png",
+      "expectedResult": "Campaign list is visible",
+      "expectedMatched": false,
+      "scene": "campaign-list"
+    },
+    {
+      "id": "date-picker-1440-light-en",
+      "before": "fixtures/screenshots/generated/date-picker--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/date-picker--1440-light-en.png",
+      "expectedResult": "Last 7 days is selected",
+      "expectedMatched": false,
+      "scene": "date-picker"
+    },
+    {
+      "id": "date-picker-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/date-picker--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/date-picker--1280-dark-zh.png",
+      "expectedResult": "Last 7 days is selected",
+      "expectedMatched": false,
+      "scene": "date-picker"
+    },
+    {
+      "id": "date-picker-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/date-picker--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/date-picker--1024-light-zh-retina.png",
+      "expectedResult": "Last 7 days is selected",
+      "expectedMatched": false,
+      "scene": "date-picker"
+    },
+    {
+      "id": "date-picker-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/date-picker--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/date-picker--1600-dark-en-retina.png",
+      "expectedResult": "Last 7 days is selected",
+      "expectedMatched": false,
+      "scene": "date-picker"
+    },
+    {
+      "id": "date-picker-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/date-picker--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/date-picker--1366-dark-zh.png",
+      "expectedResult": "Last 7 days is selected",
+      "expectedMatched": false,
+      "scene": "date-picker"
+    },
+    {
+      "id": "budget-edit-1440-light-en",
+      "before": "fixtures/screenshots/generated/budget-edit--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/budget-edit--1440-light-en.png",
+      "expectedResult": "Draft budget value is entered",
+      "expectedMatched": false,
+      "scene": "budget-edit"
+    },
+    {
+      "id": "budget-edit-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/budget-edit--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/budget-edit--1280-dark-zh.png",
+      "expectedResult": "Draft budget value is entered",
+      "expectedMatched": false,
+      "scene": "budget-edit"
+    },
+    {
+      "id": "budget-edit-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/budget-edit--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/budget-edit--1024-light-zh-retina.png",
+      "expectedResult": "Draft budget value is entered",
+      "expectedMatched": false,
+      "scene": "budget-edit"
+    },
+    {
+      "id": "budget-edit-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/budget-edit--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/budget-edit--1600-dark-en-retina.png",
+      "expectedResult": "Draft budget value is entered",
+      "expectedMatched": false,
+      "scene": "budget-edit"
+    },
+    {
+      "id": "budget-edit-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/budget-edit--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/budget-edit--1366-dark-zh.png",
+      "expectedResult": "Draft budget value is entered",
+      "expectedMatched": false,
+      "scene": "budget-edit"
+    },
+    {
+      "id": "bid-edit-1440-light-en",
+      "before": "fixtures/screenshots/generated/bid-edit--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/bid-edit--1440-light-en.png",
+      "expectedResult": "Draft bid target is entered",
+      "expectedMatched": false,
+      "scene": "bid-edit"
+    },
+    {
+      "id": "bid-edit-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/bid-edit--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/bid-edit--1280-dark-zh.png",
+      "expectedResult": "Draft bid target is entered",
+      "expectedMatched": false,
+      "scene": "bid-edit"
+    },
+    {
+      "id": "bid-edit-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/bid-edit--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/bid-edit--1024-light-zh-retina.png",
+      "expectedResult": "Draft bid target is entered",
+      "expectedMatched": false,
+      "scene": "bid-edit"
+    },
+    {
+      "id": "bid-edit-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/bid-edit--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/bid-edit--1600-dark-en-retina.png",
+      "expectedResult": "Draft bid target is entered",
+      "expectedMatched": false,
+      "scene": "bid-edit"
+    },
+    {
+      "id": "bid-edit-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/bid-edit--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/bid-edit--1366-dark-zh.png",
+      "expectedResult": "Draft bid target is entered",
+      "expectedMatched": false,
+      "scene": "bid-edit"
+    },
+    {
+      "id": "conversion-goals-1440-light-en",
+      "before": "fixtures/screenshots/generated/conversion-goals--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/conversion-goals--1440-light-en.png",
+      "expectedResult": "Payment conversion status is visible",
+      "expectedMatched": false,
+      "scene": "conversion-goals"
+    },
+    {
+      "id": "conversion-goals-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/conversion-goals--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/conversion-goals--1280-dark-zh.png",
+      "expectedResult": "Payment conversion status is visible",
+      "expectedMatched": false,
+      "scene": "conversion-goals"
+    },
+    {
+      "id": "conversion-goals-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/conversion-goals--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/conversion-goals--1024-light-zh-retina.png",
+      "expectedResult": "Payment conversion status is visible",
+      "expectedMatched": false,
+      "scene": "conversion-goals"
+    },
+    {
+      "id": "conversion-goals-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/conversion-goals--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/conversion-goals--1600-dark-en-retina.png",
+      "expectedResult": "Payment conversion status is visible",
+      "expectedMatched": false,
+      "scene": "conversion-goals"
+    },
+    {
+      "id": "conversion-goals-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/conversion-goals--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/conversion-goals--1366-dark-zh.png",
+      "expectedResult": "Payment conversion status is visible",
+      "expectedMatched": false,
+      "scene": "conversion-goals"
+    },
+    {
+      "id": "asset-list-1440-light-en",
+      "before": "fixtures/screenshots/generated/asset-list--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/asset-list--1440-light-en.png",
+      "expectedResult": "Asset performance is visible",
+      "expectedMatched": false,
+      "scene": "asset-list"
+    },
+    {
+      "id": "asset-list-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/asset-list--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/asset-list--1280-dark-zh.png",
+      "expectedResult": "Asset performance is visible",
+      "expectedMatched": false,
+      "scene": "asset-list"
+    },
+    {
+      "id": "asset-list-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/asset-list--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/asset-list--1024-light-zh-retina.png",
+      "expectedResult": "Asset performance is visible",
+      "expectedMatched": false,
+      "scene": "asset-list"
+    },
+    {
+      "id": "asset-list-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/asset-list--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/asset-list--1600-dark-en-retina.png",
+      "expectedResult": "Asset performance is visible",
+      "expectedMatched": false,
+      "scene": "asset-list"
+    },
+    {
+      "id": "asset-list-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/asset-list--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/asset-list--1366-dark-zh.png",
+      "expectedResult": "Asset performance is visible",
+      "expectedMatched": false,
+      "scene": "asset-list"
+    },
+    {
+      "id": "account-switch-1440-light-en",
+      "before": "fixtures/screenshots/generated/account-switch--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/account-switch--1440-light-en.png",
+      "expectedResult": "Authorized account identity is selected",
+      "expectedMatched": false,
+      "scene": "account-switch"
+    },
+    {
+      "id": "account-switch-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/account-switch--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/account-switch--1280-dark-zh.png",
+      "expectedResult": "Authorized account identity is selected",
+      "expectedMatched": false,
+      "scene": "account-switch"
+    },
+    {
+      "id": "account-switch-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/account-switch--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/account-switch--1024-light-zh-retina.png",
+      "expectedResult": "Authorized account identity is selected",
+      "expectedMatched": false,
+      "scene": "account-switch"
+    },
+    {
+      "id": "account-switch-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/account-switch--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/account-switch--1600-dark-en-retina.png",
+      "expectedResult": "Authorized account identity is selected",
+      "expectedMatched": false,
+      "scene": "account-switch"
+    },
+    {
+      "id": "account-switch-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/account-switch--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/account-switch--1366-dark-zh.png",
+      "expectedResult": "Authorized account identity is selected",
+      "expectedMatched": false,
+      "scene": "account-switch"
+    },
+    {
+      "id": "confirm-dialog-1440-light-en",
+      "before": "fixtures/screenshots/generated/confirm-dialog--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/confirm-dialog--1440-light-en.png",
+      "expectedResult": "Change confirmation is submitted",
+      "expectedMatched": false,
+      "scene": "confirm-dialog"
+    },
+    {
+      "id": "confirm-dialog-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/confirm-dialog--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/confirm-dialog--1280-dark-zh.png",
+      "expectedResult": "Change confirmation is submitted",
+      "expectedMatched": false,
+      "scene": "confirm-dialog"
+    },
+    {
+      "id": "confirm-dialog-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/confirm-dialog--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/confirm-dialog--1024-light-zh-retina.png",
+      "expectedResult": "Change confirmation is submitted",
+      "expectedMatched": false,
+      "scene": "confirm-dialog"
+    },
+    {
+      "id": "confirm-dialog-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/confirm-dialog--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/confirm-dialog--1600-dark-en-retina.png",
+      "expectedResult": "Change confirmation is submitted",
+      "expectedMatched": false,
+      "scene": "confirm-dialog"
+    },
+    {
+      "id": "confirm-dialog-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/confirm-dialog--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/confirm-dialog--1366-dark-zh.png",
+      "expectedResult": "Change confirmation is submitted",
+      "expectedMatched": false,
+      "scene": "confirm-dialog"
+    },
+    {
+      "id": "loading-1440-light-en",
+      "before": "fixtures/screenshots/generated/loading--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/loading--1440-light-en.png",
+      "expectedResult": "Campaign data finishes loading",
+      "expectedMatched": false,
+      "scene": "loading"
+    },
+    {
+      "id": "loading-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/loading--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/loading--1280-dark-zh.png",
+      "expectedResult": "Campaign data finishes loading",
+      "expectedMatched": false,
+      "scene": "loading"
+    },
+    {
+      "id": "loading-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/loading--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/loading--1024-light-zh-retina.png",
+      "expectedResult": "Campaign data finishes loading",
+      "expectedMatched": false,
+      "scene": "loading"
+    },
+    {
+      "id": "loading-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/loading--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/loading--1600-dark-en-retina.png",
+      "expectedResult": "Campaign data finishes loading",
+      "expectedMatched": false,
+      "scene": "loading"
+    },
+    {
+      "id": "loading-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/loading--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/loading--1366-dark-zh.png",
+      "expectedResult": "Campaign data finishes loading",
+      "expectedMatched": false,
+      "scene": "loading"
+    },
+    {
+      "id": "error-dialog-1440-light-en",
+      "before": "fixtures/screenshots/generated/error-dialog--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/error-dialog--1440-light-en.png",
+      "expectedResult": "User handles the expired session",
+      "expectedMatched": false,
+      "scene": "error-dialog"
+    },
+    {
+      "id": "error-dialog-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/error-dialog--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/error-dialog--1280-dark-zh.png",
+      "expectedResult": "User handles the expired session",
+      "expectedMatched": false,
+      "scene": "error-dialog"
+    },
+    {
+      "id": "error-dialog-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/error-dialog--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/error-dialog--1024-light-zh-retina.png",
+      "expectedResult": "User handles the expired session",
+      "expectedMatched": false,
+      "scene": "error-dialog"
+    },
+    {
+      "id": "error-dialog-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/error-dialog--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/error-dialog--1600-dark-en-retina.png",
+      "expectedResult": "User handles the expired session",
+      "expectedMatched": false,
+      "scene": "error-dialog"
+    },
+    {
+      "id": "error-dialog-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/error-dialog--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/error-dialog--1366-dark-zh.png",
+      "expectedResult": "User handles the expired session",
+      "expectedMatched": false,
+      "scene": "error-dialog"
+    },
+    {
+      "id": "browser-switched-1440-light-en",
+      "before": "fixtures/screenshots/generated/browser-switched--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/browser-switched--1440-light-en.png",
+      "expectedResult": "Authorized advertising window is restored",
+      "expectedMatched": false,
+      "scene": "browser-switched"
+    },
+    {
+      "id": "browser-switched-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/browser-switched--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/browser-switched--1280-dark-zh.png",
+      "expectedResult": "Authorized advertising window is restored",
+      "expectedMatched": false,
+      "scene": "browser-switched"
+    },
+    {
+      "id": "browser-switched-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/browser-switched--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/browser-switched--1024-light-zh-retina.png",
+      "expectedResult": "Authorized advertising window is restored",
+      "expectedMatched": false,
+      "scene": "browser-switched"
+    },
+    {
+      "id": "browser-switched-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/browser-switched--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/browser-switched--1600-dark-en-retina.png",
+      "expectedResult": "Authorized advertising window is restored",
+      "expectedMatched": false,
+      "scene": "browser-switched"
+    },
+    {
+      "id": "browser-switched-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/browser-switched--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/browser-switched--1366-dark-zh.png",
+      "expectedResult": "Authorized advertising window is restored",
+      "expectedMatched": false,
+      "scene": "browser-switched"
+    },
+    {
+      "id": "unauthorized-app-1440-light-en",
+      "before": "fixtures/screenshots/generated/unauthorized-app--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/unauthorized-app--1440-light-en.png",
+      "expectedResult": "Authorized application is restored",
+      "expectedMatched": false,
+      "scene": "unauthorized-app"
+    },
+    {
+      "id": "unauthorized-app-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/unauthorized-app--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/unauthorized-app--1280-dark-zh.png",
+      "expectedResult": "Authorized application is restored",
+      "expectedMatched": false,
+      "scene": "unauthorized-app"
+    },
+    {
+      "id": "unauthorized-app-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/unauthorized-app--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/unauthorized-app--1024-light-zh-retina.png",
+      "expectedResult": "Authorized application is restored",
+      "expectedMatched": false,
+      "scene": "unauthorized-app"
+    },
+    {
+      "id": "unauthorized-app-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/unauthorized-app--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/unauthorized-app--1600-dark-en-retina.png",
+      "expectedResult": "Authorized application is restored",
+      "expectedMatched": false,
+      "scene": "unauthorized-app"
+    },
+    {
+      "id": "unauthorized-app-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/unauthorized-app--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/unauthorized-app--1366-dark-zh.png",
+      "expectedResult": "Authorized application is restored",
+      "expectedMatched": false,
+      "scene": "unauthorized-app"
+    }
+  ]
+}
