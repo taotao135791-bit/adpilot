@@ -51,7 +51,7 @@ describe("AdPilotAgent integration", () => {
     });
     const sharedFacts = new SharedFactLedger(new WorkspaceSharedFactRepository(workspace));
     const inheritedTaskId = crypto.randomUUID();
-    const addGuardrailFact = async (predicate: string, value: string | boolean) => {
+    const addGuardrailFact = async (predicate: string, value: string | boolean | number) => {
       const fact = await sharedFacts.observe({
         clientId: "client-a",
         taskId: inheritedTaskId,
@@ -69,19 +69,36 @@ describe("AdPilotAgent integration", () => {
       });
       return sharedFacts.verify("client-a", fact.factId, { verifier: "independent_visual_verifier", confidence: 0.97 });
     };
-    const measurementFact = await addGuardrailFact("measurement_status", "reliable");
-    const maturityFact = await addGuardrailFact("campaign_mature", true);
-    const learningFact = await addGuardrailFact("learning_phase", false);
+    await addGuardrailFact("measurement_status", "reliable");
+    await addGuardrailFact("campaign_mature", true);
+    await addGuardrailFact("learning_phase", false);
+    await addGuardrailFact("spend", 100);
+    await addGuardrailFact("conversions", 10);
+    await addGuardrailFact("days", 7);
+    await addGuardrailFact("target_cpa", 10);
     const faux = fauxProvider({ provider: "test", models: [{ id: "fast" }, { id: "strong", reasoning: true }] });
     const models = createModels(); models.setProvider(faux.provider);
     faux.setResponses([
-      fauxAssistantMessage(fauxToolCall("dispatch_specialist", { role: "performance_analyst", input: { metrics: { spend: 100, conversions: 10, days: 7 }, target: 10, objective: "CPA" } }), { stopReason: "toolUse" }),
+      async (context) => {
+        const ids = factIdsFromModelContext(context);
+        return fauxAssistantMessage(fauxToolCall("dispatch_specialist", { role: "performance_analyst", input: {
+          metrics: { spend: 100, conversions: 10, days: 7 }, target: 10, objective: "CPA",
+          factIds: {
+            "metrics.spend": ids.spend,
+            "metrics.conversions": ids.conversions,
+            "metrics.days": ids.days,
+            target: ids.target_cpa
+          }
+        } }), { stopReason: "toolUse" });
+      },
       fauxAssistantMessage(fauxToolCall("dispatch_specialist", { role: "account_operator", input: { visualTask: {
         instruction: "Read the visible campaign table", target: "campaign table", expectedResult: "campaign table is visible",
         riskLevel: "observe", permission: "OBSERVE",
         surface: { app: "Browser", domain: "ads.google.com", browserProfile: "client-a-google", allowedApps: ["Browser"], allowedDomains: ["ads.google.com"] }
       } } }), { stopReason: "toolUse" }),
-      fauxAssistantMessage(fauxToolCall("prepare_approval", {
+      async (context) => {
+        const ids = factIdsFromModelContext(context);
+        return fauxAssistantMessage(fauxToolCall("prepare_approval", {
         operation: {
           platform: "google_ads", account: "acct-1", campaign: "campaign-1", operation: "set_daily_budget",
           currentValue: 100, proposedValue: 110, changePercentage: 10,
@@ -112,11 +129,12 @@ describe("AdPilotAgent integration", () => {
           }
         },
         guardrailEvidence: {
-          measurementStatusFactId: measurementFact.factId,
-          maturityFactId: maturityFact.factId,
-          learningFactId: learningFact.factId
+          measurementStatusFactId: ids.measurement_status,
+          maturityFactId: ids.campaign_mature,
+          learningFactId: ids.learning_phase
         }
-      }), { stopReason: "toolUse" }),
+      }), { stopReason: "toolUse" });
+      },
       fauxAssistantMessage(JSON.stringify({
         summary: "CPA is on target after deterministic review.",
         investigationTree: [{ question: "Is performance on target?", specialist: "performance_analyst", status: "complete", conclusion: "CPA equals target" }],
@@ -245,3 +263,24 @@ describe("AdPilotAgent integration", () => {
     expect(persisted.some((fact: { predicate: string }) => fact.predicate === "root_agent_synthesis")).toBe(true);
   });
 });
+
+function factIdsFromModelContext(context: unknown): Record<string, string> {
+  const strings: string[] = [];
+  const visit = (value: unknown): void => {
+    if (typeof value === "string") { strings.push(value); return; }
+    if (Array.isArray(value)) { value.forEach(visit); return; }
+    if (value && typeof value === "object") Object.values(value as Record<string, unknown>).forEach(visit);
+  };
+  visit(context);
+  for (const candidate of strings) {
+    try {
+      const parsed = JSON.parse(candidate) as { projectContext?: { verifiedFacts?: Array<{ factId: string; predicate: string }> } };
+      const facts = parsed.projectContext?.verifiedFacts;
+      if (!facts?.length) continue;
+      return Object.fromEntries(facts.map((fact) => [fact.predicate, fact.factId]));
+    } catch {
+      // Non-JSON prompt fragments are expected.
+    }
+  }
+  throw new Error("model context did not include current verified facts");
+}

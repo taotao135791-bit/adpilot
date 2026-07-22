@@ -6,6 +6,8 @@ import type { AdPilotTools } from "@adpilot/tools";
 import {
   AccountOperator,
   InMemorySpecialistSessionRepository,
+  MediaBuyer,
+  MeasurementReviewer,
   PerformanceAnalyst,
   SpecialistCoordinator,
   selectSharedFactsForSpecialist,
@@ -25,12 +27,17 @@ describe("specialist agents", () => {
       execute: async (request) => { seen.push(request.sharedFacts); return { calculated: { cpi: 1, cpa: 2, roas: 3 }, findings: [], maturity: "mature", confidence: 1 }; }
     };
     const coordinator = new SpecialistCoordinator([agent]);
+    const taskId = crypto.randomUUID();
     const result = await coordinator.dispatch("performance_analyst", {
-      context: { clientId: "client-a", taskId: crypto.randomUUID(), actor: "main", permission: "OBSERVE" },
-      input: { metrics: { spend: 10, days: 7 }, target: 2, objective: "CPA" }, sharedFacts: []
+      context: { clientId: "client-a", taskId, actor: "main", permission: "OBSERVE" },
+      input: {
+        metrics: { spend: 10, days: 7 }, target: 2, objective: "CPA",
+        factIds: { "metrics.spend": "spend", "metrics.days": "days", target: "target" }
+      },
+      sharedFacts: [visualFact(taskId, "spend", 10, "spend"), visualFact(taskId, "days", 7, "days"), visualFact(taskId, "target_cpa", 2, "target")]
     }) as { confidence: number };
     expect(result.confidence).toBe(1);
-    expect(seen).toEqual([[]]);
+    expect(seen).toEqual([[expect.objectContaining({ factId: "spend" }), expect.objectContaining({ factId: "days" }), expect.objectContaining({ factId: "target" })]]);
     await expect(coordinator.dispatch("media_buyer", { context: { clientId: "x", taskId: crypto.randomUUID(), actor: "x", permission: "OBSERVE" }, input: {}, sharedFacts: [] })).rejects.toThrow("unavailable");
   });
 
@@ -55,8 +62,15 @@ describe("specialist agents", () => {
     const taskB = crypto.randomUUID();
     const request = (taskId: string) => ({
       context: { clientId: "client-a", taskId, actor: "main", permission: "OBSERVE" as const },
-      input: { metrics: { spend: 10, days: 7 }, target: 2, objective: "CPA" },
-      sharedFacts: []
+      input: {
+        metrics: { spend: 10, days: 7 }, target: 2, objective: "CPA",
+        factIds: { "metrics.spend": "spend", "metrics.days": "days", target: "target" }
+      },
+      sharedFacts: [
+        visualFact(taskId, "spend", 10, "spend"),
+        visualFact(taskId, "days", 7, "days"),
+        visualFact(taskId, "target_cpa", 2, "target")
+      ]
     });
 
     await coordinator.dispatch("performance_analyst", request(taskA));
@@ -186,4 +200,127 @@ describe("specialist agents", () => {
     }], { clientId: "client-a", taskId, role: "media_buyer", now: new Date("2026-07-22T00:11:00.000Z") });
     expect(selected).toEqual([]);
   });
+
+  it("rejects model-authored specialist numbers that do not exactly match bound visual facts", async () => {
+    const runtime: SpecialistRuntime = { run: vi.fn() };
+    const taskId = crypto.randomUUID();
+    const analyst = new PerformanceAnalyst(runtime);
+    const input = {
+      metrics: { spend: 101, days: 7 },
+      target: 10,
+      objective: "CPA",
+      factIds: { "metrics.spend": "spend", "metrics.days": "days", target: "target" }
+    };
+    const sharedFacts = [
+      visualFact(taskId, "spend", 100, "spend"),
+      visualFact(taskId, "days", 7, "days"),
+      visualFact(taskId, "target_cpa", 10, "target")
+    ];
+
+    await expect(analyst.execute({
+      context: { clientId: "client-a", taskId, actor: "root_agent", permission: "OBSERVE" },
+      input,
+      sharedFacts
+    })).rejects.toThrow("unverified numerical specialist input: metrics.spend");
+    expect(runtime.run).not.toHaveBeenCalled();
+  });
+
+  it("rejects same-valued facts with the wrong predicate or without screenshot bounding-box proof", async () => {
+    const runtime: SpecialistRuntime = { run: vi.fn() };
+    const taskId = crypto.randomUUID();
+    const analyst = new PerformanceAnalyst(runtime);
+    const input = {
+      metrics: { spend: 100, days: 7 }, target: 10, objective: "CPA",
+      factIds: { "metrics.spend": "wrong", "metrics.days": "days", target: "target" }
+    };
+    const wrongPredicate = visualFact(taskId, "impressions", 100, "wrong");
+    const noBox = {
+      ...visualFact(taskId, "spend", 100, "no-box"),
+      sourceType: "workspace" as const,
+      sourceScreenshotId: null,
+      sourceBoundingBox: null,
+      evidenceIds: []
+    };
+
+    await expect(analyst.execute({
+      context: { clientId: "client-a", taskId, actor: "root_agent", permission: "OBSERVE" },
+      input,
+      sharedFacts: [wrongPredicate, visualFact(taskId, "days", 7, "days"), visualFact(taskId, "target_cpa", 10, "target")]
+    })).rejects.toThrow("unverified numerical specialist input: metrics.spend");
+    await expect(analyst.execute({
+      context: { clientId: "client-a", taskId, actor: "root_agent", permission: "OBSERVE" },
+      input: { ...input, factIds: { ...input.factIds, "metrics.spend": "no-box" } },
+      sharedFacts: [noBox, visualFact(taskId, "days", 7, "days"), visualFact(taskId, "target_cpa", 10, "target")]
+    })).rejects.toThrow("unverified numerical specialist input: metrics.spend");
+    expect(runtime.run).not.toHaveBeenCalled();
+  });
+
+  it("requires explicit fact ids instead of value-only matching across Campaigns", async () => {
+    const runtime: SpecialistRuntime = { run: vi.fn() };
+    const taskId = crypto.randomUUID();
+    const duplicateSpend = { ...visualFact(taskId, "spend", 100, "spend-b"), subject: "campaign-b" };
+    await expect(new PerformanceAnalyst(runtime).execute({
+      context: { clientId: "client-a", taskId, actor: "root_agent", permission: "OBSERVE" },
+      input: { metrics: { spend: 100, days: 7 }, target: 10, objective: "CPA", factIds: {} },
+      sharedFacts: [
+        visualFact(taskId, "spend", 100, "spend-a"), duplicateSpend,
+        visualFact(taskId, "days", 7, "days"), visualFact(taskId, "target_cpa", 10, "target")
+      ]
+    })).rejects.toThrow("unverified numerical specialist input: metrics.spend");
+    expect(runtime.run).not.toHaveBeenCalled();
+  });
+
+  it("enforces fact binding for media buyer and measurement reviewer without affecting other roles", async () => {
+    const runtime: SpecialistRuntime = { run: vi.fn() };
+    const taskId = crypto.randomUUID();
+    const context = { clientId: "client-a", taskId, actor: "root_agent", permission: "OBSERVE" as const };
+    await expect(new MediaBuyer(runtime).execute({
+      context,
+      input: {
+        change: {
+          kind: "budget", currentValue: 100, proposedValue: 110, maxChangePercent: 20,
+          activeExperimentVariables: [], measurementStatus: "reliable", mature: true, learning: false
+        },
+        objective: "CPA", businessBoundary: "No more than 20%", factIds: {}
+      },
+      sharedFacts: []
+    })).rejects.toThrow("unverified numerical specialist input: change.currentValue");
+
+    await expect(new MeasurementReviewer(runtime).execute({
+      context,
+      input: {
+        metrics: { spend: 100, days: 7 }, platformConversions: 10, sourceConversions: 10,
+        duplicatedEvents: 0, eventIdsPresent: true, factIds: {}
+      },
+      sharedFacts: []
+    })).rejects.toThrow("unverified numerical specialist input: metrics.spend");
+    expect(runtime.run).not.toHaveBeenCalled();
+  });
 });
+
+function visualFact(taskId: string, predicate: string, value: number, factId: string): SharedFact {
+  return {
+    factId,
+    clientId: "client-a",
+    taskId,
+    subject: "campaign-a",
+    predicate,
+    value,
+    unit: "",
+    sourceType: "visual_table",
+    sourceScreenshotId: `screen-${factId}`,
+    sourceBoundingBox: [1, 2, 3, 4],
+    evidenceIds: [`screenshot:screen-${factId}`],
+    confidence: 0.95,
+    status: "verified",
+    createdBy: "visual_table_reader",
+    verifiedBy: ["visual_verifier"],
+    createdAt: "2026-07-22T00:00:00.000Z",
+    updatedAt: "2026-07-22T00:00:01.000Z",
+    verifiedAt: "2026-07-22T00:00:01.000Z",
+    expiresAt: "2027-07-22T00:00:00.000Z",
+    statusReason: null,
+    supersededByFactId: null,
+    derivedFromFactId: null
+  };
+}

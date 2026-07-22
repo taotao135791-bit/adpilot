@@ -299,6 +299,59 @@ describe("production visual approval tools", () => {
     expect(fixture.runMicroTask).not.toHaveBeenCalled();
     await expect(fixture.approvals.get("client-a", fixture.approval.id)).resolves.toMatchObject({ status: "cancelled" });
   });
+
+  it("cancels the approval before input when a bound guardrail fact becomes stale", async () => {
+    const fixture = await approved();
+    await fixture.sharedFacts.markStale(
+      "client-a",
+      fixture.guardrailEvidence.measurementStatusFactId,
+      "source page changed"
+    );
+    await expect(fixture.tools.commitApprovedVisualAction(
+      fixture.context,
+      fixture.approval.id,
+      fixture.token,
+      operation,
+      fixture.task
+    )).rejects.toThrow(/not verified|stale/);
+    expect(fixture.runMicroTask).not.toHaveBeenCalled();
+    await expect(fixture.approvals.get("client-a", fixture.approval.id)).resolves.toMatchObject({ status: "cancelled" });
+  });
+
+  it("derives guardrail facts deterministically from ordinary verified campaign metrics and statuses", async () => {
+    const fixture = await setup();
+    const raw = await createMetricGuardrailEvidence(fixture.sharedFacts);
+    const created = await fixture.tools.createApproval(
+      { clientId: "client-a", taskId, actor: "adpilot_agent", permission: "OBSERVE" },
+      operation,
+      draft,
+      raw
+    );
+    expect(created.guardrail).toMatchObject({
+      input: { measurementStatus: "reliable", mature: true, learning: false },
+      decision: { allowed: true, requiresFreshReview: false },
+      singleVariable: true
+    });
+    const facts = await fixture.sharedFacts.list("client-a", { taskId, includeTerminal: true });
+    const bound = facts.filter((fact) => created.guardrail?.evidenceFactIds.includes(fact.factId));
+    expect(bound.map((fact) => fact.predicate).sort()).toEqual(["campaign_mature", "learning_phase", "measurement_status"]);
+    expect(bound.every((fact) => fact.status === "verified" && fact.createdBy === "deterministic_guardrail_derivation")).toBe(true);
+  });
+
+  it("cancels a derived approval when one of its raw screenshot facts is superseded or stale", async () => {
+    const fixture = await setup();
+    const raw = await createMetricGuardrailEvidence(fixture.sharedFacts);
+    const created = await fixture.tools.createApproval(
+      { clientId: "client-a", taskId, actor: "adpilot_agent", permission: "OBSERVE" },
+      operation,
+      draft,
+      raw
+    );
+    await fixture.sharedFacts.markStale("client-a", raw.conversionsFactId, "a newer Campaign view replaced the source");
+    await expect(fixture.tools.validateApprovalGuardrail("client-a", created.id, true))
+      .rejects.toThrow(/source fact .*not current|stale/);
+    await expect(fixture.approvals.get("client-a", created.id)).resolves.toMatchObject({ status: "cancelled" });
+  });
 });
 
 async function createGuardrailEvidence(ledger: SharedFactLedger, subject = "campaign-42"): Promise<ApprovalGuardrailEvidence> {
@@ -328,6 +381,39 @@ async function createGuardrailEvidence(ledger: SharedFactLedger, subject = "camp
     measurementStatusFactId: measurement.factId,
     maturityFactId: maturity.factId,
     learningFactId: learning.factId
+  };
+}
+
+async function createMetricGuardrailEvidence(ledger: SharedFactLedger) {
+  const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+  const add = async (predicate: string, value: string | number) => {
+    const observedFact = await ledger.observe({
+      clientId: "client-a",
+      taskId,
+      subject: "campaign-42",
+      predicate,
+      value,
+      unit: "",
+      sourceType: "visual_table",
+      sourceScreenshotId: `metric-${predicate}`,
+      sourceBoundingBox: [2, 2, 22, 12],
+      evidenceIds: [`screenshot:metric-${predicate}`],
+      confidence: 0.97,
+      createdBy: "visual_table_reader",
+      expiresAt
+    });
+    return ledger.verify("client-a", observedFact.factId, { verifier: "independent_visual_verifier", confidence: 0.96 });
+  };
+  const conversions = await add("conversions", 40);
+  const days = await add("observation_days", 14);
+  const learning = await add("bid_strategy_status", "eligible");
+  const measurement = await add("conversion_tracking_status", "recording conversions");
+  return {
+    conversionsFactId: conversions.factId,
+    observationDaysFactId: days.factId,
+    learningStatusFactId: learning.factId,
+    measurementStatusFactId: measurement.factId,
+    dailyConversionFactIds: []
   };
 }
 

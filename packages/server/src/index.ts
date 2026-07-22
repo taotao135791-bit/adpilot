@@ -10,7 +10,7 @@ import { ApprovalOperation } from "@adpilot/approvals";
 import { StartBrowserSessionInput, type BrowserSession } from "@adpilot/computer-use";
 import { SettingsUpdate } from "@adpilot/configuration";
 import { ConversationMessage, Platform } from "@adpilot/shared";
-import { ApprovalGuardrailEvidence, VisualApprovalPlanInput, visualTaskFromExecutionPlan } from "@adpilot/tools";
+import { ApprovalGuardrailEvidenceInput, VisualApprovalPlanInput, visualTaskFromExecutionPlan } from "@adpilot/tools";
 
 const BrowserSessionStartRequest = z.object({
   clientId: z.string().min(1),
@@ -212,18 +212,21 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const requested = BrowserSessionStartRequest.parse(bodyInput);
     const body = await resolveBrowserStartRequest(system, requested);
     const session = await system.browserSessions.start(StartBrowserSessionInput.parse(body));
+    await system.agent.sharedFacts.invalidateVisualEvidence(body.clientId, { reason: "managed browser session was replaced" });
     return { session: publicBrowserSession(session), computerUse: await computerUseState(system, body.clientId, false) };
   };
   const resumeManagedBrowser = async (bodyInput: unknown) => {
     const body = BrowserSessionLookup.parse(bodyInput);
     await system.workspace.readClient(body.clientId);
     const session = await system.browserSessions.resume(body.clientId, body.browserProfile);
+    await system.agent.sharedFacts.invalidateVisualEvidence(body.clientId, { reason: "managed browser session was resumed and requires fresh evidence" });
     return { session: publicBrowserSession(session), computerUse: await computerUseState(system, body.clientId, false) };
   };
   const closeManagedBrowser = async (bodyInput: unknown) => {
     const body = BrowserSessionLookup.parse(bodyInput);
     await system.workspace.readClient(body.clientId);
     const session = await system.browserSessions.close(body.clientId, body.browserProfile);
+    await system.agent.sharedFacts.invalidateVisualEvidence(body.clientId, { reason: "managed browser session was closed" });
     return { session: publicBrowserSession(session), computerUse: await computerUseState(system, body.clientId, false) };
   };
 
@@ -269,7 +272,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       taskId: z.string().uuid(),
       operation: ApprovalOperation,
       executionPlan: VisualApprovalPlanInput.optional(),
-      guardrailEvidence: ApprovalGuardrailEvidence.optional()
+      guardrailEvidence: ApprovalGuardrailEvidenceInput.optional()
     }).superRefine((value, context) => {
       if ((value.operation.riskLevel === "mutate" || value.operation.riskLevel === "destructive") && !value.executionPlan) {
         context.addIssue({ code: z.ZodIssueCode.custom, path: ["executionPlan"], message: "a complete visual approval plan is required for mutations" });
@@ -291,7 +294,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
   app.post("/api/approvals/:id/risk-review", async (request) => {
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
     const body = z.object({ clientId: z.string() }).parse(request.body);
-    const approval = await system.approvals.get(body.clientId, params.id);
+    const approval = await system.tools.validateApprovalGuardrail(body.clientId, params.id, true);
     const [audit, screenshotDisclosures] = await Promise.all([
       system.audit.list(body.clientId),
       system.screenshotAudits.list(body.clientId)
@@ -325,6 +328,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
   app.post("/api/approvals/:id/approve", async (request) => {
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
     const body = z.object({ clientId: z.string(), approvedBy: z.string().min(1) }).parse(request.body);
+    await system.tools.validateApprovalGuardrail(body.clientId, params.id, true);
     const { approval, token } = await system.approvals.approveByUser(body.clientId, params.id, body.approvedBy);
     system.approvalTokens.set(params.id, token);
     system.events.publish({ type: "approval", clientId: body.clientId, approvalId: params.id, status: approval.status });

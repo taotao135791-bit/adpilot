@@ -113,10 +113,21 @@ describe("visual account fingerprint", () => {
       confidence: 0.94
     });
     expect(result.fingerprintHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.evidenceRegions).toEqual(observation.regions);
     expect(result.targetRegion).toEqual({ x: 66, y: 44, width: 30, height: 18 });
     expect(result.reviewers.map((item) => item.id)).toEqual(["gui-verifier", "deep-vision-reviewer"]);
     const later = await gate().confirm(expected, { ...(await screenshot()), capturedAt: "2026-07-22T00:01:00.000Z", sha256: "b".repeat(64) });
     expect(later.fingerprintHash).toBe(result.fingerprintHash);
+  });
+
+  it("uses the first independent observation only to minimize the second review image", async () => {
+    let secondExpected: ExpectedVisualIdentity | undefined;
+    const verifier = new DualVisualIdentityVerifier(
+      reviewer("gui-locator", observation),
+      { id: "deep-verifier", review: async (input) => { secondExpected = structuredClone(input); return structuredClone(observation); } }
+    );
+    await verifier.confirm(expected, await screenshot());
+    expect(secondExpected?.evidenceRegions).toEqual(observation.regions);
   });
 
   it("rejects a different account", async () => {

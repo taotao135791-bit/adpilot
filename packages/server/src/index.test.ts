@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createAdPilotSystem } from "@adpilot/application";
 import type { ApprovalExecutionPlan, ApprovalGuardrailRequest, ApprovalOperation } from "@adpilot/approvals";
 import { BrowserSessionLostError, type BrowserSession, type ScreenshotModelCallAudit } from "@adpilot/computer-use";
+import type { SharedFactLedger } from "@adpilot/shared";
 import { visualTaskFromExecutionPlan, type VisualApprovalPlanDraft } from "@adpilot/tools";
 import { createServer } from "./index.js";
 
@@ -19,7 +20,10 @@ function operation(): ApprovalOperation {
   };
 }
 
-function guardrailFor(approvedOperation = operation()): ApprovalGuardrailRequest {
+function guardrailFor(
+  approvedOperation = operation(),
+  evidenceFactIds: readonly [string, string, string] = ["fact-measurement", "fact-maturity", "fact-learning"]
+): ApprovalGuardrailRequest {
   if (typeof approvedOperation.currentValue !== "number" || typeof approvedOperation.proposedValue !== "number") {
     throw new Error("test guardrail requires numeric values");
   }
@@ -34,9 +38,45 @@ function guardrailFor(approvedOperation = operation()): ApprovalGuardrailRequest
       mature: true,
       learning: false
     },
-    evidenceFactIds: ["fact-measurement", "fact-maturity", "fact-learning"],
+    evidenceFactIds: [...evidenceFactIds],
     singleVariable: true
   };
+}
+
+async function seedVerifiedGuardrailFacts(
+  ledger: SharedFactLedger,
+  clientId: string,
+  taskId: string,
+  approvedOperation = operation()
+): Promise<{ guardrail: ApprovalGuardrailRequest; factIds: readonly [string, string, string] }> {
+  const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+  const add = async (predicate: string, value: string | boolean) => {
+    const screenshotId = `guardrail-${predicate}-${crypto.randomUUID()}`;
+    const observed = await ledger.observe({
+      clientId,
+      taskId,
+      subject: approvedOperation.campaign,
+      predicate,
+      value,
+      unit: typeof value === "boolean" ? "boolean" : "status",
+      sourceType: "visual_table",
+      sourceScreenshotId: screenshotId,
+      sourceBoundingBox: [12, 18, 160, 28],
+      evidenceIds: [`screenshot:${screenshotId}`],
+      confidence: 0.98,
+      createdBy: "visual_table_reader",
+      expiresAt
+    });
+    return ledger.verify(clientId, observed.factId, {
+      verifier: "independent_visual_verifier",
+      confidence: 0.97
+    });
+  };
+  const measurement = await add("measurement_status", "reliable");
+  const maturity = await add("campaign_mature", true);
+  const learning = await add("learning_phase", false);
+  const factIds = [measurement.factId, maturity.factId, learning.factId] as const;
+  return { guardrail: guardrailFor(approvedOperation, factIds), factIds };
 }
 
 const guardrailEvidence = {
@@ -295,12 +335,13 @@ describe("product server", () => {
     const taskId = crypto.randomUUID();
     const approvedOperation = operation();
     const approvedPlan = executionPlan("client-a", taskId, approvedOperation);
+    const guardrailFacts = await seedVerifiedGuardrailFacts(system.agent.sharedFacts, "client-a", taskId, approvedOperation);
     const fabricated = await system.approvals.create(
       "client-a",
       taskId,
       { ...approvedOperation, evidence: [`screenshot:${"a".repeat(64)}`] },
       approvedPlan,
-      guardrailFor(approvedOperation)
+      guardrailFacts.guardrail
     );
     const fabricatedReview = await server.inject({ method: "POST", url: `/api/approvals/${fabricated.id}/risk-review`, payload: { clientId: "client-a" } });
     expect(fabricatedReview.statusCode).toBe(200);
@@ -317,7 +358,7 @@ describe("product server", () => {
     };
     await system.screenshotAudits.append(screenshotDisclosure);
     const evidenced = await system.approvals.create(
-      "client-a", taskId, { ...approvedOperation, evidence: [`screenshot:${screenshotId}`] }, approvedPlan, guardrailFor(approvedOperation)
+      "client-a", taskId, { ...approvedOperation, evidence: [`screenshot:${screenshotId}`] }, approvedPlan, guardrailFacts.guardrail
     );
     const dispatch = vi.spyOn(system.specialists, "dispatch").mockImplementation(async (_role, request) => {
       const input = request.input as { approvalId: string; hasBeforeScreenshot: boolean };
@@ -330,7 +371,7 @@ describe("product server", () => {
     expect(evidencedReview.json().approved).toBe(true);
     dispatch.mockRestore();
 
-    const approval = await system.approvals.create("client-a", taskId, approvedOperation, approvedPlan, guardrailFor(approvedOperation));
+    const approval = await system.approvals.create("client-a", taskId, approvedOperation, approvedPlan, guardrailFacts.guardrail);
     await system.approvals.recordRiskReview("client-a", approval.id, true, "Within policy");
     const response = await server.inject({ method: "POST", url: `/api/approvals/${approval.id}/approve`, payload: { clientId: "client-a", approvedBy: "owner" } });
     expect(response.statusCode).toBe(200);
@@ -375,6 +416,32 @@ describe("product server", () => {
     await server.close();
   });
 
+  it("cancels an approval when bound visual guardrail evidence becomes stale before user approval", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-stale-guardrail-api-"));
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+    await system.workspace.initializeClient({ profile: { id: "client-a", name: "Example" }, kpi: { primary: "CPA", target: 10 } });
+    const taskId = crypto.randomUUID();
+    const approvedOperation = operation();
+    const approvedPlan = executionPlan("client-a", taskId, approvedOperation);
+    const seeded = await seedVerifiedGuardrailFacts(system.agent.sharedFacts, "client-a", taskId, approvedOperation);
+    const approval = await system.approvals.create("client-a", taskId, approvedOperation, approvedPlan, seeded.guardrail);
+    await system.approvals.recordRiskReview("client-a", approval.id, true, "Within policy");
+    await system.agent.sharedFacts.markStale("client-a", seeded.factIds[0], "surface changed after review");
+    const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
+
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/approvals/${approval.id}/approve`,
+      payload: { clientId: "client-a", approvedBy: "owner" }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toContain("guardrail evidence measurement_status");
+    await expect(system.approvals.get("client-a", approval.id)).resolves.toMatchObject({ status: "cancelled" });
+    expect(system.approvalTokens.has(approval.id)).toBe(false);
+    await server.close();
+  });
+
   it("commits only the canonical task projected from the approved execution plan", async () => {
     const root = await mkdtemp(join(tmpdir(), "adpilot-approval-commit-"));
     const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
@@ -382,7 +449,8 @@ describe("product server", () => {
     const taskId = crypto.randomUUID();
     const approvedOperation = operation();
     const approvedPlan = executionPlan("client-a", taskId, approvedOperation);
-    const approval = await system.approvals.create("client-a", taskId, approvedOperation, approvedPlan, guardrailFor(approvedOperation));
+    const guardrailFacts = await seedVerifiedGuardrailFacts(system.agent.sharedFacts, "client-a", taskId, approvedOperation);
+    const approval = await system.approvals.create("client-a", taskId, approvedOperation, approvedPlan, guardrailFacts.guardrail);
     await system.approvals.recordRiskReview("client-a", approval.id, true, "Within policy");
     const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
     const approved = await server.inject({ method: "POST", url: `/api/approvals/${approval.id}/approve`, payload: { clientId: "client-a", approvedBy: "owner" } });

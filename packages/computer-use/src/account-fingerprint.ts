@@ -16,6 +16,14 @@ export const VisualIdentityRegion = z.object({
 }).strict();
 export type VisualIdentityRegion = z.infer<typeof VisualIdentityRegion>;
 
+export const VisualIdentityRegions = z.object({
+  account: VisualIdentityRegion,
+  campaign: VisualIdentityRegion,
+  currentValue: VisualIdentityRegion,
+  target: VisualIdentityRegion
+}).strict();
+export type VisualIdentityRegions = z.infer<typeof VisualIdentityRegions>;
+
 /**
  * A model observation, before it is trusted. Nullable text is intentional:
  * reviewers must report unreadable values instead of completing them from the
@@ -42,12 +50,7 @@ export const VisualIdentityObservation = z.object({
   targetVisible: z.boolean(),
   unobscured: z.boolean(),
   confidence: z.number().min(0).max(1),
-  regions: z.object({
-    account: VisualIdentityRegion,
-    campaign: VisualIdentityRegion,
-    currentValue: VisualIdentityRegion,
-    target: VisualIdentityRegion
-  }).strict(),
+  regions: VisualIdentityRegions,
   reason: z.string().min(1)
 }).strict();
 export type VisualIdentityObservation = z.infer<typeof VisualIdentityObservation>;
@@ -69,7 +72,13 @@ export const ExpectedVisualIdentity = z.object({
   currentValue: IdentityValue,
   operation: z.string().min(1),
   proposedValue: IdentityValue,
-  target: z.string().min(1)
+  target: z.string().min(1),
+  /**
+   * Locally established pixel bounds for the four facts a remote identity
+   * reviewer is allowed to see. Omission is supported for local-only models;
+   * remote reviewers fail closed before any image bytes leave the machine.
+   */
+  evidenceRegions: VisualIdentityRegions.optional()
 }).strict();
 export type ExpectedVisualIdentity = z.infer<typeof ExpectedVisualIdentity>;
 
@@ -125,6 +134,8 @@ export class VisualIdentityError extends Error {
 export interface ConfirmedVisualIdentity {
   fingerprint: VisualAccountFingerprint;
   fingerprintHash: string;
+  /** Locally persisted union of the two reviewers' four evidence regions. */
+  evidenceRegions: VisualIdentityRegions;
   /** Union of the two sufficiently-overlapping target observations. */
   targetRegion: VisualIdentityRegion;
   reviewers: [
@@ -185,17 +196,14 @@ export class DualVisualIdentityVerifier {
     }
     if (!surface.title.trim()) throw new VisualIdentityError("SURFACE_CHANGED", "native browser window title is unavailable");
 
-    const [gui, deep] = await Promise.all([
-      this.guiVerifier.review(expected, screenshot).then((value) => VisualIdentityObservation.parse(value)),
-      this.deepVisionReviewer.review(expected, screenshot).then((value) => VisualIdentityObservation.parse(value))
-    ]);
+    const gui = VisualIdentityObservation.parse(await this.guiVerifier.review(expected, screenshot));
+    validateReviewerObservation(this.guiVerifier, gui, expected, screenshot, this.minimumConfidence);
+    const deepExpected = expected.evidenceRegions
+      ? expected
+      : ExpectedVisualIdentity.parse({ ...expected, evidenceRegions: gui.regions });
+    const deep = VisualIdentityObservation.parse(await this.deepVisionReviewer.review(deepExpected, screenshot));
     for (const [reviewer, observation] of [[this.guiVerifier, gui], [this.deepVisionReviewer, deep]] as const) {
-      if (observation.confidence < this.minimumConfidence) {
-        throw new VisualIdentityError("UNRELIABLE_VISUAL_IDENTITY", `${reviewer.id} confidence ${observation.confidence.toFixed(2)} is below ${this.minimumConfidence.toFixed(2)}`);
-      }
-      ensureCompleteIdentity(reviewer.id, observation);
-      ensureMatchesExpected(reviewer.id, observation, expected);
-      validateObservationRegions(observation, screenshot);
+      validateReviewerObservation(reviewer, observation, expected, screenshot, this.minimumConfidence);
     }
     ensureReviewerAgreement(gui, deep);
     ensureRegionAgreement(gui, deep);
@@ -228,6 +236,12 @@ export class DualVisualIdentityVerifier {
     return {
       fingerprint,
       fingerprintHash: visualAccountFingerprintHash(fingerprint),
+      evidenceRegions: {
+        account: unionRegion(gui.regions.account, deep.regions.account),
+        campaign: unionRegion(gui.regions.campaign, deep.regions.campaign),
+        currentValue: unionRegion(gui.regions.currentValue, deep.regions.currentValue),
+        target: unionRegion(gui.regions.target, deep.regions.target)
+      },
       targetRegion: unionRegion(gui.regions.target, deep.regions.target),
       reviewers: [
         { id: this.guiVerifier.id, confidence: gui.confidence, reason: gui.reason },
@@ -235,6 +249,21 @@ export class DualVisualIdentityVerifier {
       ]
     };
   }
+}
+
+function validateReviewerObservation(
+  reviewer: VisualIdentityReviewer,
+  observation: VisualIdentityObservation,
+  expected: ExpectedVisualIdentity,
+  screenshot: Screenshot,
+  minimumConfidence: number
+): void {
+  if (observation.confidence < minimumConfidence) {
+    throw new VisualIdentityError("UNRELIABLE_VISUAL_IDENTITY", `${reviewer.id} confidence ${observation.confidence.toFixed(2)} is below ${minimumConfidence.toFixed(2)}`);
+  }
+  ensureCompleteIdentity(reviewer.id, observation);
+  ensureMatchesExpected(reviewer.id, observation, expected);
+  validateObservationRegions(observation, screenshot);
 }
 
 /** Uses the configured image-capable Pi model for one isolated identity review. */
@@ -387,6 +416,9 @@ function validateObservationRegions(observation: VisualIdentityObservation, scre
   for (const [name, region] of Object.entries(observation.regions)) {
     if (region.x + region.width > screenshot.width || region.y + region.height > screenshot.height) {
       throw new VisualIdentityError("UNRELIABLE_VISUAL_IDENTITY", `${name} evidence region is outside the current screenshot`);
+    }
+    if (region.width * region.height > screenshot.width * screenshot.height * 0.4) {
+      throw new VisualIdentityError("UNRELIABLE_VISUAL_IDENTITY", `${name} evidence region is not tightly bounded`);
     }
   }
 }

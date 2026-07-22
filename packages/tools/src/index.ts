@@ -9,6 +9,7 @@ import {
   ApprovalService,
   VisualAllowedRegion,
   VisualExecutionPlan,
+  type Approval,
   type ApprovalOperation
 } from "@adpilot/approvals";
 import {
@@ -35,9 +36,11 @@ import {
   type Screenshot,
   type VisualMicroTask,
   type VisualStepResult,
-  VisualComputerRuntime
+  VisualComputerRuntime,
+  VisualIdentityRegions,
+  type VisualIdentityRegions as VisualIdentityRegionsType
 } from "@adpilot/computer-use";
-import { Platform, RiskLevel, SharedFactLedger, type PermissionLevel, type SharedFact } from "@adpilot/shared";
+import { Platform, RiskLevel, SharedFactLedger, stableJson, type PermissionLevel, type SharedFact } from "@adpilot/shared";
 import {
   VisualTableColumn,
   VisualTableReadResult,
@@ -85,6 +88,32 @@ export const ApprovalGuardrailEvidence = z.object({
   learningFactId: z.string().min(1)
 }).strict();
 export type ApprovalGuardrailEvidence = z.infer<typeof ApprovalGuardrailEvidence>;
+
+/** Raw, screenshot-backed facts from ordinary campaign and measurement views. */
+export const ApprovalGuardrailMetricEvidence = z.object({
+  conversionsFactId: z.string().min(1),
+  observationDaysFactId: z.string().min(1),
+  learningStatusFactId: z.string().min(1),
+  measurementStatusFactId: z.string().min(1).optional(),
+  conversionDelayDaysFactId: z.string().min(1).optional(),
+  dailyConversionFactIds: z.array(z.string().min(1)).default([]),
+  currencyConsistencyFactId: z.string().min(1).optional(),
+  missingValueRateFactId: z.string().min(1).optional(),
+  reconciliationDifferenceFactId: z.string().min(1).optional()
+}).strict();
+export type ApprovalGuardrailMetricEvidence = z.infer<typeof ApprovalGuardrailMetricEvidence>;
+
+export const ApprovalGuardrailEvidenceInput = z.union([
+  ApprovalGuardrailEvidence,
+  ApprovalGuardrailMetricEvidence
+]);
+export type ApprovalGuardrailEvidenceInput = z.infer<typeof ApprovalGuardrailEvidenceInput>;
+
+const PersistedVisualIdentityRegions = z.object({
+  planId: z.string().uuid(),
+  fingerprintHash: z.string().length(64),
+  evidenceRegions: VisualIdentityRegions
+}).passthrough();
 
 export interface ToolContext {
   clientId: string;
@@ -167,12 +196,15 @@ export class AdPilotTools {
     context: ToolContext,
     operation: ApprovalOperation,
     executionPlan?: VisualApprovalPlanInput,
-    guardrailEvidence?: ApprovalGuardrailEvidence
+    guardrailEvidence?: ApprovalGuardrailEvidenceInput
   ) {
     if (context.permission !== "OBSERVE" && context.permission !== "INTERACT" && context.permission !== "MUTATE" && context.permission !== "DESTRUCTIVE") throw new Error("invalid permission context");
     const boundPlan = executionPlan ? await this.bindApprovalPlan(context, operation, executionPlan) : undefined;
+    const resolvedGuardrailEvidence = operation.riskLevel === "mutate" || operation.riskLevel === "destructive"
+      ? await this.resolveApprovalGuardrailEvidence(context, operation, boundPlan, guardrailEvidence)
+      : undefined;
     const guardrail = operation.riskLevel === "mutate" || operation.riskLevel === "destructive"
-      ? await this.buildApprovalGuardrail(context, operation, boundPlan, guardrailEvidence)
+      ? await this.buildApprovalGuardrail(context, operation, boundPlan, resolvedGuardrailEvidence)
       : undefined;
     const approval = await this.approvals.create(context.clientId, context.taskId, operation, boundPlan, guardrail);
     await this.audit.append({
@@ -193,6 +225,166 @@ export class AdPilotTools {
     return approval;
   }
 
+  /**
+   * Revalidates the live fact ledger, workspace limits, and experiment state.
+   * Approval records intentionally contain a snapshot; this check prevents a
+   * stale or superseded snapshot from surviving until user approval/execution.
+   */
+  async validateApprovalGuardrail(clientId: string, approvalId: string, cancelOnFailure = true): Promise<Approval> {
+    const approval = await this.approvals.get(clientId, approvalId);
+    try {
+      if (!approval.executionPlan || !approval.guardrail) throw new Error("approval has no live deterministic guardrail binding");
+      if (!this.sharedFacts) throw new Error("canonical Shared Facts are unavailable for guardrail revalidation");
+      const facts = await this.sharedFacts.list(clientId, { includeTerminal: true });
+      const bound = new Set(approval.guardrail.evidenceFactIds);
+      const locate = (predicate: string) => facts.find((fact) => bound.has(fact.factId) && fact.predicate === predicate);
+      const evidence = ApprovalGuardrailEvidence.parse({
+        measurementStatusFactId: locate("measurement_status")?.factId,
+        maturityFactId: locate("campaign_mature")?.factId,
+        learningFactId: locate("learning_phase")?.factId
+      });
+      if (new Set(Object.values(evidence)).size !== 3 || bound.size !== 3) {
+        throw new Error("approval guardrail evidence set no longer matches its three bound facts");
+      }
+      const current = await this.buildApprovalGuardrail(
+        { clientId, taskId: approval.taskId, actor: "guardrail_revalidator", permission: "OBSERVE" },
+        approval.operation,
+        approval.executionPlan,
+        evidence
+      );
+      if (stableJson(current.input) !== stableJson(approval.guardrail.input)
+        || current.singleVariable !== approval.guardrail.singleVariable
+        || stableJson([...current.evidenceFactIds].sort()) !== stableJson([...approval.guardrail.evidenceFactIds].sort())) {
+        throw new Error("live deterministic guardrail state changed after approval preparation");
+      }
+      const decision = evaluateChangeGuardrail(current.input);
+      if (!decision.allowed || decision.requiresFreshReview || !current.singleVariable) {
+        throw new Error("live deterministic guardrail no longer permits this operation");
+      }
+      return approval;
+    } catch (error) {
+      if (cancelOnFailure && ["pending_risk_review", "pending_user", "approved"].includes(approval.status)) {
+        await this.approvals.cancel(clientId, approvalId);
+      }
+      await this.audit.append({
+        clientId,
+        taskId: approval.taskId,
+        actor: "guardrail_revalidator",
+        action: "revalidate_approval_guardrail",
+        status: "denied",
+        details: { approvalId, reason: error instanceof Error ? error.message : String(error) }
+      });
+      throw error;
+    }
+  }
+
+  private async resolveApprovalGuardrailEvidence(
+    context: ToolContext,
+    operation: ApprovalOperation,
+    plan: ApprovalExecutionPlan | undefined,
+    evidenceInput: ApprovalGuardrailEvidenceInput | undefined
+  ): Promise<ApprovalGuardrailEvidence> {
+    const direct = ApprovalGuardrailEvidence.safeParse(evidenceInput);
+    if (direct.success) return direct.data;
+    if (!plan) throw new Error("a complete visual execution plan is required for deterministic guardrail derivation");
+    if (!this.sharedFacts) throw new Error("canonical Shared Facts are required for deterministic guardrail derivation");
+    const evidence = ApprovalGuardrailMetricEvidence.parse(evidenceInput);
+    const facts = await this.sharedFacts.list(context.clientId, { taskId: context.taskId, includeTerminal: true });
+    const metric = (id: string, predicates: readonly string[]) => requireVerifiedGuardrailFact(facts, id, predicates, plan, operation);
+    const conversions = metric(evidence.conversionsFactId, ["conversions", "conversion_count"]);
+    const days = metric(evidence.observationDaysFactId, ["observation_days", "date_range_days", "days"]);
+    const learning = metric(evidence.learningStatusFactId, ["learning_phase", "bid_strategy_status", "campaign_status"]);
+    const measurement = evidence.measurementStatusFactId
+      ? metric(evidence.measurementStatusFactId, ["measurement_status", "conversion_tracking_status"])
+      : undefined;
+    const delay = evidence.conversionDelayDaysFactId
+      ? metric(evidence.conversionDelayDaysFactId, ["conversion_delay_days"])
+      : undefined;
+    const daily = evidence.dailyConversionFactIds.map((id) => metric(id, ["daily_conversions", "conversions"]));
+    const currency = evidence.currencyConsistencyFactId
+      ? metric(evidence.currencyConsistencyFactId, ["currency_consistency"])
+      : undefined;
+    const missing = evidence.missingValueRateFactId
+      ? metric(evidence.missingValueRateFactId, ["missing_value_rate"])
+      : undefined;
+    const reconciliation = evidence.reconciliationDifferenceFactId
+      ? metric(evidence.reconciliationDifferenceFactId, ["reconciliation_difference"])
+      : undefined;
+
+    const metrics = CampaignMetrics.parse({
+      spend: 0,
+      conversions: nonnegativeFactNumber(conversions, "conversions"),
+      days: positiveIntegerFactNumber(days, "observation days"),
+      conversionDelayDays: delay ? nonnegativeFactNumber(delay, "conversion delay days") : 0,
+      dailyConversions: daily.map((fact) => nonnegativeFactNumber(fact, "daily conversions")),
+      currencyConsistency: currency ? ratioFactNumber(currency, "currency consistency") : 1,
+      missingValueRate: missing ? ratioFactNumber(missing, "missing value rate") : 0,
+      reconciliationDifference: reconciliation ? ratioFactNumber(reconciliation, "reconciliation difference") : 0
+    });
+    const maturityDecision = assessMaturity(metrics);
+    const calculatedReliability = reviewMeasurementReliability(metrics);
+    const visibleReliability = measurement ? parseVisibleMeasurementHealth(measurement.value) : undefined;
+    const missingIntegrityEvidence = !currency || !missing || !reconciliation;
+    const reliability = strictestMeasurementStatus(
+      visibleReliability,
+      calculatedReliability.status,
+      missingIntegrityEvidence && !visibleReliability ? "warning" : undefined
+    );
+    const learningPhase = parseVisibleLearningStatus(learning.value);
+    const sourceFacts = [conversions, days, learning, measurement, delay, ...daily, currency, missing, reconciliation]
+      .filter((fact): fact is SharedFact => Boolean(fact));
+    const measurementFact = await this.persistDerivedGuardrailFact(context, plan, "measurement_status", reliability, measurement ?? conversions, sourceFacts);
+    const maturityFact = await this.persistDerivedGuardrailFact(context, plan, "campaign_mature", maturityDecision.mature, conversions, sourceFacts);
+    const learningFact = await this.persistDerivedGuardrailFact(context, plan, "learning_phase", learningPhase, learning, sourceFacts);
+    return ApprovalGuardrailEvidence.parse({
+      measurementStatusFactId: measurementFact.factId,
+      maturityFactId: maturityFact.factId,
+      learningFactId: learningFact.factId
+    });
+  }
+
+  private async persistDerivedGuardrailFact(
+    context: ToolContext,
+    plan: ApprovalExecutionPlan,
+    predicate: "measurement_status" | "campaign_mature" | "learning_phase",
+    value: string | boolean,
+    primary: SharedFact,
+    sources: readonly SharedFact[]
+  ): Promise<SharedFact> {
+    if (!this.sharedFacts || !primary.sourceScreenshotId || !primary.sourceBoundingBox) {
+      throw new Error(`cannot derive ${predicate} without screenshot-backed source evidence`);
+    }
+    const ttlCeiling = Date.now() + 15 * 60_000;
+    const expiresAt = new Date(Math.min(
+      ttlCeiling,
+      ...sources.map((fact) => fact.expiresAt ? Date.parse(fact.expiresAt) : ttlCeiling)
+    )).toISOString();
+    const observed = await this.sharedFacts.observe({
+      clientId: context.clientId,
+      taskId: context.taskId,
+      subject: plan.campaignId,
+      predicate,
+      value,
+      unit: typeof value === "boolean" ? "boolean" : "status",
+      sourceType: "visual_verification",
+      sourceScreenshotId: primary.sourceScreenshotId,
+      sourceBoundingBox: primary.sourceBoundingBox,
+      evidenceIds: [...new Set(sources.flatMap((fact) => [
+        ...fact.evidenceIds,
+        `fact:${fact.factId}`,
+        ...(fact.sourceScreenshotId ? [`screenshot:${fact.sourceScreenshotId}`] : [])
+      ]))],
+      confidence: Math.min(...sources.map((fact) => fact.confidence)),
+      createdBy: "deterministic_guardrail_derivation",
+      expiresAt,
+      derivedFromFactId: primary.factId
+    });
+    return this.sharedFacts.verify(context.clientId, observed.factId, {
+      verifier: "deterministic_guardrail_evaluator",
+      confidence: observed.confidence
+    });
+  }
+
   private async buildApprovalGuardrail(
     context: ToolContext,
     operation: ApprovalOperation,
@@ -202,23 +394,13 @@ export class AdPilotTools {
     if (!plan) throw new Error("a complete visual execution plan is required for deterministic mutation guardrails");
     if (!this.sharedFacts) throw new Error("canonical Shared Facts are required for deterministic mutation guardrails");
     const evidence = ApprovalGuardrailEvidence.parse(evidenceInput);
-    const facts = await this.sharedFacts.list(context.clientId, { taskId: context.taskId, includeTerminal: true });
-    const resolveFact = (id: string, predicate: string): SharedFact => {
-      const fact = facts.find((candidate) => candidate.factId === id || candidate.derivedFromFactId === id);
-      if (!fact || fact.predicate !== predicate) throw new Error(`guardrail evidence is missing verified ${predicate}`);
-      if (!guardrailFactMatchesCampaign(fact, plan, operation)) {
-        throw new Error(`guardrail evidence ${predicate} belongs to a different campaign`);
-      }
-      if (fact.status !== "verified" || fact.sourceType === "migration" || fact.confidence < 0.85
-        || !fact.sourceScreenshotId || !fact.sourceBoundingBox || !fact.evidenceIds.some((item) => item.startsWith("screenshot:"))) {
-        throw new Error(`guardrail evidence ${predicate} is not verified screenshot evidence`);
-      }
-      if (fact.expiresAt && Date.parse(fact.expiresAt) <= Date.now()) throw new Error(`guardrail evidence ${predicate} is stale`);
-      return fact;
-    };
-    const measurement = resolveFact(evidence.measurementStatusFactId, "measurement_status");
-    const maturity = resolveFact(evidence.maturityFactId, "campaign_mature");
-    const learning = resolveFact(evidence.learningFactId, "learning_phase");
+    const facts = await this.sharedFacts.list(context.clientId, { includeTerminal: true });
+    const measurement = requireVerifiedGuardrailFact(facts, evidence.measurementStatusFactId, ["measurement_status"], plan, operation);
+    const maturity = requireVerifiedGuardrailFact(facts, evidence.maturityFactId, ["campaign_mature"], plan, operation);
+    const learning = requireVerifiedGuardrailFact(facts, evidence.learningFactId, ["learning_phase"], plan, operation);
+    for (const fact of [measurement, maturity, learning]) {
+      assertLiveGuardrailLineage(fact, facts, plan, operation);
+    }
     const measurementStatus = parseMeasurementStatus(measurement.value);
     const mature = parseVisibleBoolean(maturity.value, "mature", "not_mature");
     const learningPhase = parseVisibleBoolean(learning.value, "learning", "not_learning");
@@ -378,6 +560,8 @@ export class AdPilotTools {
             screenshot: native,
             roi: { x: tableRoi.x, y: tableRoi.y, width: tableRoi.width, height: tableRoi.height },
             sensitiveRegions: input.sensitiveRegions,
+            requiredVisibleRegions: [{ x: tableRoi.x, y: tableRoi.y, width: tableRoi.width, height: tableRoi.height }],
+            includeDefaultMasks: false,
             model,
             privacyMode: this.visualTables!.privacyMode,
             localFullRetentionPolicy: `local visual-table ${request.phase} evidence`
@@ -482,6 +666,7 @@ export class AdPilotTools {
 
   async commitApprovedVisualAction(context: ToolContext, approvalId: string, token: string, operation: ApprovalOperation, task: VisualMicroTask): Promise<VisualStepResult> {
     if (context.permission !== "MUTATE" && context.permission !== "DESTRUCTIVE") throw new Error("commit requires mutation permission");
+    await this.validateApprovalGuardrail(context.clientId, approvalId, true);
     const unfinished = (await this.experiments.list(context.clientId)).filter((item) => ["active", "waiting"].includes(item.status));
     if (unfinished.length > 0) throw new Error("an unfinished experiment blocks a new mutation");
     if (!this.computer) throw new Error("native computer runtime is unavailable");
@@ -492,7 +677,8 @@ export class AdPilotTools {
     try {
       screenshot = await this.computer.captureForTask(boundTask);
       if (!screenshot.surface) throw new Error("mutation preflight screenshot has no native window identity");
-      const expected = expectedIdentityFromTask(context, boundTask, screenshot);
+      const evidenceRegions = await this.loadPersistedIdentityRegions(context.clientId, boundTask.planId!);
+      const expected = expectedIdentityFromTask(context, boundTask, screenshot, evidenceRegions);
       const confirmed = await this.visualIdentity.confirm(expected, screenshot);
       if (confirmed.fingerprintHash !== boundTask.accountFingerprint) {
         throw new Error("current visual account fingerprint differs from the approved task binding");
@@ -650,12 +836,28 @@ export class AdPilotTools {
       expiresAt,
       experiment: intent.experiment
     });
-    await this.workspace.writeJson(context.clientId, `identity/${context.taskId}-approval-${Date.now()}.json`, {
+    const identityRecord = {
       planId: bound.planId,
       purpose: "approval_binding",
       ...confirmed
-    });
+    };
+    await Promise.all([
+      this.workspace.writeJson(context.clientId, `identity/${context.taskId}-approval-${Date.now()}.json`, identityRecord),
+      this.workspace.writeJson(context.clientId, `identity/plans/${bound.planId}.json`, identityRecord)
+    ]);
     return bound;
+  }
+
+  private async loadPersistedIdentityRegions(clientId: string, planId: string): Promise<VisualIdentityRegionsType | undefined> {
+    const content = await this.workspace.readText(clientId, `identity/plans/${planId}.json`);
+    if (content === undefined) return undefined;
+    try {
+      const record = PersistedVisualIdentityRegions.parse(JSON.parse(content));
+      if (record.planId !== planId) throw new Error("plan id differs from the requested approval plan");
+      return record.evidenceRegions;
+    } catch (error) {
+      throw new Error(`persisted visual identity regions are invalid: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private async assertClientSurfaceBinding(context: ToolContext, task: VisualMicroTask): Promise<void> {
@@ -809,7 +1011,12 @@ function textResult(details: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(details) }], details };
 }
 
-function expectedIdentityFromTask(context: ToolContext, task: VisualMicroTask, screenshot: Screenshot): ExpectedVisualIdentity {
+function expectedIdentityFromTask(
+  context: ToolContext,
+  task: VisualMicroTask,
+  screenshot: Screenshot,
+  evidenceRegions?: VisualIdentityRegionsType
+): ExpectedVisualIdentity {
   if (!task.identity) throw new Error("visual task is missing account and Campaign identity fields");
   if (!task.platform) throw new Error("visual task is missing platform binding");
   if (!task.surface.browserProfile || !task.surface.nativeProfileFingerprint || !task.surface.applicationId || !task.surface.windowId) {
@@ -834,7 +1041,8 @@ function expectedIdentityFromTask(context: ToolContext, task: VisualMicroTask, s
     currentValue: task.identity.currentValue,
     operation: task.identity.operation,
     proposedValue: task.identity.proposedValue,
-    target: task.target
+    target: task.target,
+    ...(evidenceRegions ? { evidenceRegions } : {})
   };
 }
 
@@ -935,6 +1143,59 @@ function guardrailFactMatchesCampaign(fact: SharedFact, plan: ApprovalExecutionP
     .some((candidate) => candidate.length > 0 && candidate === subject);
 }
 
+function requireVerifiedGuardrailFact(
+  facts: readonly SharedFact[],
+  id: string,
+  predicates: readonly string[],
+  plan: ApprovalExecutionPlan,
+  operation: ApprovalOperation
+): SharedFact {
+  const fact = facts.find((candidate) => candidate.factId === id);
+  if (!fact || !predicates.includes(fact.predicate)) {
+    throw new Error(`guardrail evidence is missing verified ${predicates.join(" or ")}`);
+  }
+  if (fact.taskId !== plan.taskId) throw new Error(`guardrail evidence ${fact.predicate} belongs to a different task`);
+  if (!guardrailFactMatchesCampaign(fact, plan, operation)) {
+    throw new Error(`guardrail evidence ${fact.predicate} belongs to a different campaign`);
+  }
+  if (fact.status !== "verified" || fact.sourceType === "migration" || fact.confidence < 0.85
+    || !fact.sourceScreenshotId || !fact.sourceBoundingBox || !fact.evidenceIds.some((item) => item.startsWith("screenshot:"))) {
+    throw new Error(`guardrail evidence ${fact.predicate} is not verified screenshot evidence`);
+  }
+  if (fact.expiresAt && Date.parse(fact.expiresAt) <= Date.now()) throw new Error(`guardrail evidence ${fact.predicate} is stale`);
+  return fact;
+}
+
+function assertLiveGuardrailLineage(
+  fact: SharedFact,
+  facts: readonly SharedFact[],
+  plan: ApprovalExecutionPlan,
+  operation: ApprovalOperation,
+  visited = new Set<string>()
+): void {
+  if (visited.has(fact.factId)) throw new Error(`guardrail fact lineage contains a cycle at ${fact.factId}`);
+  visited.add(fact.factId);
+  const sourceIds = new Set([
+    ...(fact.derivedFromFactId ? [fact.derivedFromFactId] : []),
+    ...fact.evidenceIds.filter((item) => item.startsWith("fact:")).map((item) => item.slice("fact:".length))
+  ]);
+  for (const sourceId of sourceIds) {
+    const source = facts.find((candidate) => candidate.factId === sourceId);
+    if (!source) throw new Error(`guardrail source fact ${sourceId} is missing`);
+    if (!guardrailFactMatchesCampaign(source, plan, operation)) {
+      throw new Error(`guardrail source fact ${sourceId} belongs to a different campaign`);
+    }
+    if (source.status !== "verified" || source.sourceType === "migration" || source.confidence < 0.85
+      || !source.sourceScreenshotId || !source.sourceBoundingBox || !source.evidenceIds.includes(`screenshot:${source.sourceScreenshotId}`)) {
+      throw new Error(`guardrail source fact ${sourceId} is not current verified screenshot evidence`);
+    }
+    if (source.expiresAt && Date.parse(source.expiresAt) <= Date.now()) {
+      throw new Error(`guardrail source fact ${sourceId} is stale`);
+    }
+    assertLiveGuardrailLineage(source, facts, plan, operation, new Set(visited));
+  }
+}
+
 function normalizeGuardrailLabel(value: string): string {
   return value.normalize("NFKC").trim().toLocaleLowerCase("en-US").replace(/\s+/g, " ");
 }
@@ -956,6 +1217,52 @@ function parseVisibleBoolean(
   if (normalized === trueLabel || normalized === "true") return true;
   if (normalized === falseLabel || normalized === "false") return false;
   throw new Error(`${trueLabel} guardrail evidence must be exactly ${trueLabel} or ${falseLabel}`);
+}
+
+function nonnegativeFactNumber(fact: SharedFact, label: string): number {
+  if (typeof fact.value !== "number" || !Number.isFinite(fact.value) || fact.value < 0) {
+    throw new Error(`${label} guardrail fact must be a non-negative number`);
+  }
+  return fact.value;
+}
+
+function positiveIntegerFactNumber(fact: SharedFact, label: string): number {
+  const value = nonnegativeFactNumber(fact, label);
+  if (!Number.isInteger(value) || value < 1) throw new Error(`${label} guardrail fact must be a positive integer`);
+  return value;
+}
+
+function ratioFactNumber(fact: SharedFact, label: string): number {
+  const value = nonnegativeFactNumber(fact, label);
+  const normalized = fact.unit === "percent" || value > 1 ? value / 100 : value;
+  if (normalized < 0 || normalized > 1) throw new Error(`${label} guardrail fact must be between 0 and 1`);
+  return normalized;
+}
+
+function parseVisibleMeasurementHealth(value: SharedFact["value"]): "reliable" | "warning" | "blocked" {
+  if (typeof value !== "string") throw new Error("visible measurement health must be a status label");
+  const normalized = normalizeGuardrailLabel(value).replaceAll("-", "_").replaceAll(" ", "_");
+  if (["reliable", "active", "recording_conversions", "no_issues"].includes(normalized)) return "reliable";
+  if (["warning", "limited", "needs_attention"].includes(normalized)) return "warning";
+  if (["blocked", "inactive", "not_recording", "not_recording_conversions", "unverified"].includes(normalized)) return "blocked";
+  throw new Error("visible measurement health is not an accepted diagnostics status");
+}
+
+function parseVisibleLearningStatus(value: SharedFact["value"]): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") throw new Error("visible learning status must be a status label");
+  const normalized = normalizeGuardrailLabel(value).replaceAll("-", "_").replaceAll(" ", "_");
+  if (["true", "learning", "learning_limited"].includes(normalized)) return true;
+  if (["false", "not_learning", "eligible", "active"].includes(normalized)) return false;
+  throw new Error("visible learning status is not an accepted campaign status");
+}
+
+function strictestMeasurementStatus(
+  ...values: Array<"reliable" | "warning" | "blocked" | undefined>
+): "reliable" | "warning" | "blocked" {
+  const rank = { reliable: 0, warning: 1, blocked: 2 } as const;
+  return values.filter((value): value is keyof typeof rank => Boolean(value))
+    .sort((left, right) => rank[right] - rank[left])[0] ?? "blocked";
 }
 
 function resolveVisualTableRoi(explicit: VisualTableRoi | undefined, screenshot: Screenshot): VisualTableRoi {

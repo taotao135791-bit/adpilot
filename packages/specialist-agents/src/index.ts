@@ -6,7 +6,7 @@ import {
   type SharedFact,
   type SpecialistRole as Role
 } from "@adpilot/shared";
-import { CampaignMetrics, ChangeGuardrailInput } from "@adpilot/advertising-core";
+import { ChangeGuardrailInput } from "@adpilot/advertising-core";
 import { VisualTableReadToolInput, type AdPilotTools, type ToolContext } from "@adpilot/tools";
 import { VisualAction, type VisualMicroTask } from "@adpilot/computer-use";
 import { VisualTableReadResult } from "@adpilot/visual-table-reader";
@@ -152,6 +152,7 @@ abstract class PiSpecialist<I, O> implements SpecialistAgent<I, O> {
       taskId: request.context.taskId,
       role: this.role
     });
+    assertSpecialistNumericFacts(this.role, input, sharedFacts);
     const runtimeRequest: RuntimeRequest = {
       context: { ...request.context, actor: this.role, sessionId: previous?.sessionId ?? key, role: this.role },
       systemPrompt: [
@@ -186,21 +187,54 @@ abstract class PiSpecialist<I, O> implements SpecialistAgent<I, O> {
   }
 }
 
-const PerformanceInput = z.object({ metrics: CampaignMetrics, target: z.number().positive(), objective: z.string().min(1) });
+const FactBindings = z.record(z.string().min(1)).default({});
+const SpecialistCampaignMetrics = z.object({
+  spend: z.number().nonnegative(),
+  impressions: z.number().int().nonnegative().optional(),
+  clicks: z.number().int().nonnegative().optional(),
+  installs: z.number().int().nonnegative().optional(),
+  conversions: z.number().nonnegative().optional(),
+  revenue: z.number().nonnegative().optional(),
+  days: z.number().int().positive(),
+  conversionDelayDays: z.number().nonnegative().optional(),
+  dailyConversions: z.array(z.number().nonnegative()).optional(),
+  currencyConsistency: z.number().min(0).max(1).optional(),
+  missingValueRate: z.number().min(0).max(1).optional(),
+  reconciliationDifference: z.number().min(0).max(1).optional()
+}).strict();
+
+const PerformanceInput = z.object({
+  metrics: SpecialistCampaignMetrics,
+  target: z.number().positive(),
+  objective: z.string().min(1),
+  factIds: FactBindings
+}).strict();
 const PerformanceOutput = z.object({ calculated: z.object({ cpi: z.number().nullable(), cpa: z.number().nullable(), roas: z.number().nullable() }), findings: z.array(EvidenceFinding), maturity: z.enum(["mature", "immature"]), confidence: z.number().min(0).max(1) });
 export class PerformanceAnalyst extends PiSpecialist<z.infer<typeof PerformanceInput>, z.infer<typeof PerformanceOutput>> {
   readonly role = "performance_analyst" as const; readonly inputSchema = PerformanceInput; readonly outputSchema = PerformanceOutput;
   readonly allowedSkills = ["check-conversion-reliability"]; readonly mission = "Analyze spend, CPI, CPA, ROAS, funnel, campaign and geo performance. Never fabricate a metric.";
 }
 
-const MediaBuyerInput = z.object({ change: ChangeGuardrailInput, objective: z.string().min(1), businessBoundary: z.string().min(1) });
+const MediaBuyerInput = z.object({
+  change: ChangeGuardrailInput,
+  objective: z.string().min(1),
+  businessBoundary: z.string().min(1),
+  factIds: FactBindings
+}).strict();
 const MediaBuyerOutput = z.object({ recommendation: z.enum(["increase", "decrease", "pause", "launch", "observe", "no_change"]), currentValue: z.number(), proposedValue: z.number(), stagedValue: z.number(), rationale: z.array(z.string()), requiresApproval: z.boolean(), observationWindow: z.string(), rollbackCondition: z.string() });
 export class MediaBuyer extends PiSpecialist<z.infer<typeof MediaBuyerInput>, z.infer<typeof MediaBuyerOutput>> {
   readonly role = "media_buyer" as const; readonly inputSchema = MediaBuyerInput; readonly outputSchema = MediaBuyerOutput;
   readonly allowedSkills = ["evaluate-budget-change", "evaluate-bid-change", "create-single-variable-experiment"]; readonly mission = "Make explicit budget, bid, pause, launch, or observe recommendations while respecting deterministic caps and single-variable tests.";
 }
 
-const MeasurementInput = z.object({ metrics: CampaignMetrics, platformConversions: z.number().nonnegative(), sourceConversions: z.number().nonnegative(), duplicatedEvents: z.number().int().nonnegative(), eventIdsPresent: z.boolean() });
+const MeasurementInput = z.object({
+  metrics: SpecialistCampaignMetrics,
+  platformConversions: z.number().nonnegative(),
+  sourceConversions: z.number().nonnegative(),
+  duplicatedEvents: z.number().int().nonnegative(),
+  eventIdsPresent: z.boolean(),
+  factIds: FactBindings
+}).strict();
 const MeasurementOutput = z.object({ status: z.enum(["reliable", "warning", "blocked"]), findings: z.array(EvidenceFinding), safeToOptimize: z.boolean(), requiredFixes: z.array(z.string()) });
 export class MeasurementReviewer extends PiSpecialist<z.infer<typeof MeasurementInput>, z.infer<typeof MeasurementOutput>> {
   readonly role = "measurement_reviewer" as const; readonly inputSchema = MeasurementInput; readonly outputSchema = MeasurementOutput;
@@ -242,11 +276,149 @@ export class SpecialistCoordinator {
   list(): Role[] { return [...this.agents.keys()]; }
   async dispatch(roleInput: Role, request: SpecialistRequest): Promise<unknown> {
     const role = SpecialistRole.parse(roleInput); const agent = this.agents.get(role); if (!agent) throw new Error(`specialist unavailable: ${role}`);
-    return agent.execute({ ...request, input: agent.inputSchema.parse(request.input) });
+    const input = agent.inputSchema.parse(request.input);
+    const sharedFacts = selectSharedFactsForSpecialist(request.sharedFacts, {
+      clientId: request.context.clientId,
+      taskId: request.context.taskId,
+      role
+    });
+    assertSpecialistNumericFacts(role, input, sharedFacts);
+    return agent.execute({ ...request, input, sharedFacts });
   }
 }
 
 export const specialistSchemas = { AccountOperatorInput, AccountOperatorOutput, PerformanceInput, PerformanceOutput, MediaBuyerInput, MediaBuyerOutput, MeasurementInput, MeasurementOutput, CreativeInput, CreativeOutput, RiskInput, RiskOutput };
+
+interface NumericFactClaim {
+  path: string;
+  value: number;
+  predicates: ReadonlySet<string>;
+  arrayIndex?: number;
+}
+
+/**
+ * Deterministic production boundary for model-authored specialist input.
+ * A prompt instruction is not sufficient: every account number must resolve to
+ * fresh screenshot evidence for this exact client/task before Pi receives it.
+ */
+export function assertSpecialistNumericFacts(
+  role: Role,
+  input: unknown,
+  sharedFacts: readonly SharedFact[]
+): void {
+  if (role !== "performance_analyst" && role !== "media_buyer" && role !== "measurement_reviewer") return;
+  const record = asRecord(input);
+  const bindings = asRecord(record.factIds);
+  const claims = numericClaims(role, record);
+  const factsById = new Map(sharedFacts.map((fact) => [fact.factId, fact]));
+  const boundSubjects = new Set<string>();
+
+  for (const claim of claims) {
+    const requestedFactId = bindings[claim.path];
+    if (typeof requestedFactId !== "string") {
+      throw new Error(`unverified numerical specialist input: ${claim.path}`);
+    }
+    const candidates = [factsById.get(requestedFactId)].filter((fact): fact is SharedFact => Boolean(fact));
+    const matches = candidates.filter((fact) => factHasVisualProof(fact) && factMatchesClaim(fact, claim));
+    if (matches.length !== 1) {
+      throw new Error(`unverified numerical specialist input: ${claim.path}`);
+    }
+    boundSubjects.add(normalizePredicate(matches[0]!.subject));
+  }
+  if (boundSubjects.size > 1) {
+    throw new Error("unverified numerical specialist input: bound facts span multiple Campaign subjects");
+  }
+}
+
+function numericClaims(role: Role, input: Record<string, unknown>): NumericFactClaim[] {
+  if (role === "media_buyer") {
+    const change = asRecord(input.change);
+    const currentValue = change.currentValue;
+    if (typeof currentValue !== "number") return [];
+    const kind = typeof change.kind === "string" ? normalizePredicate(change.kind) : "";
+    const aliases = kind === "budget"
+      ? ["daily_budget", "budget", "current_budget"]
+      : kind === "bid"
+        ? ["bid", "current_bid"]
+        : kind === "target_cpa"
+          ? ["target_cpa", "current_target_cpa"]
+          : ["target_roas", "current_target_roas"];
+    return [{ path: "change.currentValue", value: currentValue, predicates: new Set(aliases) }];
+  }
+
+  const claims = collectNumericClaims(input.metrics, "metrics");
+  if (role === "performance_analyst") {
+    const target = input.target;
+    if (typeof target === "number") {
+      const objective = typeof input.objective === "string" ? normalizePredicate(input.objective) : "";
+      claims.push({
+        path: "target",
+        value: target,
+        predicates: new Set(["target", `${objective}_target`, `target_${objective}`].filter(Boolean))
+      });
+    }
+    return claims;
+  }
+
+  for (const key of ["platformConversions", "sourceConversions", "duplicatedEvents"] as const) {
+    const value = input[key];
+    if (typeof value === "number") claims.push(claimForPath(key, value));
+  }
+  return claims;
+}
+
+function collectNumericClaims(value: unknown, path: string): NumericFactClaim[] {
+  if (typeof value === "number") return [claimForPath(path, value)];
+  if (Array.isArray(value)) {
+    return value.flatMap((entry, index) => typeof entry === "number"
+      ? [{ ...claimForPath(`${path}.${index}`, entry), arrayIndex: index }]
+      : collectNumericClaims(entry, `${path}.${index}`));
+  }
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value as Record<string, unknown>)
+    .flatMap(([key, entry]) => collectNumericClaims(entry, `${path}.${key}`));
+}
+
+function claimForPath(path: string, value: number): NumericFactClaim {
+  const parts = path.split(".");
+  const leaf = parts.at(-1) ?? path;
+  const parentLeaf = /^\d+$/.test(leaf) ? parts.at(-2) ?? leaf : leaf;
+  const normalizedLeaf = normalizePredicate(parentLeaf);
+  const normalizedPath = normalizePredicate(parts.filter((part) => !/^\d+$/.test(part)).join("_"));
+  const aliases = new Set([normalizedLeaf, normalizedPath]);
+  if (/^\d+$/.test(leaf)) aliases.add(`${normalizedLeaf}_${leaf}`);
+  return { path, value, predicates: aliases };
+}
+
+function factHasVisualProof(fact: SharedFact): boolean {
+  return Boolean(
+    fact.status === "verified"
+    && fact.sourceType !== "migration"
+    && fact.sourceScreenshotId
+    && fact.sourceBoundingBox
+    && fact.evidenceIds.includes(`screenshot:${fact.sourceScreenshotId}`)
+  );
+}
+
+function factMatchesClaim(fact: SharedFact, claim: NumericFactClaim): boolean {
+  if (!claim.predicates.has(normalizePredicate(fact.predicate))) return false;
+  if (typeof fact.value === "number") return Object.is(fact.value, claim.value);
+  return claim.arrayIndex !== undefined
+    && Array.isArray(fact.value)
+    && Object.is(fact.value[claim.arrayIndex], claim.value);
+}
+
+function normalizePredicate(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
 
 function parseJsonObject(text: string): unknown {
   const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");

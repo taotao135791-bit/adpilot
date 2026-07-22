@@ -18,7 +18,7 @@ import {
   type TaskState as Task
 } from "@adpilot/shared";
 import { WorkspaceStore } from "@adpilot/workspace";
-import { AdPilotTools, ApprovalGuardrailEvidence, VisualApprovalPlanInput } from "@adpilot/tools";
+import { AdPilotTools, ApprovalGuardrailEvidenceInput, VisualApprovalPlanInput } from "@adpilot/tools";
 
 const InvestigationNode = z.object({ question: z.string().min(1), specialist: SpecialistRole, status: z.enum(["pending", "complete", "blocked"]), conclusion: z.string().optional() });
 const MainAgentOutput = z.object({
@@ -114,7 +114,7 @@ export class AdPilotAgent {
     const dispatchTool: AgentTool = {
       name: "dispatch_specialist",
       label: "Dispatch an isolated specialist",
-      description: "Run one specialist with an isolated context and structured input. The account operator can observe the managed browser, read a visible advertising table, or prepare a field without submitting it. Measurement should be reviewed before optimization changes.",
+      description: "Run one specialist with an isolated context and structured input. For performance_analyst, media_buyer, and measurement_reviewer, include factIds mapping every account-number field path (for example metrics.spend or change.currentValue) to the exact verified Shared Fact id; code rejects missing, stale, mismatched, cross-Campaign, migration, or non-visual evidence. The account operator can observe the managed browser, read a visible advertising table, or prepare a field without submitting it. Measurement should be reviewed before optimization changes.",
       parameters: Type.Object({ role: Type.Union(SpecialistRole.options.map((role) => Type.Literal(role))), input: Type.Unknown() }),
       executionMode: "sequential",
       execute: async (_id, raw) => {
@@ -161,7 +161,7 @@ export class AdPilotAgent {
       parameters: Type.Object({ operation: Type.Unknown(), executionPlan: Type.Unknown(), guardrailEvidence: Type.Unknown() }),
       executionMode: "sequential",
       execute: async (_id, raw) => {
-        const params = z.object({ operation: ApprovalOperation, executionPlan: VisualApprovalPlanInput, guardrailEvidence: ApprovalGuardrailEvidence }).parse(raw);
+        const params = z.object({ operation: ApprovalOperation, executionPlan: VisualApprovalPlanInput, guardrailEvidence: ApprovalGuardrailEvidenceInput }).parse(raw);
         const approval = await this.tools.createApproval(
           { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE" },
           params.operation,
@@ -181,14 +181,14 @@ export class AdPilotAgent {
           "Maintain the goal and investigation tree, proactively gather evidence, use specialists as bounded experts, and make the final synthesis yourself.",
           "Use projectContext.conversation.interfaceLocale for every user-facing summary, hypothesis, conclusion, blocker, and next step. Use Simplified Chinese for zh-CN and English for en.",
           "Treat projectContext.verifiedFacts as the only production account facts. Never convert ordinary context objects, historical prose, hypotheses, observations, stale facts, or specialist assertions into definite account claims.",
-          "Every numerical account claim sent to a specialist must be supported by a matching verified fact with screenshot evidence that has not expired.",
+          "Every numerical account claim sent to performance_analyst, media_buyer, or measurement_reviewer must be supported by a matching verified fact with screenshot and bounding-box evidence that has not expired. Include factIds mapping each numerical field path, such as metrics.spend, target, platformConversions, or change.currentValue, to its exact current-task Shared Fact id. All bound facts must have the same Campaign subject. The product enforces this in code and rejects missing ids or mismatches.",
           "When account evidence is missing, dispatch account_operator with visualTable. Supply platform and targetColumns (key, label, valueType, unit, critical), optional targetRows, and scrollDirection. Omit tableRoi unless the user has explicitly supplied exact screenshot-pixel coordinates; the product derives a safe live browser-content ROI. Use scrollDirection none for a visible page, or down/right only when reading additional rows or columns.",
           "For non-table visual observation, dispatch account_operator with one OBSERVE visualTask. OBSERVE cannot click or type.",
           "A conversational preparation step may only type into a field that the user has already focused. Use permission INTERACT, riskLevel interact, retryPolicy none, and allowedActions exactly [type,done,fail]. Request plain text without newline, tab, Enter, Return, Save, Apply, Publish, or confirmation. Navigation and field focus remain user takeover actions in this safety profile.",
           "This conversational run can never dispatch MUTATE or DESTRUCTIVE actions and can never click Save, Apply, Publish, Submit, or Confirm.",
           "Review measurement reliability before optimization. Never mutate an account from this conversational run.",
           "For an executable operation, use prepare_approval exactly once per single-variable change. Never invent an approval id and never execute from this run.",
-          "prepare_approval also requires guardrailEvidence with the exact verified Shared Fact ids for measurement_status, campaign_mature, and learning_phase. Never use hypotheses or invent these ids; if any is missing, explain the blocker instead of preparing an approval.",
+          "prepare_approval also requires guardrailEvidence. Prefer exact verified current-task Shared Fact ids for measurement_status, campaign_mature, and learning_phase when those visible facts exist. Otherwise provide verified screenshot fact ids for conversions, observation days, learning/bid-strategy status, and visible measurement status; optional conversion delay, daily conversions, currency consistency, missing-value rate, and reconciliation difference make the deterministic review stronger. The product derives and persists the three final guardrail facts without model judgment. Never use hypotheses or invent ids; if the minimum raw facts are missing, explain the blocker instead of preparing an approval.",
           "The prepare_approval executionPlan is intent, not guessed native state. Supply schemaVersion 1, platform, exact visible accountName/accountId/campaignName/campaignId/pageType, operation/currentValue/proposedValue, a precise instruction/target/expectedResult, riskLevel, and experiment. Omit allowedRegion: the product derives it from two live visual target observations. The product also binds browser Profile, native application/window, live surface hash, live dual-reviewed account hash, timestamps, and plan id from the managed browser."
         ].join("\n"),
         prompt: JSON.stringify({ goal, projectContext, currentTask: task }),

@@ -23,6 +23,9 @@ import {
   UiTarsNativeOperator,
   VisualComputerRuntime,
   defaultBrowserContentRoi,
+  masksOutsideProtectedRegions,
+  minimumIdentityDisclosure,
+  type ExpectedVisualIdentity,
   type ModelPrivacyDescriptor,
   type Screenshot,
   type ScreenshotPrivacyMode,
@@ -163,9 +166,10 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
         rawDedicatedGrounding,
         screenshotPrivacy,
         requireTaskClient,
-        taskModelRoi,
+        (task, screenshot) => taskModelRoi(task, screenshot),
         () => dedicatedGroundingPrivacy,
-        () => privacyMode
+        () => privacyMode,
+        taskSensitiveMasks
       )
     : undefined;
   const piGrounding = piVision && primaryVisionPrivacy && strongVisionPrivacy
@@ -173,9 +177,10 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
         piVision,
         screenshotPrivacy,
         requireTaskClient,
-        taskModelRoi,
+        (task, screenshot) => taskModelRoi(task, screenshot),
         (tier) => tier === "strong" ? strongVisionPrivacy : primaryVisionPrivacy,
-        () => privacyMode
+        () => privacyMode,
+        taskSensitiveMasks
       )
     : undefined;
   const grounding = dedicatedGrounding || piGrounding ? new GuiGroundingProviderRouter(dedicatedGrounding, piGrounding) : undefined;
@@ -204,9 +209,10 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
         rawVerifier,
         screenshotPrivacy,
         (_expected, task) => ({ clientId: requireTaskClient(task), taskId: requireTaskId(task) }),
-        (_expected, before, after) => ({ before: taskSafeRoi(before.width, before.height), after: taskSafeRoi(after.width, after.height) }),
+        (_expected, before, after, task) => ({ before: taskModelRoi(task, before), after: taskModelRoi(task, after) }),
         verifierPrivacy,
-        () => privacyMode
+        () => privacyMode,
+        (_expected, screenshot, _phase, task) => taskSensitiveMasks(task, screenshot)
       )
     : undefined;
 
@@ -228,21 +234,22 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     ? new PrivacyAwareVisualIdentityReviewer(
         rawGuiIdentity,
         screenshotPrivacy,
-        (_expected, screenshot) => identitySafeRoi(screenshot.width, screenshot.height),
+        (expected, screenshot) => identitySafeRoi(expected, screenshot.width, screenshot.height),
         guiIdentityPrivacy,
         () => privacyMode,
-        (_expected, screenshot) => identitySensitiveMasks(screenshot.width, screenshot.height),
-        false
+        (expected, screenshot) => identitySensitiveMasks(expected, screenshot.width, screenshot.height),
+        false,
+        "locator"
       )
     : undefined;
   const deepIdentity = rawDeepIdentity && strongVisionPrivacy
     ? new PrivacyAwareVisualIdentityReviewer(
         rawDeepIdentity,
         screenshotPrivacy,
-        (_expected, screenshot) => identitySafeRoi(screenshot.width, screenshot.height),
+        (expected, screenshot) => identitySafeRoi(expected, screenshot.width, screenshot.height),
         strongVisionPrivacy,
         () => privacyMode,
-        (_expected, screenshot) => identitySensitiveMasks(screenshot.width, screenshot.height),
+        (expected, screenshot) => identitySensitiveMasks(expected, screenshot.width, screenshot.height),
         false
       )
     : undefined;
@@ -251,14 +258,23 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     ? new DualVisualIdentityVerifier(guiIdentity, deepIdentity)
     : undefined;
   const guiConfigured = Boolean(grounding && verifier && visualIdentity);
+  const sharedFacts = new SharedFactLedger(new WorkspaceSharedFactRepository(workspace));
   const computer = grounding && verifier
     ? new VisualComputerRuntime(
         new BrowserSessionBoundOperator(new UiTarsNativeOperator(), browserSessions),
         grounding,
         verifier,
         undefined,
-        (event) => {
+        async (event) => {
           if (!event.clientId) return;
+          if (event.taskId && (event.type === "executed" || (event.type === "blocked" && event.code === "SURFACE_CHANGED"))) {
+            await sharedFacts.invalidateVisualEvidence(event.clientId, {
+              taskId: event.taskId,
+              reason: event.type === "executed"
+                ? "native visual action changed the observed page"
+                : "native surface changed during Computer Use"
+            });
+          }
           events.publish({
             type: "computer",
             clientId: event.clientId,
@@ -270,7 +286,6 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
         Math.min(3, positiveInteger(env.ADPILOT_GUI_MAX_RETRIES, 2) + 1)
       )
     : undefined;
-  const sharedFacts = new SharedFactLedger(new WorkspaceSharedFactRepository(workspace));
   const visualTableReader = primaryVision && strongVision
     && (privacyMode !== "local-only" || (primaryVisionPrivacy?.location === "local" && strongVisionPrivacy?.location === "local"))
     ? new VisualTableReader({
@@ -374,49 +389,51 @@ function requireTaskId(task: VisualMicroTask | undefined): string {
   return task.taskId;
 }
 
-function taskSafeRoi(width: number, height: number) {
-  return defaultBrowserContentRoi(width, height);
+/** Returns only the tight bounding box around four locally supplied identity regions. */
+export function identitySafeRoi(expected: ExpectedVisualIdentity, width: number, height: number) {
+  return expected.evidenceRegions
+    ? minimumIdentityDisclosure(expected.evidenceRegions, width, height).roi
+    : defaultBrowserContentRoi(width, height);
 }
 
-/** Keeps the advertising header visible for identity review while excluding native browser chrome. */
-export function identitySafeRoi(width: number, height: number) {
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2) throw new Error("valid screenshot dimensions are required");
-  const top = Math.min(height - 1, Math.max(1, Math.round(height * 0.07)));
-  return { x: 0, y: top, width, height: height - top };
+/** Redacts all pixels between the four explicit identity evidence regions. */
+export function identitySensitiveMasks(expected: ExpectedVisualIdentity, width: number, height: number) {
+  return minimumIdentityDisclosure(expected.evidenceRegions, width, height).masks;
 }
 
-/** Identity review needs account labels, so only chrome and the personal avatar/email corner are redacted. */
-export function identitySensitiveMasks(width: number, height: number) {
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2) throw new Error("valid screenshot dimensions are required");
-  const browserChromeHeight = Math.max(1, Math.round(height * 0.1));
-  const personalWidth = Math.max(1, Math.round(width * 0.14));
-  const personalTop = Math.max(1, Math.round(height * 0.1));
-  const personalHeight = Math.max(1, Math.round(height * 0.07));
-  return [
-    { category: "browser_tabs" as const, region: { x: 0, y: 0, width, height: browserChromeHeight }, reason: "hide browser tabs and address chrome" },
-    { category: "system_menu_bar" as const, region: { x: 0, y: 0, width, height: Math.max(1, Math.round(height * 0.025)) }, reason: "hide system menu and status details" },
-    { category: "top_personal_info" as const, region: { x: width - personalWidth, y: personalTop, width: personalWidth, height: Math.min(personalHeight, height - personalTop) }, reason: "hide personal avatar and email without obscuring account identity labels" }
-  ];
-}
-
-function taskModelRoi(task: VisualMicroTask, screenshot: Screenshot) {
-  const allowed = task.allowedRegion;
-  if (!allowed) return taskSafeRoi(screenshot.width, screenshot.height);
-  const scale = allowed.coordinateSpace === "screen_points" ? screenshot.scaleFactor : 1;
-  const x = allowed.x * scale;
-  const y = allowed.y * scale;
-  const width = allowed.width * scale;
-  const height = allowed.height * scale;
-  const marginX = Math.max(24, width * 0.75);
-  const marginY = Math.max(24, height * 0.75);
+function taskModelRoi(task: VisualMicroTask | undefined, screenshot: Screenshot) {
+  const target = taskAllowedPixelRegion(task, screenshot);
+  if (!target) return { x: 0, y: 0, width: screenshot.width, height: screenshot.height };
+  const { x, y, width, height } = target;
+  const marginX = Math.max(8, Math.min(24, Math.round(width * 0.25)));
+  const marginY = Math.max(8, Math.min(24, Math.round(height * 0.25)));
   const left = Math.max(0, Math.floor(x - marginX));
-  const top = Math.max(1, Math.floor(y - marginY));
+  const top = Math.max(0, Math.floor(y - marginY));
   const right = Math.min(screenshot.width, Math.ceil(x + width + marginX));
   const bottom = Math.min(screenshot.height, Math.ceil(y + height + marginY));
-  if (left === 0 && top === 0 && right === screenshot.width && bottom === screenshot.height) {
-    return taskSafeRoi(screenshot.width, screenshot.height);
-  }
   return { x: left, y: top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
+}
+
+function taskSensitiveMasks(task: VisualMicroTask | undefined, screenshot: Screenshot) {
+  const target = taskAllowedPixelRegion(task, screenshot);
+  if (!target) return [];
+  return masksOutsideProtectedRegions(taskModelRoi(task, screenshot), [target]);
+}
+
+function taskAllowedPixelRegion(task: VisualMicroTask | undefined, screenshot: Screenshot) {
+  if (!task?.allowedRegion) return undefined;
+  const scale = task.allowedRegion.coordinateSpace === "screen_points" ? screenshot.scaleFactor : 1;
+  const region = {
+    x: Math.round(task.allowedRegion.x * scale),
+    y: Math.round(task.allowedRegion.y * scale),
+    width: Math.round(task.allowedRegion.width * scale),
+    height: Math.round(task.allowedRegion.height * scale)
+  };
+  if (region.x < 0 || region.y < 0 || region.width < 1 || region.height < 1
+    || region.x + region.width > screenshot.width || region.y + region.height > screenshot.height) {
+    throw new Error("task allowed region is outside screenshot bounds");
+  }
+  return region;
 }
 
 function modelPrivacy(provider: string, modelId: string): ModelPrivacyDescriptor {
