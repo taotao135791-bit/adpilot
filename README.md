@@ -12,9 +12,10 @@ AdPilot 是一个可本地运行、可审批、可审计的原生广告优化 Ag
 - 用户只需选择日常 / 深度代码模型；内置 Computer Use 会自动检测图像能力并组成定位、失败升级和独立复核链路。专用 UI-TARS / Verifier 端点只属于高级覆盖项。
 - 持久 Pi Session 按客户和对话恢复；长对话执行真实 compaction 并保留未完成任务、审批、实验、证据引用、恢复点与最后已验证动作。
 - 原生 Computer Use：产品为每个客户主动启动独立浏览器 Profile，并严格执行 `绑定 PID/窗口/Profile -> 截图 -> 单步 grounding -> 策略检查 -> 原生动作 -> 再截图 -> 独立结果验证`。窗口切换会立即返回 `BROWSER_SESSION_LOST`。
-- 真实修改必须经过确定性 guardrail、Risk Reviewer、用户批准和五分钟一次性令牌；令牌指纹覆盖完整视觉计划、账户/Campaign、前后值、目标控件、允许区域、浏览器窗口和单次执行机会。执行前还需两次独立视觉身份判断一致。
+- 真实修改必须经过可复算的确定性 guardrail、Risk Reviewer、用户批准和五分钟一次性令牌。预算/出价类修改可直接引用同一任务、同一 Campaign 的 `measurement_status`、`campaign_mature`、`learning_phase` 三项已验证截图事实，也可提交转化量、观察天数、学习状态、可见测量状态等原始视觉 Fact，由确定性内核派生并持久化三项最终事实。风险复核、用户批准和执行前都会复验完整来源链；任何缺失、过期、被替代、低置信度或不一致都会停止，不会由模型补全。
+- 审批页完整披露授权范围、原始指令、目标控件、期望结果、允许 ROI、浏览器/Profile/窗口/账户/Campaign 身份、有效期、计划/表面/账户/护栏指纹，以及护栏判定和证据 Fact ID；用户批准的是这份完整绑定，而不是摘要文本。
 - `VisualTableReader` 通过截图 ROI 读取表头、单元格和滚动重叠行，独立复核后才写入有截图与 Bounding Box 的 `SharedFact`；低置信度数值不会进入专家决策。
-- 完整截图只保存在本地 Workspace；模型仅接收任务 ROI 和遮挡后的图像。`local-only` 隐私模式会阻止所有远程截图 Provider。
+- 完整截图只保存在本地 Workspace。尚无坐标时，模型仅收到去除浏览器 chrome 并带默认遮挡的内容区用于一次定位；目标确定后，grounding、验证和第二次身份复核只接收目标/四个证据框及其必要邻域，其余像素在本机遮挡。`local-only` 隐私模式会阻止所有远程截图 Provider。
 - Google App Campaign 的规范化、诊断、版本化数值策略、实验账本、doctor 和历史回放内核；保留 410 项上游契约测试。
 - React + Fluent UI 控制台、SSE 实时状态、CLI、本地 mock 广告后台和失败关闭测试。
 
@@ -31,7 +32,7 @@ pnpm build
 npm install --global .
 ```
 
-`npm install --global .` 会把已经构建好的 `adpilot` 命令安装到当前 Node 的全局 bin。开发时如果希望源码目录中的每次构建立刻生效，也可以改用 `pnpm link --global`。验证安装：
+`npm install --global .` 会把已经构建好的 `adpilot` 命令安装到当前 Node 的全局 bin。该仓库当前不发布 npm registry 包，因此不要假定 `npm install -g adpilot` 或 `npx adpilot` 可用；从 clone 安装是受支持的 CLI 安装方式。开发时如果希望源码目录中的每次构建立刻生效，也可以改用 `pnpm link --global`。验证安装：
 
 ```bash
 which adpilot
@@ -96,7 +97,11 @@ pnpm desktop:dmg
 open release/AdPilot-0.1.1-arm64.dmg
 ```
 
-DMG 会使用 `build/icon.icns` 和标准拖拽到 Applications 的安装窗口。`pnpm icon:mac` 可从 `build/icon.svg` 重建图标。签名和 notarization 不是构建要求：开源发布可以直接分发未签名 DMG，但 macOS Gatekeeper 可能要求用户右键选择“打开”；只有追求无提示安装时才需要 Developer ID。原生应用的设置和 OAuth 凭据分别保存在 `~/Library/Application Support/AdPilot/workspace/.adpilot/settings.json` 与 `pi-auth.json`，文件权限为 `0600`。
+DMG 会使用 `build/icon.icns` 和标准拖拽到 Applications 的安装窗口。`pnpm icon:mac` 可从 `build/icon.svg` 重建图标。构建脚本显式设置 `CSC_IDENTITY_AUTO_DISCOVERY=false`，Electron Builder 的 macOS `identity` 为 `-`：内置 `.app` 使用无需证书的 ad-hoc code signing 检查 bundle 完整性，但没有 Developer ID、Team ID 或 notarization。macOS Gatekeeper 仍可能拒绝或要求用户显式选择“打开”；只有追求无提示安装时才需要另行授权 Developer ID 签名和公证。
+
+`LICENSE`、`LICENSES.md`、`THIRD_PARTY_NOTICES.md` 与 `licenses/**` 会随 CLI 发布文件和 Electron `asar` 包一起进入产物。发布前应实际验证 DMG；本次候选产物为 `release/AdPilot-0.1.1-arm64.dmg`（144,693,653 字节，SHA-256 `2ea1ddbedd8541c3d1f5d1b3f8ad2ec401fd977101b6b3228ffe7e09a9b576d0`，`hdiutil verify` 通过）；重新发版时必须以当次实测值替换这些数字，不得从旧 DMG 或历史报告复制。
+
+原生应用的设置和 OAuth 凭据分别保存在 `~/Library/Application Support/AdPilot/workspace/.adpilot/settings.json` 与 `pi-auth.json`，文件权限为 `0600`。Electron 只加载这个应用数据目录下的 `.env`，不读取启动目录的 `.env`；窗口保留 `contextIsolation`、sandbox 和禁用 Node integration，只允许本实例随机回环 origin 的内部导航，且只把 `http:` / `https:` 链接交给系统浏览器。
 
 ## macOS 权限
 
@@ -118,7 +123,9 @@ pnpm validate:google-ads:readonly -- --client <id> --browser-profile <profile> -
 pnpm validate:google-ads:prepare -- --client <id> --browser-profile <profile> --campaign "Campaign name" --draft-budget 120
 ```
 
-第二条命令要求用户先手动打开并聚焦预算输入框；运行时只允许一次 `type` 和一次只读确认，代码层禁止 Click、Hotkey、Enter、重试以及 Save / Apply / Publish。证据写入 `artifacts/visual-validation/`；没有已登录浏览器环境时不会声称真实浏览器验证通过。
+第二条命令要求用户先手动打开并聚焦预算输入框；运行时只允许一次 `type` 和一次只读确认，代码层禁止 Click、Hotkey、Enter、重试以及 Save / Apply / Publish。它是登录后浏览器的窄边界验证 harness，不是账户变更提交路径，也不会替代完整的审批/护栏流程。证据写入 `artifacts/visual-validation/`；没有已登录浏览器环境时不会声称真实浏览器验证通过。
+
+`pnpm eval:computer-use:live` 只在有可用视觉模型凭据或高级端点时才调用真实产品接口。无凭据时 Live Model Eval 是 `not-run`；离线 corpus/replay 与 mock 产品测试只证明协议、隔离和回归，不是线上模型质量或真实广告账户成功率。
 
 本地视觉闭环使用 `apps/mock-ad-dashboard/index.html`，不会连接真实广告平台。架构边界见 [docs/architecture.md](docs/architecture.md)，模型配置见 [docs/model-configuration.md](docs/model-configuration.md)，Computer Use 权限见 [docs/computer-use-permissions.md](docs/computer-use-permissions.md)，安全模型见 [docs/security.md](docs/security.md)，上游升级流程见 [docs/upstream-sync.md](docs/upstream-sync.md)。测试结果和已知外部限制分别见 [docs/test-report.md](docs/test-report.md) 与 [docs/known-limitations.md](docs/known-limitations.md)。
 

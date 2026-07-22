@@ -1,5 +1,9 @@
 # ADR 0003: Approval authority stays outside models
 
-Status: accepted, 2026-07-21.
+Status: accepted, amended 2026-07-22.
 
 Models may prepare an exact proposal only through a Tool. Risk review, user approval, token creation, token storage and token consumption are deterministic application services. The browser never receives the token and the model cannot call the commit Tool. The server reloads the persisted operation and execution plan at commit time so request clients cannot substitute values or targets.
+
+For numeric mutations, an exact visual plan is necessary but insufficient. The Tool must resolve three verified, unexpired, screenshot-backed Shared Facts for the same Campaign: `measurement_status`, `campaign_mature` and `learning_phase`. A caller may bind those three IDs directly, or bind exact verified raw metrics/status Fact IDs from which deterministic code derives and verifies those predicates. Derived facts preserve their complete source lineage and cannot outlive the shortest-lived source. The Tool then invokes the advertising-core guardrail using the numeric before/after values, the smaller of the client cap and 20%, and active experiment state. The persisted guardrail attestation includes the evaluator decision, evidence IDs, single-variable result and an operation fingerprint.
+
+An approving risk review, user approval and commit/token consumption each reload every bound fact and derived source, recheck client/task/Campaign, provenance, verification state and expiry, and recompute the attestation against current constraints and experiments. Page-changing native actions mark task visual evidence stale; managed-browser start, replacement, resume and close invalidate prior client visual evidence. The one-attempt HMAC token binds both the guardrail fingerprint and the complete execution-plan fingerprint. Missing, stale, rejected, superseded, altered, denied or fresh-review-required lineage fails closed and cancels pending authority. A model can explain a blocker, but it cannot waive it or manufacture evidence.

@@ -28,7 +28,7 @@ Settings are stored in `<workspace>/.adpilot/settings.json`; Pi OAuth credential
 
 ## Automatic Computer Use routing
 
-At startup AdPilot checks the selected models' declared image input, provider authentication and runtime availability. Normal settings report Computer Use readiness, the selected visual/escalation route, independent verification, browser-session state, current permission, privacy mode, and recent screenshot-disclosure audits.
+At startup AdPilot checks the selected Pi models' declared image input, provider authentication and runtime availability. The normal production route is the authenticated image-capable Daily code model, followed by a fresh screenshot/retry and the Deep code model on the third attempt. Normal settings report Computer Use readiness, the selected visual/escalation route, independent verification, browser-session state, current permission, privacy mode, and recent screenshot-disclosure audits.
 
 ```text
 image-capable Daily model through the built-in grounding adapter
@@ -41,6 +41,8 @@ independent verification call
 ```
 
 Grounding emits exactly one provider-independent `VisualAction`; models never own the task loop or permissions. AdPilot validates action JSON, coordinate representation, screenshot size/DPR, native window identity, task/plan/account fingerprints, risk, permission and allowed ROI before native input. If no selected authenticated model accepts images, chat remains available while Computer Use reports that it is not ready.
+
+Model output is also not deterministic guardrail evidence. A mutation proposal may name already-verified screenshot-backed `SharedFact` IDs for measurement reliability, campaign maturity and learning phase directly, or exact verified raw metrics/status Fact IDs from which application code deterministically derives those three verified facts. The application—not Pi, the selected code model, UI-TARS or a verifier—checks the complete lineage and recomputes the numerical change guardrail, client cap and active-experiment constraint before risk review, user approval and commit. No model setting can relax this requirement.
 
 ## Advanced developer overrides
 
@@ -59,13 +61,13 @@ ADPILOT_VERIFY_MODEL=vision-verifier
 ADPILOT_VERIFY_TIMEOUT_MS=20000
 ```
 
-When present, the dedicated GUI provider is tried before the Pi code-model route. Strong routing is used after repeated or low-confidence failures. Verification remains a separately invoked role and otherwise uses the image-capable Deep code model.
+The Pi code-model visual route remains the zero-extra-service default. Only when a user explicitly saves a dedicated GUI endpoint does it become a higher-priority advanced override ahead of that built-in route. Strong routing is used after repeated or low-confidence failures. Verification remains a separately invoked role and otherwise uses the image-capable Deep code model.
 
 Every provider returns one provider-independent `VisualAction`; UI-TARS never owns the task loop. Invalid action/verifier JSON gets exactly three structured-output passes: normal generation, same-model repair using validation issues, then strong-model repair. Exhaustion becomes a typed blocker rather than free-form text.
 
 ## Screenshot privacy
 
-Every grounding, verification, account-identity and table-reader call stores the complete screenshot locally, crops a task ROI, masks configured sensitive regions, and records provider/model, screenshot id, ROI, masks, locality and retention policy. A remote provider cannot receive a full-window image. `ADPILOT_PRIVACY_MODE=local-only` blocks every remote image provider rather than silently falling back.
+Every grounding, verification, account-identity and table-reader call stores the complete screenshot locally and records provider/model, screenshot id, call role, ROI, masks, locality and retention policy. When no target coordinates exist, a locator receives a browser-content crop with default masks; after a target exists, the call receives a tight target crop with surrounding pixels masked. Mutation identity uses the first reviewer as a locator, sends the second reviewer only the four account/Campaign/current-value/target regions, persists the agreed regions, and reuses them at commit. A remote provider cannot receive a full-window image. `ADPILOT_PRIVACY_MODE=local-only` blocks every remote image provider rather than silently falling back.
 
 ## Runtime controls
 
@@ -77,4 +79,4 @@ ADPILOT_PORT=4317
 ADPILOT_NO_OPEN=1
 ```
 
-If `ADPILOT_APPROVAL_SECRET` is absent, AdPilot generates a private local secret. `.env` is loaded by the Node 22 CLI. Values saved through Settings override matching model environment variables on the next launch. `adpilot doctor` reports selected model names and whether chat and visual capability are ready without printing credentials.
+If `ADPILOT_APPROVAL_SECRET` is absent, AdPilot generates a private local secret. The Node 22 CLI may load `.env` from its normal local launch context; the packaged Electron application intentionally loads only `<Electron userData>/.env`, never the current working directory. Values saved through Settings override matching model environment variables on the next launch. `adpilot doctor` reports selected model names and whether chat and visual capability are ready without printing credentials.

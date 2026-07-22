@@ -17,7 +17,7 @@ The sanitized visual corpus contains 85 tasks across 17 Google Ads-style scenes,
 The live suite also carries two independent, human-authored specialist oracles:
 
 - `computer-use-live/table-cases.json` — 50 exact row/column/raw/normalized/unit/qualifier cell expectations
-- `computer-use-live/identity-cases.json` — positive identity confirmations plus truncated and obscured safe-blocker expectations
+- `computer-use-live/identity-cases.json` — 7 identity cases covering positive confirmations plus truncated and obscured safe-blocker expectations
 
 Regenerate and verify them with `pnpm fixtures:visual && pnpm test:visual-replay`.
 
@@ -31,3 +31,7 @@ Regenerate and verify them with `pnpm fixtures:visual && pnpm test:visual-replay
 - Real Browser Validation
 
 With no usable visual provider credential or dedicated endpoint, Live Model Eval is `not-run`; scores are never synthesized. Use `ADPILOT_EVAL_LIMIT` to cap paid calls. A real-browser result is included only when `ADPILOT_REAL_BROWSER_REPORT` points to an actual validation manifest.
+
+The logged-in-browser manifest must come from an AdPilot-managed, manually authenticated Profile with the target client allowlisted. The readonly harness observes only. The prepare harness is intentionally narrower than a production change: a user focuses the draft field first, then it permits one `type` action without Enter and a read-only confirmation; it rejects click, hotkey, Save/Apply/Publish and retry. A harness artifact is therefore evidence of this narrow native flow, never an advertising-platform submission result.
+
+For a release without deliberately configured credentials or a real local manifest, record Live Model Eval and Real Browser Validation as `not-run`. Final score/count/DMG values belong in `docs/test-report.md` and remain `PENDING_FINAL_VERIFICATION` until directly observed.

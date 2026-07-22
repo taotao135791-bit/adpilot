@@ -1,44 +1,75 @@
-# Test report
+# Test and release verification report
 
-Run date: 2026-07-22. Environment: macOS arm64, Node 24.13.1 (product minimum Node 22), pnpm 10.30.3, Python 3.13.
+Status: release-candidate verification complete. Date: 2026-07-22.
 
-## Complete quality gate
+This document deliberately separates deterministic/offline evidence from calls that need external credentials or a real logged-in browser. It was updated from the final command output immediately before publishing. No `PENDING_FINAL_VERIFICATION` field below carries a remembered result, a fixture result, or a result from a different machine.
 
-Command: `pnpm check`
+## Final release gate
 
-- Strict TypeScript: passed.
-- Vitest: 18 files, 132 tests, all passed.
-- Advertising core: 410 Pytest tests passed in 8.45 seconds.
-- CLI, React desktop, and Electron production builds: passed.
-
-The 132 product tests include stable client/conversation session IDs, disk-backed Pi Session storage, tool messages/results, real Pi compaction, recovery checkpoints, restart conversation continuation, task-scoped specialist continuation across reconstructed runtimes, SharedFact lifecycle/isolation, structured JSON repair, GUI model routing/fallback, action schema, native window identity, active-window screenshot capture, screenshot/window/DPR coordinates, application/window/bounds/DPI changes, application exit, pause/takeover/cancel, timeout, duplicate coordinates, mutation non-retry, approval value/surface/signature/expiry/replay/restart invalidation, pending approval and active experiment restart recovery, end-to-end approval/execute/verify, and server secret isolation.
-
-## Visual replay and model evaluation
-
-Commands:
+Run from a clean checkout after `pnpm install --frozen-lockfile`:
 
 ```bash
+pnpm check
 pnpm fixtures:visual
 pnpm test:visual-replay
 pnpm eval:gui
+pnpm eval:computer-use:live
+CSC_IDENTITY_AUTO_DISCOVERY=false pnpm desktop:dmg
+hdiutil verify release/<actual-dmg-name>.dmg
+shasum -a 256 release/<actual-dmg-name>.dmg
 ```
 
-- 60 sanitized visual tasks, plus one corpus-coverage test: 61/61 passed.
-- 12 scenes: campaign list, date selector, budget, bid, conversions, assets, account switch, confirmation, loading, error, switched browser, unauthorized app.
-- Five variants per scene cover Chinese/English, light/dark, 1024–1600 logical widths, and DPR 1/1.25/2.
-- Fixture-protocol oracle: grounding/action/completion 100%, false-click/unsafe-action 0%. This validates corpus annotations and replay mechanics, not model quality.
-- PiVision, UI-TARS, and Strong GUI live scores are honestly `not-run` because no external credentials/prediction file was supplied. `ADPILOT_EVAL_PREDICTIONS` enables a recorded three-route comparison without embedding customer data.
+| Gate | Scope | Final result |
+| --- | --- | --- |
+| `pnpm typecheck` | strict TypeScript contracts, including approval/guardrail, server and desktop state types | pass, 0 errors |
+| `pnpm test` | product unit/integration tests and mock/local visual product tests | pass, 27 files / 275 tests |
+| `pnpm test:ads-core` | retained deterministic UAC Python contract and replay suite | pass, 410 tests |
+| `pnpm build` | CLI, React desktop and Electron main-process bundles | pass |
+| `pnpm check` | aggregate of the four gates above | pass |
+| `pnpm test:visual-replay` | sanitized fixture replay mechanics and annotations | pass, 86 tests (included in the 275 above) |
+| `pnpm eval:gui` | optional recorded-prediction comparison; not a live model call | `not-run` — no recorded predictions supplied; no score fabricated |
+| `pnpm eval:computer-use:live` | assembled product visual interfaces, only when credentials exist | `not-run` — no usable image-capable credential; report at `artifacts/evals/computer-use-live-report.json` |
+| `pnpm desktop:dmg` | certificate-free ad-hoc signed macOS ARM64 DMG with legal notices packaged | pass, `release/AdPilot-0.1.1-arm64.dmg` |
+| `hdiutil verify` + SHA-256 | actual final DMG integrity | `VALID`; SHA-256 `2ea1ddbedd8541c3d1f5d1b3f8ad2ec401fd977101b6b3228ffe7e09a9b576d0` |
 
-## Native and packaging checks
+Final test count: 685 (275 vitest across 27 files, including 86 visual-replay cases, plus 410 pytest).
 
-- The macOS probe was exercised against a real foreground window and returned application, bundle id, PID, window id/title/bounds, display, DPR=2, and an exact active-window capture.
-- `pnpm validate:google-ads:readonly -- --help` passed preflight. No authorized real Google Ads account was used, so no live-account pass is claimed.
-- `CSC_IDENTITY_AUTO_DISCOVERY=false pnpm desktop:dmg` produced the unsigned arm64 application and DMG.
-- `hdiutil verify release/AdPilot-0.1.1-arm64.dmg` reported a valid checksum.
-- Final DMG: `release/AdPilot-0.1.1-arm64.dmg`, 145,773,330 bytes.
+Final DMG filename: `AdPilot-0.1.1-arm64.dmg`.
 
-## External requirements
+Final DMG bytes: 144,693,653.
 
-Live model evaluation needs configured model credentials. Live Google Ads validation additionally needs Screen Recording and Accessibility permissions, an authorized dedicated browser Profile, a logged-in foreground account, and an explicit client account allowlist. The harness writes screenshots, grounding, actions, verification, model route, latency, failures, and available usage data to `artifacts/validation/`; the prepare flow fills a draft and forbids submission.
+Final DMG SHA-256: `2ea1ddbedd8541c3d1f5d1b3f8ad2ec401fd977101b6b3228ffe7e09a9b576d0`.
 
-The only recurring non-failing warning is Node's `DEP0040` warning from a transitive UI-TARS dependency.
+## What the offline and mock suites establish
+
+- TypeScript and product tests exercise deterministic approval state, exact-plan fingerprints, one-attempt tokens, screenshot fact isolation, guardrail evidence validation, server client isolation, runtime pause/resume/cancel state and desktop disclosure rendering.
+- The UAC Python suite validates the retained deterministic advertising-core contracts. It makes no advertising-platform API call.
+- Visual replay uses sanitized fixtures and deterministic or faux-model responses. It checks coordinate/action protocol, policy and expected blocking paths. It does **not** measure a remote model's live quality and does **not** operate a real account.
+- `eval:gui` consumes an optional local recorded-prediction file. Its coverage/oracle results cannot be reported as live grounding, table-reading or identity accuracy.
+
+## Live Model Eval
+
+`pnpm eval:computer-use:live` invokes the product `GroundingModel`, `VisualVerifier`, `VisualTableReader` and `DualVisualIdentityVerifier` interfaces against the committed corpus. Its report keeps Corpus Validation, Offline Prediction Eval, Live Model Eval and Real Browser Validation as separate sections.
+
+Without a configured authenticated image-capable model or an explicitly configured advanced visual endpoint, the only correct result is `not-run`. No score is synthesized from fixture annotations, a faux Pi provider, or a UI test. `ADPILOT_EVAL_LIMIT` caps paid calls; credentials and customer screenshots are not written into this report.
+
+Live Model Eval result for this release candidate: `not-run` (no release credential was intentionally supplied; Corpus Validation section `passed`).
+
+## Logged-in-browser harness boundary
+
+The two commands below are production-native validation harnesses, not mock tests and not mutation submission flows:
+
+```bash
+pnpm validate:google-ads:readonly -- --client <id> --browser-profile <profile> --campaign "Campaign name"
+pnpm validate:google-ads:prepare -- --client <id> --browser-profile <profile> --campaign "Campaign name" --draft-budget 120
+```
+
+They require a user-owned, AdPilot-managed browser Profile, an allowlisted client, a manually logged-in foreground account, Screen Recording and Accessibility permission. The readonly harness observes only. The prepare harness requires the user to open and focus the draft field and permits at most one `type` action without Enter, followed by read-only confirmation; it rejects click, hotkey, submit/save controls and retries. It neither logs in nor submits an advertising-platform change.
+
+Real Browser Validation result for this release candidate: `not-run` (no actual local artifact manifest was attached at release time).
+
+## Packaging evidence
+
+The desktop build deliberately uses `CSC_IDENTITY_AUTO_DISCOVERY=false` and macOS `identity: "-"`. The bundled `.app` is ad-hoc signed without a certificate so `codesign` can verify bundle integrity; it has no Developer ID or Team ID and is not notarized. `LICENSE`, `LICENSES.md`, `THIRD_PARTY_NOTICES.md` and `licenses/**` are release inputs and must be checked in the built application/DMG, not merely in the repository. Gatekeeper rejection or an explicit Open requirement is an expected distribution consequence, not a failed integrity check.
+
+Release artefact inspection result: `codesign --verify --deep --strict release/mac-arm64/AdPilot.app` passed (ad-hoc identity `-`, no Developer ID/Team ID, not notarized); `hdiutil verify` reported `VALID`; packaged legal notices confirmed inside `app.asar`: `/LICENSE`, `/LICENSES.md`, `/THIRD_PARTY_NOTICES.md`, `/licenses/codex-ads-MIT.txt`, `/licenses/pi-MIT.txt`, `/licenses/ui-tars-Apache-2.0.txt`.

@@ -17,15 +17,18 @@ User goal
       -> typed Skill
         -> deterministic Tool / read-only visual microtask
     -> evidence synthesis
-    -> deterministic change guardrail
+    -> deterministic guardrail from three verified status facts,
+       supplied directly or derived from verified raw visual metrics/status facts
     -> independent Risk Reviewer
-    -> user approval
-    -> one-attempt token bound to the complete VisualExecutionPlan
+    -> user approval with complete plan/guardrail disclosure
+    -> one-attempt token bound to the complete VisualExecutionPlan and guardrail
     -> Account Operator visual microtask
       -> assert managed browser client/Profile/PID/window
-      -> local full screenshot + masked task ROI
-      -> built-in visual grounding (advanced UI-TARS override optional)
-      -> dual visual account/Campaign/value/target confirmation for mutation
+      -> local full screenshot + minimized model disclosure
+      -> Pi code-model visual grounding (configured UI-TARS override optional)
+      -> first identity locator on cropped/masked browser content
+      -> second identity reviewer on four tight evidence regions
+      -> reuse those four regions at mutation commit
       -> VisualPolicy
       -> one native NutJS action
       -> screenshot
@@ -60,7 +63,7 @@ Each client uses an AdPilot-launched browser with a dedicated on-disk Profile. D
 
 - Daily: natural conversation, extraction and routine synthesis.
 - Deep: ambiguity, conflicts, failed visual retries and risk-sensitive reasoning.
-- GUI grounding: built-in adapter over an authenticated image-capable Daily/Deep code model. An advanced dedicated provider, when configured, is attempted first.
+- GUI grounding: the default built-in adapter uses an authenticated image-capable Daily/Deep Pi code model. A dedicated UI-TARS-compatible endpoint is only an advanced override and, when explicitly configured, is attempted first.
 - Visual verification: a separately invoked advanced endpoint when configured; otherwise an independent Deep vision call.
 - Account identity: two separately invoked visual reviewers must agree at confidence `>= 0.85`; they may use the same configured code model but remain distinct calls, roles and audit records.
 
@@ -68,10 +71,22 @@ Provider/model names come from the persisted native Settings store or environmen
 
 ## Visual evidence path
 
-Complete screenshots are written only to the local Workspace. Grounding, verification, identity and table calls receive cropped task ROIs with sensitive masks and produce an append-only disclosure record. Remote full-window uploads are rejected, and `local-only` privacy mode rejects remote image providers.
+Complete screenshots are written only to the local Workspace. Before a target has pixel coordinates, the first grounding or identity locator receives a browser-content crop with the default browser-chrome, personal-information and notification masks. Once a target ROI exists, grounding and verification use a tight crop around that ROI and black out surrounding pixels. For mutation identity, the first locator returns the account, Campaign, current-value and target regions; the second reviewer receives only the tight union of those four regions with every gap masked. The agreed regions are persisted with the plan and reused during commit-time identity review. Every disclosure is append-only and records its role, ROI and masks. Remote full-window uploads are rejected, and `local-only` privacy mode rejects remote image providers.
 
-`VisualTableReader` detects headers and cells from pixels, records raw/normalized value, unit, confidence, bounding box and screenshot id, aligns vertical/horizontal scrolls using overlap rows, and asks a separate verifier call to confirm critical cells. Only verified, unexpired `SharedFact` records for the same client/task reach specialists. Low-confidence, truncated, loading or conflicting values stop with `UNRELIABLE_VISUAL_VALUE`.
+`VisualTableReader` detects headers and cells from pixels, records raw/normalized value, unit, confidence, bounding box and screenshot id, aligns vertical/horizontal scrolls using overlap rows, and asks a separate verifier call to confirm critical cells. Only verified, unexpired `SharedFact` records for the same client/task reach specialists. For the Performance Analyst, Media Buyer and Measurement Reviewer, every account-number field is mapped to one exact Fact ID, must equal that fact's value, and all bound facts must use the same Campaign subject. Low-confidence, truncated, loading, conflicting, stale, cross-Campaign or unbound values stop instead of becoming model context.
 
-## Approval binding
+## Approval binding and deterministic guardrails
 
-`VisualExecutionPlan` is a strict schema covering plan/task/client, platform, Profile, native application/window, allowlists, account/Campaign/page identity, operation and values, instruction, target, expected result, allowed region, risk, surface/account fingerprints and lifetime. Its canonical SHA-256 fingerprint is embedded in the HMAC token binding. Immediately before mutation, AdPilot reconstructs the actual plan from the live managed screenshot and dual-reviewed identity; any mismatch destroys the token and requires a new approval.
+`VisualExecutionPlan` is a strict schema covering plan/task/client, platform, Profile, native application/window, allowlists, account/Campaign/page identity, operation and values, instruction, target, expected result, allowed region, risk, surface/account fingerprints and lifetime. Its canonical SHA-256 fingerprint is embedded in the HMAC token binding.
+
+Numeric `mutate` and `destructive` operations additionally require a deterministic guardrail attestation for three `SharedFact` records: `measurement_status`, `campaign_mature` and `learning_phase`. The caller may supply those three exact Fact IDs, or supply exact IDs for verified raw visual metrics/status facts such as conversions, observation days and the visible learning status. In the latter path, `tools` deterministically runs the maturity and measurement checks, persists the three derived verified facts with the complete source lineage, and then builds the same attestation. Every direct, raw and derived fact must be same-client/task/Campaign, verified, unexpired, non-migration, screenshot-backed, bounded and at least the configured confidence threshold. `tools` loads client constraints and active experiments, caps the change at `min(client maximum, 20%)`, requires a matching single variable and runs `advertising-core`'s `evaluateChangeGuardrail`. Hypotheses, text summaries and model-supplied booleans are not substitutes.
+
+The persisted guardrail contains its input, decision, fact IDs, single-variable result, operation fingerprint and evaluation time. Its canonical fingerprint is bound to the token beside the execution-plan fingerprint. Before an approving risk review, user approval and commit/token consumption, AdPilot reloads every bound fact and its derivation lineage, rechecks lifecycle/provenance/expiry/Campaign binding, and recomputes the guardrail against current constraints and experiments. A page-changing native action marks that task's visual facts stale; starting, resuming, replacing or closing a managed-browser session invalidates the client's visual evidence. A missing, stale, rejected, superseded, changed or denied lineage blocks and cancels the pending approval. Immediately before mutation, AdPilot reconstructs the actual plan from the live managed screenshot and dual-reviewed identity regions persisted at approval time; any mismatch destroys the token and requires a new approval.
+
+The desktop user approval UI renders the complete plan plus the surface/account/plan/guardrail fingerprints, guardrail decision, cap, reasons and evidence Fact IDs. It is a disclosure surface over the deterministic approval service, never an alternate authority path.
+
+## Runtime and desktop security state
+
+`VisualComputerRuntime` has an explicit execution status: `running`, `paused` or `cancelled`; server state reports `unavailable` when no Computer Use runtime exists. Pause, takeover, resume and cancel responses are based on that runtime state. User takeover leaves execution paused until an explicit resume, and cancellation is terminal for the runtime instance.
+
+The Electron shell runs the product server on a random loopback port. It uses context isolation, sandbox and disabled Node integration, denies permission requests, accepts renderer navigation only when the URL origin exactly matches that server origin, and only opens `http:`/`https:` external URLs. It reads desktop `.env` only from Electron user data, avoiding working-directory environment injection. The open-source DMG uses certificate-free ad-hoc signing (`identity: "-"`) for bundle-integrity verification; it has no Apple Developer ID, Team ID or notarization. This desktop local trust boundary is recorded in [ADR 0009](architecture-decisions/0009-desktop-local-trust-boundary.md).
