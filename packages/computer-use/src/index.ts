@@ -318,6 +318,8 @@ export class VisualPolicy {
   }
 }
 
+export type VisualRuntimeStatus = "running" | "paused" | "cancelled";
+
 export class VisualComputerRuntime {
   private paused = false;
   private cancelled = false;
@@ -334,8 +336,18 @@ export class VisualComputerRuntime {
     if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3) throw new Error("visual max attempts must be between 1 and 3");
   }
 
-  pause(): void { this.paused = true; }
-  resume(): void { this.paused = false; }
+  /**
+   * The execution state is intentionally separate from model/browser readiness.
+   * It is the authoritative answer for UI controls: a paused runtime must never
+   * be rendered as running simply because a GUI model is configured.
+   */
+  executionStatus(): VisualRuntimeStatus {
+    if (this.cancelled) return "cancelled";
+    return this.paused ? "paused" : "running";
+  }
+
+  pause(): void { if (!this.cancelled) this.paused = true; }
+  resume(): void { if (!this.cancelled) this.paused = false; }
   cancel(): void { this.cancelled = true; }
 
   /** Resolve the live execution surface through the same native operator used for actions. */

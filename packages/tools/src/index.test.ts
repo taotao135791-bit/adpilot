@@ -25,7 +25,12 @@ import {
   type VisualTableVerifierRequest
 } from "@adpilot/visual-table-reader";
 import { WorkspaceStore } from "@adpilot/workspace";
-import { AdPilotTools, visualTaskFromExecutionPlan, type VisualApprovalPlanDraft } from "./index.js";
+import {
+  AdPilotTools,
+  visualTaskFromExecutionPlan,
+  type ApprovalGuardrailEvidence,
+  type VisualApprovalPlanDraft
+} from "./index.js";
 
 const taskId = "9af9bf5e-3114-43c6-8963-748cfc63a731";
 const operation = {
@@ -178,14 +183,38 @@ async function setup() {
     assertActive: vi.fn(async () => session)
   } as unknown as BrowserSessionManager;
   const approvals = new ApprovalService(workspace, "0123456789abcdef0123456789abcdef");
-  const tools = new AdPilotTools(workspace, new AuditLog(workspace), approvals, new ExperimentStore(workspace), computer, identity, browserSessions);
-  return { tools, approvals, runMicroTask, setObservation: (value: VisualIdentityObservation) => { currentObservation = value; } };
+  const sharedFacts = new SharedFactLedger();
+  const guardrailEvidence = await createGuardrailEvidence(sharedFacts);
+  const tools = new AdPilotTools(
+    workspace,
+    new AuditLog(workspace),
+    approvals,
+    new ExperimentStore(workspace),
+    computer,
+    identity,
+    browserSessions,
+    undefined,
+    sharedFacts
+  );
+  return {
+    tools,
+    approvals,
+    sharedFacts,
+    guardrailEvidence,
+    runMicroTask,
+    setObservation: (value: VisualIdentityObservation) => { currentObservation = value; }
+  };
 }
 
 async function approved() {
   const fixture = await setup();
   const context = { clientId: "client-a", taskId, actor: "account_operator", permission: "MUTATE" as const };
-  const created = await fixture.tools.createApproval({ ...context, permission: "OBSERVE" }, operation, draft);
+  const created = await fixture.tools.createApproval(
+    { ...context, permission: "OBSERVE" },
+    operation,
+    draft,
+    fixture.guardrailEvidence
+  );
   await fixture.approvals.recordRiskReview("client-a", created.id, true, "within policy");
   const { approval, token } = await fixture.approvals.approveByUser("client-a", created.id, "owner");
   return { ...fixture, context, approval, token, task: visualTaskFromExecutionPlan(approval.executionPlan!, "USD") };
@@ -235,8 +264,31 @@ describe("production visual approval tools", () => {
     await expect(fixture.tools.createApproval(
       { clientId: "client-a", taskId, actor: "adpilot_agent", permission: "OBSERVE" },
       operation,
-      { ...draft, allowedRegion: { x: 0, y: 0, width: 120, height: 100, coordinateSpace: "screenshot_pixels" } }
+      { ...draft, allowedRegion: { x: 0, y: 0, width: 120, height: 100, coordinateSpace: "screenshot_pixels" } },
+      fixture.guardrailEvidence
     )).rejects.toThrow("not tightly bound");
+  });
+
+  it("requires exact, verified visual facts for deterministic mutation guardrails", async () => {
+    const fixture = await setup();
+    await expect(fixture.tools.createApproval(
+      { clientId: "client-a", taskId, actor: "adpilot_agent", permission: "OBSERVE" },
+      operation,
+      draft
+    )).rejects.toThrow();
+    await expect(fixture.tools.createApproval(
+      { clientId: "client-a", taskId, actor: "adpilot_agent", permission: "OBSERVE" },
+      operation,
+      draft,
+      { ...fixture.guardrailEvidence, learningFactId: fixture.guardrailEvidence.maturityFactId }
+    )).rejects.toThrow("learning_phase");
+    const otherCampaign = await createGuardrailEvidence(fixture.sharedFacts, "campaign-other");
+    await expect(fixture.tools.createApproval(
+      { clientId: "client-a", taskId, actor: "adpilot_agent", permission: "OBSERVE" },
+      operation,
+      draft,
+      otherCampaign
+    )).rejects.toThrow("different campaign");
   });
 
   it("cancels before consuming the token when the dual-reviewed target control moves", async () => {
@@ -248,6 +300,36 @@ describe("production visual approval tools", () => {
     await expect(fixture.approvals.get("client-a", fixture.approval.id)).resolves.toMatchObject({ status: "cancelled" });
   });
 });
+
+async function createGuardrailEvidence(ledger: SharedFactLedger, subject = "campaign-42"): Promise<ApprovalGuardrailEvidence> {
+  const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+  const add = async (predicate: string, value: string | boolean) => {
+    const observedFact = await ledger.observe({
+      clientId: "client-a",
+      taskId,
+      subject,
+      predicate,
+      value,
+      unit: "",
+      sourceType: "visual_table",
+      sourceScreenshotId: `screen-${predicate}`,
+      sourceBoundingBox: [1, 1, 20, 10],
+      evidenceIds: [`screenshot:screen-${predicate}`],
+      confidence: 0.98,
+      createdBy: "visual_table_reader",
+      expiresAt
+    });
+    return ledger.verify("client-a", observedFact.factId, { verifier: "independent_visual_verifier", confidence: 0.97 });
+  };
+  const measurement = await add("measurement_status", "reliable");
+  const maturity = await add("campaign_mature", "mature");
+  const learning = await add("learning_phase", "not learning");
+  return {
+    measurementStatusFactId: measurement.factId,
+    maturityFactId: maturity.factId,
+    learningFactId: learning.factId
+  };
+}
 
 describe("production visual table tool", () => {
   it("captures a managed window, sends audited ROIs, scrolls once, and persists only verified facts", async () => {

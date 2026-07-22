@@ -11,6 +11,7 @@ import {
   ImageChangeVerifier,
   VisualComputerRuntime,
   type DualVisualIdentityVerifier,
+  type BrowserSessionManager,
   type GroundingModel,
   type NativeOperator,
   type Screenshot,
@@ -128,10 +129,39 @@ describe("local mock advertising console", () => {
       confirm: async () => ({
         fingerprintHash: "d".repeat(64),
         fingerprint: { confidence: 0.99, screenshotHash: screenshot(operator.state).sha256, criticalRegionHashes: {} },
+        targetRegion: { x: 900, y: 560, width: 220, height: 120 },
         reviewers: [{ id: "mock-gui", confidence: 0.99, reason: "fixture" }, { id: "mock-deep", confidence: 0.99, reason: "fixture" }]
       })
     } as unknown as DualVisualIdentityVerifier;
-    const tools = new AdPilotTools(workspace, new AuditLog(workspace), approvals, new ExperimentStore(workspace), runtime, visualIdentity);
+    const browserSessions = {
+      get: async () => ({
+        browserProfile: "local-test-profile",
+        nativeProfileFingerprint: "local-test-profile",
+        platform: "other",
+        processId: nativeSurface.pid,
+        windowId: nativeSurface.windowId,
+        browserApplicationId: nativeSurface.bundleId,
+        browserApp: nativeSurface.app
+      }),
+      assertActive: async () => ({
+        browserProfile: "local-test-profile",
+        nativeProfileFingerprint: "local-test-profile",
+        platform: "other",
+        processId: nativeSurface.pid,
+        windowId: nativeSurface.windowId,
+        browserApplicationId: nativeSurface.bundleId,
+        browserApp: nativeSurface.app
+      })
+    } as unknown as BrowserSessionManager;
+    const tools = new AdPilotTools(
+      workspace,
+      new AuditLog(workspace),
+      approvals,
+      new ExperimentStore(workspace),
+      runtime,
+      visualIdentity,
+      browserSessions
+    );
     const taskId = crypto.randomUUID();
     const operation = {
       platform: "other" as const, account: "local-account", campaign: "Android Growth", operation: "set_daily_budget",
@@ -179,7 +209,20 @@ describe("local mock advertising console", () => {
         maturityWindowDays: 7, rollbackCondition: "CPA rises more than 20%", reviewAt: "2026-08-01T00:00:00.000Z"
       }
     };
-    const approval = await approvals.create("visual-client", taskId, operation, executionPlan);
+    const approval = await approvals.create("visual-client", taskId, operation, executionPlan, {
+      input: {
+        kind: "budget",
+        currentValue: 100,
+        proposedValue: 120,
+        maxChangePercent: 20,
+        activeExperimentVariables: [],
+        measurementStatus: "reliable",
+        mature: true,
+        learning: false
+      },
+      evidenceFactIds: ["mock:measurement", "mock:maturity", "mock:learning"],
+      singleVariable: true
+    });
     await approvals.recordRiskReview("visual-client", approval.id, true, "Within policy and single-variable guardrail");
     const { token } = await approvals.approveByUser("visual-client", approval.id, "test-owner");
     await expect(tools.commitApprovedVisualAction(

@@ -10,7 +10,7 @@ import { ApprovalOperation } from "@adpilot/approvals";
 import { StartBrowserSessionInput, type BrowserSession } from "@adpilot/computer-use";
 import { SettingsUpdate } from "@adpilot/configuration";
 import { ConversationMessage, Platform } from "@adpilot/shared";
-import { VisualApprovalPlanInput, visualTaskFromExecutionPlan } from "@adpilot/tools";
+import { ApprovalGuardrailEvidence, VisualApprovalPlanInput, visualTaskFromExecutionPlan } from "@adpilot/tools";
 
 const BrowserSessionStartRequest = z.object({
   clientId: z.string().min(1),
@@ -187,9 +187,26 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     }
   });
 
-  app.post("/api/computer/pause", async () => { system.computer?.pause(); return { status: "paused" }; });
-  app.post("/api/computer/takeover", async () => { system.computer?.pause(); return { status: "user_takeover" }; });
-  app.post("/api/computer/resume", async () => { system.computer?.resume(); return { status: "running" }; });
+  app.post("/api/computer/pause", async (_request, reply) => {
+    const computer = system.computer;
+    if (!computer) return reply.code(409).send(computerUnavailableResponse());
+    computer.pause();
+    return { status: computer.executionStatus(), executionStatus: computer.executionStatus() };
+  });
+  app.post("/api/computer/takeover", async (_request, reply) => {
+    const computer = system.computer;
+    if (!computer) return reply.code(409).send(computerUnavailableResponse());
+    computer.pause();
+    // Takeover is a user intent, not a second runtime state. The actual state
+    // exposed to every client remains `paused` until the user explicitly resumes.
+    return { status: "user_takeover", executionStatus: computer.executionStatus() };
+  });
+  app.post("/api/computer/resume", async (_request, reply) => {
+    const computer = system.computer;
+    if (!computer) return reply.code(409).send(computerUnavailableResponse());
+    computer.resume();
+    return { status: computer.executionStatus(), executionStatus: computer.executionStatus() };
+  });
 
   const startManagedBrowser = async (bodyInput: unknown) => {
     const requested = BrowserSessionStartRequest.parse(bodyInput);
@@ -251,13 +268,22 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       clientId: z.string().min(1),
       taskId: z.string().uuid(),
       operation: ApprovalOperation,
-      executionPlan: VisualApprovalPlanInput.optional()
+      executionPlan: VisualApprovalPlanInput.optional(),
+      guardrailEvidence: ApprovalGuardrailEvidence.optional()
     }).superRefine((value, context) => {
       if ((value.operation.riskLevel === "mutate" || value.operation.riskLevel === "destructive") && !value.executionPlan) {
         context.addIssue({ code: z.ZodIssueCode.custom, path: ["executionPlan"], message: "a complete visual approval plan is required for mutations" });
       }
+      if ((value.operation.riskLevel === "mutate" || value.operation.riskLevel === "destructive") && !value.guardrailEvidence) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["guardrailEvidence"], message: "verified deterministic guardrail evidence is required for mutations" });
+      }
     }).parse(request.body);
-    const approval = await system.tools.createApproval({ clientId: body.clientId, taskId: body.taskId, actor: "adpilot_agent", permission: "OBSERVE" }, body.operation, body.executionPlan);
+    const approval = await system.tools.createApproval(
+      { clientId: body.clientId, taskId: body.taskId, actor: "adpilot_agent", permission: "OBSERVE" },
+      body.operation,
+      body.executionPlan,
+      body.guardrailEvidence
+    );
     system.events.publish({ type: "approval", clientId: body.clientId, approvalId: approval.id, status: approval.status });
     reply.code(201); return approval;
   });
@@ -281,11 +307,13 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const result = await system.specialists.dispatch("risk_reviewer", {
       context: { clientId: body.clientId, taskId: approval.taskId, actor: "adpilot_agent", permission: "OBSERVE" },
       input: {
-        approvalId: params.id, guardrailAllowed: true, guardrailReasons: [],
+        approvalId: params.id,
+        guardrailAllowed: Boolean(approval.guardrail?.decision.allowed && !approval.guardrail.decision.requiresFreshReview),
+        guardrailReasons: approval.guardrail?.decision.reasons ?? ["deterministic guardrail binding is missing"],
         evidenceCount: approval.operation.evidence.length,
         hasBeforeScreenshot: approval.operation.evidence.some((item) => item.startsWith("screenshot:") && screenshotHashes.has(item.slice("screenshot:".length))),
         executionPlanPresent: approval.executionPlan !== null,
-        singleVariable: true, rollbackDefined: Boolean(approval.operation.rollbackCondition),
+        singleVariable: approval.guardrail?.singleVariable ?? false, rollbackDefined: Boolean(approval.operation.rollbackCondition),
         operationSummary: `${approval.operation.operation} ${approval.operation.campaign}`
       },
       sharedFacts: []
@@ -350,6 +378,7 @@ async function computerUseState(system: AdPilotSystem, clientId?: string, refres
           : "not_connected";
   return {
     status: system.computer && system.modelStatus.guiConfigured ? "ready" : "not_ready",
+    executionStatus: system.computer?.executionStatus() ?? "unavailable",
     visualExecution: "automatic",
     failureEscalation: system.modelStatus.guiConfigured ? "enabled" : "unavailable",
     currentVisualModel: system.modelStatus.gui,
@@ -359,6 +388,13 @@ async function computerUseState(system: AdPilotSystem, clientId?: string, refres
     sessions: publicSessions,
     permission: system.modelStatus.permission,
     privacyMode: system.modelStatus.privacyMode
+  } as const;
+}
+
+function computerUnavailableResponse() {
+  return {
+    error: "Computer Use is unavailable because no visual runtime is configured",
+    code: "COMPUTER_USE_UNAVAILABLE"
   } as const;
 }
 

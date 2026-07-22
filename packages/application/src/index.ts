@@ -288,7 +288,7 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
         privacyMode
       }
     : undefined;
-  const tools = new AdPilotTools(workspace, audit, approvals, experiments, computer, visualIdentity, browserSessions, visualTableTools);
+  const tools = new AdPilotTools(workspace, audit, approvals, experiments, computer, visualIdentity, browserSessions, visualTableTools, sharedFacts);
   const skills = new SkillRegistry();
   const runtime = new PiAgentRuntime(models, router, workspace, skills, tools, [{
     name: "product-events",

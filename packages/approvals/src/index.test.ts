@@ -4,11 +4,13 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { WorkspaceStore } from "@adpilot/workspace";
 import {
+  Approval,
   ApprovalExecutionPlan,
   ApprovalService,
   VisualExecutionPlan as VisualExecutionPlanSchema,
   executionPlanFingerprint,
   extractVisualExecutionPlan,
+  type ApprovalGuardrailRequest,
   type ApprovalOperation,
   type VisualExecutionPlan
 } from "./index.js";
@@ -20,6 +22,30 @@ const operation: ApprovalOperation = {
   expectedImpact: "Increase qualified volume", observationWindow: "7 days",
   rollbackCondition: "CPA exceeds target by 20%", riskLevel: "mutate"
 };
+
+function guardrailFor(
+  guardedOperation: ApprovalOperation = operation,
+  overrides: Partial<ApprovalGuardrailRequest["input"]> = {}
+): ApprovalGuardrailRequest {
+  if (typeof guardedOperation.currentValue !== "number" || typeof guardedOperation.proposedValue !== "number") {
+    throw new Error("test guardrail requires numeric operation values");
+  }
+  return {
+    input: {
+      kind: "budget",
+      currentValue: guardedOperation.currentValue,
+      proposedValue: guardedOperation.proposedValue,
+      maxChangePercent: 20,
+      activeExperimentVariables: [],
+      measurementStatus: "reliable",
+      mature: true,
+      learning: false,
+      ...overrides
+    },
+    evidenceFactIds: ["fact-measurement", "fact-maturity", "fact-learning"],
+    singleVariable: true
+  };
+}
 
 function plan(taskId: string, overrides: Partial<ApprovalExecutionPlan> = {}): ApprovalExecutionPlan {
   return ApprovalExecutionPlan.parse({
@@ -71,7 +97,7 @@ async function fixture(now = new Date("2026-01-01T00:00:00Z")) {
 }
 
 async function approved(service: ApprovalService, taskId: string, executionPlan = plan(taskId)) {
-  const created = await service.create("client-a", taskId, operation, executionPlan);
+  const created = await service.create("client-a", taskId, operation, executionPlan, guardrailFor());
   await service.recordRiskReview("client-a", created.id, true, "Within policy");
   const { token, approval } = await service.approveByUser("client-a", created.id, "owner");
   return { created, approval, token, executionPlan, actualPlan: extractVisualExecutionPlan(executionPlan) };
@@ -100,7 +126,7 @@ describe("ApprovalService", () => {
     const { service } = await fixture();
     const taskId = crypto.randomUUID();
     const executionPlan = plan(taskId);
-    const created = await service.create("client-a", taskId, operation, executionPlan);
+    const created = await service.create("client-a", taskId, operation, executionPlan, guardrailFor());
     await expect(service.approveByUser("client-a", created.id, "owner")).rejects.toThrow();
     await service.recordRiskReview("client-a", created.id, true, "Within policy");
     const { approval, token } = await service.approveByUser("client-a", created.id, "owner");
@@ -116,6 +142,7 @@ describe("ApprovalService", () => {
       campaignId: executionPlan.campaignId,
       accountFingerprint: executionPlan.accountFingerprint,
       executionPlanFingerprint: approval.executionPlanFingerprint,
+      guardrailFingerprint: approval.guardrailFingerprint,
       maxAttempts: 1
     });
     await expect(service.verifyExecutionPlan("client-a", created.id, extractVisualExecutionPlan(executionPlan))).resolves.toMatchObject({
@@ -203,7 +230,7 @@ describe("ApprovalService", () => {
   it("migrates old partial approvals to non-executable terminal records", async () => {
     const { service, workspace } = await fixture();
     const taskId = crypto.randomUUID();
-    const created = await service.create("client-a", taskId, operation);
+    const created = await service.create("client-a", taskId, operation, undefined, guardrailFor());
     const legacy = { ...created } as Record<string, unknown>;
     delete legacy.schemaVersion;
     delete legacy.executionPlanFingerprint;
@@ -234,12 +261,40 @@ describe("ApprovalService", () => {
   it("rejects missing plans, inconsistent context, and unsafe numeric proposals", async () => {
     const { service } = await fixture();
     const taskId = crypto.randomUUID();
-    const missing = await service.create("client-a", taskId, operation);
+    await expect(service.create("client-a", taskId, operation)).rejects.toThrow("deterministic guardrail");
+    const missing = await service.create("client-a", taskId, operation, undefined, guardrailFor());
     await service.recordRiskReview("client-a", missing.id, true, "Safe");
     await expect(service.approveByUser("client-a", missing.id, "owner")).rejects.toThrow("complete visual execution plan");
     await expect(service.create("client-a", taskId, operation, plan(taskId, { campaignId: "campaign-2" }))).rejects.toThrow("campaignId");
     await expect(service.create("client-a", crypto.randomUUID(), { ...operation, proposedValue: 130, changePercentage: 10 })).rejects.toThrow("does not match");
     await expect(service.create("client-a", crypto.randomUUID(), { ...operation, proposedValue: 130, changePercentage: 30 })).rejects.toThrow("20%");
+  });
+
+  it("recomputes deterministic guardrails and rejects unsafe or tampered attestations", async () => {
+    const { service, workspace } = await fixture();
+    const taskId = crypto.randomUUID();
+    await expect(service.create(
+      "client-a",
+      taskId,
+      operation,
+      plan(taskId),
+      guardrailFor(operation, { measurementStatus: "blocked" })
+    )).rejects.toThrow("measurement reliability");
+    await expect(service.create(
+      "client-a",
+      taskId,
+      operation,
+      plan(taskId),
+      { ...guardrailFor(), singleVariable: false }
+    )).rejects.toThrow("single-variable");
+
+    const created = await service.create("client-a", taskId, operation, plan(taskId), guardrailFor());
+    const stored = await workspace.readJson("client-a", `approvals/${created.id}.json`, Approval);
+    if (!stored.guardrail) throw new Error("approval guardrail fixture was not persisted");
+    const guardrail = structuredClone(stored.guardrail);
+    guardrail.input.learning = true;
+    await workspace.writeJson("client-a", `approvals/${created.id}.json`, { ...stored, guardrail });
+    await expect(service.recordRiskReview("client-a", created.id, true, "safe")).rejects.toThrow("fingerprint");
   });
 });
 

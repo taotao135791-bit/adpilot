@@ -18,7 +18,7 @@ import {
   type TaskState as Task
 } from "@adpilot/shared";
 import { WorkspaceStore } from "@adpilot/workspace";
-import { AdPilotTools, VisualApprovalPlanInput } from "@adpilot/tools";
+import { AdPilotTools, ApprovalGuardrailEvidence, VisualApprovalPlanInput } from "@adpilot/tools";
 
 const InvestigationNode = z.object({ question: z.string().min(1), specialist: SpecialistRole, status: z.enum(["pending", "complete", "blocked"]), conclusion: z.string().optional() });
 const MainAgentOutput = z.object({
@@ -158,11 +158,16 @@ export class AdPilotAgent {
       name: "prepare_approval",
       label: "Prepare an approval request",
       description: "Persist one exact, evidence-backed advertising operation and its visual execution plan. This does not approve or execute it.",
-      parameters: Type.Object({ operation: Type.Unknown(), executionPlan: Type.Unknown() }),
+      parameters: Type.Object({ operation: Type.Unknown(), executionPlan: Type.Unknown(), guardrailEvidence: Type.Unknown() }),
       executionMode: "sequential",
       execute: async (_id, raw) => {
-        const params = z.object({ operation: ApprovalOperation, executionPlan: VisualApprovalPlanInput }).parse(raw);
-        const approval = await this.tools.createApproval({ clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE" }, params.operation, params.executionPlan);
+        const params = z.object({ operation: ApprovalOperation, executionPlan: VisualApprovalPlanInput, guardrailEvidence: ApprovalGuardrailEvidence }).parse(raw);
+        const approval = await this.tools.createApproval(
+          { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE" },
+          params.operation,
+          params.executionPlan,
+          params.guardrailEvidence
+        );
         createdApprovalIds.push(approval.id);
         return { content: [{ type: "text", text: JSON.stringify({ approvalId: approval.id, status: approval.status }) }], details: { approvalId: approval.id, status: approval.status } };
       }
@@ -183,6 +188,7 @@ export class AdPilotAgent {
           "This conversational run can never dispatch MUTATE or DESTRUCTIVE actions and can never click Save, Apply, Publish, Submit, or Confirm.",
           "Review measurement reliability before optimization. Never mutate an account from this conversational run.",
           "For an executable operation, use prepare_approval exactly once per single-variable change. Never invent an approval id and never execute from this run.",
+          "prepare_approval also requires guardrailEvidence with the exact verified Shared Fact ids for measurement_status, campaign_mature, and learning_phase. Never use hypotheses or invent these ids; if any is missing, explain the blocker instead of preparing an approval.",
           "The prepare_approval executionPlan is intent, not guessed native state. Supply schemaVersion 1, platform, exact visible accountName/accountId/campaignName/campaignId/pageType, operation/currentValue/proposedValue, a precise instruction/target/expectedResult, riskLevel, and experiment. Omit allowedRegion: the product derives it from two live visual target observations. The product also binds browser Profile, native application/window, live surface hash, live dual-reviewed account hash, timestamps, and plan id from the managed browser."
         ].join("\n"),
         prompt: JSON.stringify({ goal, projectContext, currentTask: task }),

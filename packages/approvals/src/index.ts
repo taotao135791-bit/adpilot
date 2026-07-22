@@ -2,6 +2,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { Platform, RiskLevel, stableJson, systemClock, type Clock } from "@adpilot/shared";
 import { WorkspaceStore } from "@adpilot/workspace";
+import { ChangeGuardrailInput, evaluateChangeGuardrail } from "@adpilot/advertising-core";
 
 export const ApprovalOperation = z.object({
   platform: Platform.default("google_ads"),
@@ -22,6 +23,31 @@ export type ApprovalOperation = z.infer<typeof ApprovalOperation>;
 
 const ExecutionValue = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
 const Sha256Fingerprint = z.string().regex(/^[a-f0-9]{64}$/);
+
+const GuardrailDecision = z.object({
+  allowed: z.boolean(),
+  changePercent: z.number().finite(),
+  cappedValue: z.number().finite(),
+  reasons: z.array(z.string()),
+  requiresFreshReview: z.boolean()
+}).strict();
+
+export const ApprovalGuardrailRequest = z.object({
+  input: ChangeGuardrailInput,
+  evidenceFactIds: z.array(z.string().min(1)).min(1),
+  singleVariable: z.boolean()
+}).strict();
+export type ApprovalGuardrailRequest = z.infer<typeof ApprovalGuardrailRequest>;
+
+export const ApprovalGuardrail = z.object({
+  input: ChangeGuardrailInput,
+  decision: GuardrailDecision,
+  evidenceFactIds: z.array(z.string().min(1)).min(1),
+  singleVariable: z.boolean(),
+  operationFingerprint: Sha256Fingerprint,
+  evaluatedAt: z.string().datetime()
+}).strict();
+export type ApprovalGuardrail = z.infer<typeof ApprovalGuardrail>;
 
 export const VisualAllowedRegion = z.object({
   x: z.number().finite().nonnegative(),
@@ -126,6 +152,7 @@ export const ApprovalTokenBinding = z.object({
   surfaceFingerprint: Sha256Fingerprint,
   accountFingerprint: Sha256Fingerprint,
   executionPlanFingerprint: Sha256Fingerprint,
+  guardrailFingerprint: Sha256Fingerprint.optional(),
   expiresAt: z.string().datetime(),
   maxAttempts: z.literal(1)
 }).strict();
@@ -137,6 +164,8 @@ const ApprovalV2 = z.object({
   clientId: z.string().min(1),
   taskId: z.string().uuid(),
   operation: ApprovalOperation,
+  guardrail: ApprovalGuardrail.nullable().default(null),
+  guardrailFingerprint: Sha256Fingerprint.nullable().default(null),
   executionPlan: ApprovalExecutionPlan.nullable().default(null),
   executionPlanFingerprint: Sha256Fingerprint.nullable().default(null),
   legacyExecutionPlan: z.unknown().optional(),
@@ -166,6 +195,8 @@ export const Approval = z.preprocess((input) => {
     schemaVersion: 2,
     executionPlan: null,
     executionPlanFingerprint: null,
+    guardrail: null,
+    guardrailFingerprint: null,
     ...(record.executionPlan == null ? {} : { legacyExecutionPlan: record.executionPlan }),
     tokenBinding: null,
     tokenNonceHash: null,
@@ -185,7 +216,13 @@ export class ApprovalService {
     if (secret.length < 32) throw new Error("approval secret must be at least 32 characters");
   }
 
-  async create(clientId: string, taskId: string, operationInput: ApprovalOperation, planInput?: ApprovalExecutionPlan): Promise<Approval> {
+  async create(
+    clientId: string,
+    taskId: string,
+    operationInput: ApprovalOperation,
+    planInput?: ApprovalExecutionPlan,
+    guardrailInput?: ApprovalGuardrailRequest
+  ): Promise<Approval> {
     const operation = ApprovalOperation.parse(operationInput);
     validateNumericChange(operation);
     const executionPlan = planInput ? ApprovalExecutionPlan.parse(planInput) : null;
@@ -200,9 +237,17 @@ export class ApprovalService {
     }
     const planFingerprint = executionPlan ? executionPlanFingerprint(extractVisualExecutionPlan(executionPlan)) : null;
     const now = nowDate.toISOString();
+    const guardrail = guardrailInput ? buildApprovalGuardrail(operation, guardrailInput, now) : null;
+    if (operation.riskLevel === "mutate" || operation.riskLevel === "destructive") {
+      if (!guardrail) throw new ApprovalError("a deterministic guardrail attestation is required for mutations");
+      assertGuardrailAllowsOperation(operation, guardrail);
+    }
+    const boundGuardrailFingerprint = guardrail ? approvalGuardrailFingerprint(guardrail) : null;
     const approval = Approval.parse({
       schemaVersion: 2, id: crypto.randomUUID(), clientId, taskId, operation, executionPlan,
       executionPlanFingerprint: planFingerprint,
+      guardrail,
+      guardrailFingerprint: boundGuardrailFingerprint,
       fingerprint: this.operationFingerprint(operation), status: "pending_risk_review",
       riskReview: null, userApproval: null, tokenNonceHash: null, tokenExpiresAt: null,
       tokenBinding: null, tokenAttempts: 0,
@@ -216,6 +261,7 @@ export class ApprovalService {
   async recordRiskReview(clientId: string, id: string, approved: boolean, reason: string): Promise<Approval> {
     const current = await this.get(clientId, id);
     if (current.status !== "pending_risk_review") throw new ApprovalError("approval is not awaiting risk review");
+    if (approved) assertStoredGuardrail(current);
     const at = this.clock.now().toISOString();
     return this.update(current, {
       status: approved ? "pending_user" : "rejected",
@@ -229,6 +275,7 @@ export class ApprovalService {
     if (!current.executionPlan || !current.executionPlanFingerprint) {
       throw new ApprovalError("a complete visual execution plan is required before user approval");
     }
+    assertStoredGuardrail(current);
     const visualPlan = extractVisualExecutionPlan(current.executionPlan);
     validateExecutionPlanContext(visualPlan, current.operation, current.clientId, current.taskId);
     const recalculatedFingerprint = executionPlanFingerprint(visualPlan);
@@ -266,6 +313,7 @@ export class ApprovalService {
       surfaceFingerprint: visualPlan.surfaceFingerprint,
       accountFingerprint: visualPlan.accountFingerprint,
       executionPlanFingerprint: recalculatedFingerprint,
+      guardrailFingerprint: current.guardrailFingerprint!,
       expiresAt: expiresAt.toISOString(),
       maxAttempts: 1
     });
@@ -320,6 +368,11 @@ export class ApprovalService {
       await this.invalidate(current, "failed");
       throw new ApprovalError("operation no longer matches approval");
     }
+    try { assertStoredGuardrail(current); }
+    catch (error) {
+      await this.invalidate(current, "failed");
+      throw error;
+    }
     if (typeof actualPlan === "string") {
       await this.invalidate(current, "cancelled");
       throw new ApprovalError("a complete actual visual execution plan is required; a surface fingerprint alone is insufficient");
@@ -338,7 +391,10 @@ export class ApprovalService {
       throw new ApprovalError("invalid approval token binding");
     }
     const expected = this.sign(`${encodedBinding}.${nonce}`);
-    if (tokenBinding.approvalId !== id || stableJson(tokenBinding) !== stableJson(current.tokenBinding) || !safeEqual(signature, expected) || !safeEqual(this.sign(nonce), current.tokenNonceHash ?? "")) {
+    if (tokenBinding.approvalId !== id || stableJson(tokenBinding) !== stableJson(current.tokenBinding)
+      || !tokenBinding.guardrailFingerprint || !current.guardrailFingerprint
+      || !safeEqual(tokenBinding.guardrailFingerprint, current.guardrailFingerprint)
+      || !safeEqual(signature, expected) || !safeEqual(this.sign(nonce), current.tokenNonceHash ?? "")) {
       await this.invalidate(current, "failed");
       throw new ApprovalError("invalid approval token signature or binding");
     }
@@ -501,4 +557,76 @@ function validateNumericChange(operation: ApprovalOperation): void {
     throw new ApprovalError("change percentage does not match current and proposed values");
   }
   if (Math.abs(calculated) > 20.0001) throw new ApprovalError("change exceeds the 20% deterministic safety cap");
+}
+
+export function approvalOperationFingerprint(operationInput: ApprovalOperation): string {
+  const operation = ApprovalOperation.parse(operationInput);
+  return createHash("sha256").update(stableJson({
+    platform: operation.platform,
+    account: operation.account,
+    campaign: operation.campaign,
+    operation: operation.operation,
+    currentValue: operation.currentValue,
+    proposedValue: operation.proposedValue,
+    riskLevel: operation.riskLevel
+  })).digest("hex");
+}
+
+export function approvalGuardrailFingerprint(input: ApprovalGuardrail): string {
+  return createHash("sha256").update(stableJson(ApprovalGuardrail.parse(input))).digest("hex");
+}
+
+function buildApprovalGuardrail(
+  operation: ApprovalOperation,
+  input: ApprovalGuardrailRequest,
+  evaluatedAt: string
+): ApprovalGuardrail {
+  const request = ApprovalGuardrailRequest.parse(input);
+  const kind = guardrailKindForOperation(operation.operation);
+  if (typeof operation.currentValue !== "number" || typeof operation.proposedValue !== "number") {
+    throw new ApprovalError("deterministic guardrails currently require numeric current and proposed values");
+  }
+  if (request.input.kind !== kind || request.input.currentValue !== operation.currentValue || request.input.proposedValue !== operation.proposedValue) {
+    throw new ApprovalError("guardrail input does not match the approval operation");
+  }
+  return ApprovalGuardrail.parse({
+    input: request.input,
+    decision: evaluateChangeGuardrail(request.input),
+    evidenceFactIds: [...new Set(request.evidenceFactIds)].sort(),
+    singleVariable: request.singleVariable,
+    operationFingerprint: approvalOperationFingerprint(operation),
+    evaluatedAt
+  });
+}
+
+function assertStoredGuardrail(approval: Approval): void {
+  if (!approval.guardrail || !approval.guardrailFingerprint) {
+    throw new ApprovalError("approval has no deterministic guardrail binding");
+  }
+  if (!safeEqual(approvalGuardrailFingerprint(approval.guardrail), approval.guardrailFingerprint)) {
+    throw new ApprovalError("stored deterministic guardrail fingerprint is invalid");
+  }
+  assertGuardrailAllowsOperation(approval.operation, approval.guardrail);
+}
+
+function assertGuardrailAllowsOperation(operation: ApprovalOperation, guardrail: ApprovalGuardrail): void {
+  if (guardrail.operationFingerprint !== approvalOperationFingerprint(operation)) {
+    throw new ApprovalError("deterministic guardrail is bound to a different operation");
+  }
+  const recomputed = GuardrailDecision.parse(evaluateChangeGuardrail(guardrail.input));
+  if (stableJson(recomputed) !== stableJson(guardrail.decision)) {
+    throw new ApprovalError("deterministic guardrail decision no longer validates");
+  }
+  if (!guardrail.singleVariable) throw new ApprovalError("single-variable guardrail rejected the operation");
+  if (!recomputed.allowed) throw new ApprovalError(`deterministic guardrail rejected the operation: ${recomputed.reasons.join("; ")}`);
+  if (recomputed.requiresFreshReview) throw new ApprovalError("deterministic guardrail requires a capped value and fresh review");
+}
+
+function guardrailKindForOperation(operation: string): z.infer<typeof ChangeGuardrailInput>["kind"] {
+  const normalized = operation.toLowerCase().replaceAll("-", "_");
+  if (normalized.includes("target_roas") || normalized.includes("troas")) return "target_roas";
+  if (normalized.includes("target_cpa") || normalized.includes("tcpa")) return "target_cpa";
+  if (normalized.includes("budget")) return "budget";
+  if (normalized.includes("bid")) return "bid";
+  throw new ApprovalError(`unsupported guarded operation: ${operation}`);
 }

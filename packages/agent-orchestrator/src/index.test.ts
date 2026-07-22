@@ -17,11 +17,12 @@ import {
 import { ExperimentStore } from "@adpilot/experiments";
 import { ModelRouter } from "@adpilot/model-router";
 import { PiAgentRuntime } from "@adpilot/runtime";
+import { SharedFactLedger } from "@adpilot/shared";
 import { SkillRegistry } from "@adpilot/skills";
 import { AccountOperator, SpecialistCoordinator, specialistSchemas, type SpecialistAgent } from "@adpilot/specialist-agents";
 import { AdPilotTools } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
-import { AdPilotAgent, conversationSpecialistPermission } from "./index.js";
+import { AdPilotAgent, WorkspaceSharedFactRepository, conversationSpecialistPermission } from "./index.js";
 
 describe("conversation specialist permissions", () => {
   it("derives the minimum read or scroll permission and refuses mutations", () => {
@@ -48,6 +49,29 @@ describe("AdPilotAgent integration", () => {
       profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 },
       accounts: { accounts: [{ platform: "google_ads", accountRef: "acct-1", browserProfile: "client-a-google", allowedDomains: ["ads.google.com"] }] }
     });
+    const sharedFacts = new SharedFactLedger(new WorkspaceSharedFactRepository(workspace));
+    const inheritedTaskId = crypto.randomUUID();
+    const addGuardrailFact = async (predicate: string, value: string | boolean) => {
+      const fact = await sharedFacts.observe({
+        clientId: "client-a",
+        taskId: inheritedTaskId,
+        subject: "campaign-1",
+        predicate,
+        value,
+        unit: "",
+        sourceType: "visual_table",
+        sourceScreenshotId: "a".repeat(64),
+        sourceBoundingBox: [1, 1, 20, 10],
+        evidenceIds: [`screenshot:${"a".repeat(64)}`],
+        confidence: 0.98,
+        createdBy: "visual_table_reader",
+        expiresAt: "2027-01-01T00:00:00.000Z"
+      });
+      return sharedFacts.verify("client-a", fact.factId, { verifier: "independent_visual_verifier", confidence: 0.97 });
+    };
+    const measurementFact = await addGuardrailFact("measurement_status", "reliable");
+    const maturityFact = await addGuardrailFact("campaign_mature", true);
+    const learningFact = await addGuardrailFact("learning_phase", false);
     const faux = fauxProvider({ provider: "test", models: [{ id: "fast" }, { id: "strong", reasoning: true }] });
     const models = createModels(); models.setProvider(faux.provider);
     faux.setResponses([
@@ -86,6 +110,11 @@ describe("AdPilotAgent integration", () => {
             successCriteria: "CPA remains at or below 12", failureCriteria: "CPA rises above 12",
             maturityWindowDays: 7, rollbackCondition: "CPA rises more than 20%", reviewAt: "2026-01-08T00:00:00.000Z"
           }
+        },
+        guardrailEvidence: {
+          measurementStatusFactId: measurementFact.factId,
+          maturityFactId: maturityFact.factId,
+          learningFactId: learningFact.factId
         }
       }), { stopReason: "toolUse" }),
       fauxAssistantMessage(JSON.stringify({
@@ -137,14 +166,14 @@ describe("AdPilotAgent integration", () => {
     } as unknown as DualVisualIdentityVerifier;
     const tools = new AdPilotTools(
       workspace, new AuditLog(workspace), approvals, new ExperimentStore(workspace), computer,
-      visualIdentity, browserSessions
+      visualIdentity, browserSessions, undefined, sharedFacts
     );
     const runtime = new PiAgentRuntime(models, router, workspace, new SkillRegistry(), tools);
     const specialist: SpecialistAgent = {
       role: "performance_analyst", inputSchema: specialistSchemas.PerformanceInput, outputSchema: specialistSchemas.PerformanceOutput,
       execute: async () => ({ calculated: { cpi: null, cpa: 10, roas: null }, findings: [], maturity: "mature", confidence: 1 })
     };
-    const agent = new AdPilotAgent(runtime, new SpecialistCoordinator([specialist, new AccountOperator(tools)]), workspace, tools);
+    const agent = new AdPilotAgent(runtime, new SpecialistCoordinator([specialist, new AccountOperator(tools)]), workspace, tools, undefined, sharedFacts);
     const result = await agent.runTask("client-a", "Why is CPA high?", { targetCpa: 10 });
     expect(result.task.phase).toBe("awaiting_approval");
     expect(result.specialistResults.performance_analyst).toBeDefined();

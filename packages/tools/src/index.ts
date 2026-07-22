@@ -5,6 +5,7 @@ import { AuditLog } from "@adpilot/audit";
 import {
   ApprovalExecutionPlan,
   ApprovalExperiment,
+  ApprovalGuardrailRequest,
   ApprovalService,
   VisualAllowedRegion,
   VisualExecutionPlan,
@@ -36,7 +37,7 @@ import {
   type VisualStepResult,
   VisualComputerRuntime
 } from "@adpilot/computer-use";
-import { Platform, RiskLevel, type PermissionLevel } from "@adpilot/shared";
+import { Platform, RiskLevel, SharedFactLedger, type PermissionLevel, type SharedFact } from "@adpilot/shared";
 import {
   VisualTableColumn,
   VisualTableReadResult,
@@ -77,6 +78,13 @@ export type VisualApprovalPlanDraft = z.infer<typeof VisualApprovalPlanDraft>;
 
 export const VisualApprovalPlanInput = z.union([ApprovalExecutionPlan, VisualApprovalPlanDraft]);
 export type VisualApprovalPlanInput = z.infer<typeof VisualApprovalPlanInput>;
+
+export const ApprovalGuardrailEvidence = z.object({
+  measurementStatusFactId: z.string().min(1),
+  maturityFactId: z.string().min(1),
+  learningFactId: z.string().min(1)
+}).strict();
+export type ApprovalGuardrailEvidence = z.infer<typeof ApprovalGuardrailEvidence>;
 
 export interface ToolContext {
   clientId: string;
@@ -130,7 +138,8 @@ export class AdPilotTools {
     readonly computer?: VisualComputerRuntime,
     readonly visualIdentity?: DualVisualIdentityVerifier,
     readonly browserSessions?: BrowserSessionManager,
-    readonly visualTables?: VisualTableToolsRuntime
+    readonly visualTables?: VisualTableToolsRuntime,
+    readonly sharedFacts?: SharedFactLedger
   ) {}
 
   async readWorkspace(context: ToolContext) {
@@ -154,10 +163,18 @@ export class AdPilotTools {
     return decision;
   }
 
-  async createApproval(context: ToolContext, operation: ApprovalOperation, executionPlan?: VisualApprovalPlanInput) {
+  async createApproval(
+    context: ToolContext,
+    operation: ApprovalOperation,
+    executionPlan?: VisualApprovalPlanInput,
+    guardrailEvidence?: ApprovalGuardrailEvidence
+  ) {
     if (context.permission !== "OBSERVE" && context.permission !== "INTERACT" && context.permission !== "MUTATE" && context.permission !== "DESTRUCTIVE") throw new Error("invalid permission context");
     const boundPlan = executionPlan ? await this.bindApprovalPlan(context, operation, executionPlan) : undefined;
-    const approval = await this.approvals.create(context.clientId, context.taskId, operation, boundPlan);
+    const guardrail = operation.riskLevel === "mutate" || operation.riskLevel === "destructive"
+      ? await this.buildApprovalGuardrail(context, operation, boundPlan, guardrailEvidence)
+      : undefined;
+    const approval = await this.approvals.create(context.clientId, context.taskId, operation, boundPlan, guardrail);
     await this.audit.append({
       clientId: context.clientId,
       taskId: context.taskId,
@@ -169,10 +186,64 @@ export class AdPilotTools {
         operation: approval.operation,
         planId: boundPlan?.planId,
         surfaceFingerprint: boundPlan?.surfaceFingerprint,
-        accountFingerprint: boundPlan?.accountFingerprint
+        accountFingerprint: boundPlan?.accountFingerprint,
+        guardrailFingerprint: approval.guardrailFingerprint
       }
     });
     return approval;
+  }
+
+  private async buildApprovalGuardrail(
+    context: ToolContext,
+    operation: ApprovalOperation,
+    plan: ApprovalExecutionPlan | undefined,
+    evidenceInput: ApprovalGuardrailEvidence | undefined
+  ): Promise<ApprovalGuardrailRequest> {
+    if (!plan) throw new Error("a complete visual execution plan is required for deterministic mutation guardrails");
+    if (!this.sharedFacts) throw new Error("canonical Shared Facts are required for deterministic mutation guardrails");
+    const evidence = ApprovalGuardrailEvidence.parse(evidenceInput);
+    const facts = await this.sharedFacts.list(context.clientId, { taskId: context.taskId, includeTerminal: true });
+    const resolveFact = (id: string, predicate: string): SharedFact => {
+      const fact = facts.find((candidate) => candidate.factId === id || candidate.derivedFromFactId === id);
+      if (!fact || fact.predicate !== predicate) throw new Error(`guardrail evidence is missing verified ${predicate}`);
+      if (!guardrailFactMatchesCampaign(fact, plan, operation)) {
+        throw new Error(`guardrail evidence ${predicate} belongs to a different campaign`);
+      }
+      if (fact.status !== "verified" || fact.sourceType === "migration" || fact.confidence < 0.85
+        || !fact.sourceScreenshotId || !fact.sourceBoundingBox || !fact.evidenceIds.some((item) => item.startsWith("screenshot:"))) {
+        throw new Error(`guardrail evidence ${predicate} is not verified screenshot evidence`);
+      }
+      if (fact.expiresAt && Date.parse(fact.expiresAt) <= Date.now()) throw new Error(`guardrail evidence ${predicate} is stale`);
+      return fact;
+    };
+    const measurement = resolveFact(evidence.measurementStatusFactId, "measurement_status");
+    const maturity = resolveFact(evidence.maturityFactId, "campaign_mature");
+    const learning = resolveFact(evidence.learningFactId, "learning_phase");
+    const measurementStatus = parseMeasurementStatus(measurement.value);
+    const mature = parseVisibleBoolean(maturity.value, "mature", "not_mature");
+    const learningPhase = parseVisibleBoolean(learning.value, "learning", "not_learning");
+    if (typeof operation.currentValue !== "number" || typeof operation.proposedValue !== "number") {
+      throw new Error("deterministic visual mutation guardrails require numeric current and proposed values");
+    }
+    const client = await this.workspace.readClient(context.clientId);
+    if (client.constraints?.blockedOperations.includes(operation.operation)) throw new Error("operation is blocked by the client workspace");
+    if (operation.riskLevel === "destructive" && !client.constraints?.allowDestructive) throw new Error("destructive operations are disabled for this client");
+    const activeExperiments = (await this.experiments.list(context.clientId)).filter((item) => ["active", "waiting"].includes(item.status));
+    const kind = guardrailKindFromOperation(operation.operation);
+    return ApprovalGuardrailRequest.parse({
+      input: {
+        kind,
+        currentValue: operation.currentValue,
+        proposedValue: operation.proposedValue,
+        maxChangePercent: Math.min(client.constraints?.maxBudgetChangePercent ?? 20, 20),
+        activeExperimentVariables: activeExperiments.map((item) => item.variable),
+        measurementStatus,
+        mature,
+        learning: learningPhase
+      },
+      evidenceFactIds: [measurement.factId, maturity.factId, learning.factId],
+      singleVariable: activeExperiments.length === 0 && experimentVariableMatches(kind, plan.experiment.variable)
+    });
   }
 
   async writeExperiment(context: ToolContext, input: Omit<Experiment, "id" | "status" | "finalConclusion" | "startedAt" | "completedAt" | "createdAt" | "updatedAt">) {
@@ -838,6 +909,53 @@ function platformDefaultDomain(platform: string): string | undefined {
     linkedin_ads: "campaignmanager.linkedin.com",
     youtube_ads: "ads.google.com"
   } as Record<string, string>)[platform];
+}
+
+function guardrailKindFromOperation(operation: string): "budget" | "bid" | "target_cpa" | "target_roas" {
+  const normalized = operation.toLowerCase().replaceAll("-", "_");
+  if (normalized.includes("target_roas") || normalized.includes("troas")) return "target_roas";
+  if (normalized.includes("target_cpa") || normalized.includes("tcpa")) return "target_cpa";
+  if (normalized.includes("budget")) return "budget";
+  if (normalized.includes("bid")) return "bid";
+  throw new Error(`unsupported guarded operation: ${operation}`);
+}
+
+function experimentVariableMatches(kind: "budget" | "bid" | "target_cpa" | "target_roas", variable: string): boolean {
+  const normalized = variable.toLowerCase().replaceAll("-", "_");
+  if (kind === "budget") return normalized.includes("budget");
+  if (kind === "target_cpa") return normalized.includes("target_cpa") || normalized.includes("tcpa");
+  if (kind === "target_roas") return normalized.includes("target_roas") || normalized.includes("troas");
+  return normalized.includes("bid");
+}
+
+function guardrailFactMatchesCampaign(fact: SharedFact, plan: ApprovalExecutionPlan, operation: ApprovalOperation): boolean {
+  const subject = normalizeGuardrailLabel(fact.subject);
+  return [plan.campaignId, plan.campaignName, operation.campaign]
+    .map(normalizeGuardrailLabel)
+    .some((candidate) => candidate.length > 0 && candidate === subject);
+}
+
+function normalizeGuardrailLabel(value: string): string {
+  return value.normalize("NFKC").trim().toLocaleLowerCase("en-US").replace(/\s+/g, " ");
+}
+
+function parseMeasurementStatus(value: SharedFact["value"]): "reliable" | "warning" | "blocked" {
+  if (typeof value !== "string") throw new Error("measurement_status must be a visible reliable, warning, or blocked label");
+  const normalized = normalizeGuardrailLabel(value).replaceAll("-", "_").replaceAll(" ", "_");
+  return z.enum(["reliable", "warning", "blocked"]).parse(normalized);
+}
+
+function parseVisibleBoolean(
+  value: SharedFact["value"],
+  trueLabel: "mature" | "learning",
+  falseLabel: "not_mature" | "not_learning"
+): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") throw new Error(`${trueLabel} guardrail evidence must be a visible boolean status`);
+  const normalized = normalizeGuardrailLabel(value).replaceAll("-", "_").replaceAll(" ", "_");
+  if (normalized === trueLabel || normalized === "true") return true;
+  if (normalized === falseLabel || normalized === "false") return false;
+  throw new Error(`${trueLabel} guardrail evidence must be exactly ${trueLabel} or ${falseLabel}`);
 }
 
 function resolveVisualTableRoi(explicit: VisualTableRoi | undefined, screenshot: Screenshot): VisualTableRoi {

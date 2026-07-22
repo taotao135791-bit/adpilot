@@ -5,7 +5,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { describe, expect, it, vi } from "vitest";
 import { createAdPilotSystem } from "@adpilot/application";
-import type { ApprovalExecutionPlan, ApprovalOperation } from "@adpilot/approvals";
+import type { ApprovalExecutionPlan, ApprovalGuardrailRequest, ApprovalOperation } from "@adpilot/approvals";
 import { BrowserSessionLostError, type BrowserSession, type ScreenshotModelCallAudit } from "@adpilot/computer-use";
 import { visualTaskFromExecutionPlan, type VisualApprovalPlanDraft } from "@adpilot/tools";
 import { createServer } from "./index.js";
@@ -18,6 +18,32 @@ function operation(): ApprovalOperation {
     observationWindow: "7 days", rollbackCondition: "CPA rises 20%", riskLevel: "mutate"
   };
 }
+
+function guardrailFor(approvedOperation = operation()): ApprovalGuardrailRequest {
+  if (typeof approvedOperation.currentValue !== "number" || typeof approvedOperation.proposedValue !== "number") {
+    throw new Error("test guardrail requires numeric values");
+  }
+  return {
+    input: {
+      kind: "budget",
+      currentValue: approvedOperation.currentValue,
+      proposedValue: approvedOperation.proposedValue,
+      maxChangePercent: 20,
+      activeExperimentVariables: [],
+      measurementStatus: "reliable",
+      mature: true,
+      learning: false
+    },
+    evidenceFactIds: ["fact-measurement", "fact-maturity", "fact-learning"],
+    singleVariable: true
+  };
+}
+
+const guardrailEvidence = {
+  measurementStatusFactId: "fact-measurement",
+  maturityFactId: "fact-maturity",
+  learningFactId: "fact-learning"
+};
 
 function executionPlan(clientId: string, taskId: string, approvedOperation = operation()): ApprovalExecutionPlan {
   const now = Date.now();
@@ -96,6 +122,41 @@ function browserSession(status: BrowserSession["sessionStatus"] = "connected"): 
 }
 
 describe("product server", () => {
+  it("reports the authoritative Computer Use state and rejects controls without a runtime", async () => {
+    const noRuntimeRoot = await mkdtemp(join(tmpdir(), "adpilot-computer-unavailable-"));
+    const noRuntimeSystem = await createAdPilotSystem({ workspaceRoot: noRuntimeRoot, env: {} });
+    const noRuntimeServer = await createServer(noRuntimeSystem, { uiRoot: join(noRuntimeRoot, "missing-ui") });
+    const unavailableState = await noRuntimeServer.inject({ method: "GET", url: "/api/state" });
+    expect(unavailableState.json()).toMatchObject({ computerUse: { executionStatus: "unavailable" } });
+    for (const action of ["pause", "resume", "takeover"]) {
+      const response = await noRuntimeServer.inject({ method: "POST", url: `/api/computer/${action}` });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: "Computer Use is unavailable because no visual runtime is configured", code: "COMPUTER_USE_UNAVAILABLE" });
+    }
+    await noRuntimeServer.close();
+
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "adpilot-computer-runtime-"));
+    const faux = fauxProvider({ provider: "test", models: [{ id: "code", input: ["text", "image"] }] });
+    const models = createModels(); models.setProvider(faux.provider);
+    const runtimeSystem = await createAdPilotSystem({
+      workspaceRoot: runtimeRoot,
+      env: { ADPILOT_FAST_PROVIDER: "test", ADPILOT_FAST_MODEL: "code", ADPILOT_STRONG_PROVIDER: "test", ADPILOT_STRONG_MODEL: "code" },
+      models
+    });
+    await runtimeSystem.workspace.initializeClient({ profile: { id: "client-a", name: "Example" }, kpi: { primary: "CPA", target: 10 } });
+    expect(runtimeSystem.computer).toBeDefined();
+    const runtimeServer = await createServer(runtimeSystem, { uiRoot: join(runtimeRoot, "missing-ui") });
+    expect((await runtimeServer.inject({ method: "GET", url: "/api/state?clientId=client-a" })).json()).toMatchObject({ computerUse: { executionStatus: "running" } });
+    expect((await runtimeServer.inject({ method: "POST", url: "/api/computer/pause" })).json()).toEqual({ status: "paused", executionStatus: "paused" });
+    expect((await runtimeServer.inject({ method: "GET", url: "/api/state?clientId=client-a" })).json()).toMatchObject({ computerUse: { executionStatus: "paused" } });
+    expect((await runtimeServer.inject({ method: "POST", url: "/api/computer/takeover" })).json()).toEqual({ status: "user_takeover", executionStatus: "paused" });
+    expect((await runtimeServer.inject({ method: "POST", url: "/api/computer/resume" })).json()).toEqual({ status: "running", executionStatus: "running" });
+    runtimeSystem.computer?.cancel();
+    expect((await runtimeServer.inject({ method: "GET", url: "/api/state?clientId=client-a" })).json()).toMatchObject({ computerUse: { executionStatus: "cancelled" } });
+    expect((await runtimeServer.inject({ method: "POST", url: "/api/computer/resume" })).json()).toEqual({ status: "cancelled", executionStatus: "cancelled" });
+    await runtimeServer.close();
+  });
+
   it("creates a usable personal workspace on first launch", async () => {
     const root = await mkdtemp(join(tmpdir(), "adpilot-first-launch-"));
     const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
@@ -179,12 +240,13 @@ describe("product server", () => {
     const first = await createAdPilotSystem({ workspaceRoot: root, env: {} });
     await first.workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
     const taskId = crypto.randomUUID();
-    const approval = await first.approvals.create("client-a", taskId, {
+    const restartOperation: ApprovalOperation = {
       platform: "google_ads", account: "acct-1", campaign: "campaign-1", operation: "set_daily_budget",
       currentValue: 100, proposedValue: 110, changePercentage: 10, reason: "controlled increase",
       evidence: ["workspace:baseline"], expectedImpact: "more volume", observationWindow: "7 days",
       rollbackCondition: "CPA exceeds 12", riskLevel: "mutate"
-    });
+    };
+    const approval = await first.approvals.create("client-a", taskId, restartOperation, undefined, guardrailFor(restartOperation));
     const experiment = await first.experiments.create({
       clientId: "client-a", taskId, approvalId: approval.id, hypothesis: "budget adds volume", variable: "daily_budget",
       baseline: { budget: 100, cpa: 10 }, expected: "more conversions", successCriteria: "CPA remains below 12",
@@ -233,7 +295,13 @@ describe("product server", () => {
     const taskId = crypto.randomUUID();
     const approvedOperation = operation();
     const approvedPlan = executionPlan("client-a", taskId, approvedOperation);
-    const fabricated = await system.approvals.create("client-a", taskId, { ...approvedOperation, evidence: [`screenshot:${"a".repeat(64)}`] }, approvedPlan);
+    const fabricated = await system.approvals.create(
+      "client-a",
+      taskId,
+      { ...approvedOperation, evidence: [`screenshot:${"a".repeat(64)}`] },
+      approvedPlan,
+      guardrailFor(approvedOperation)
+    );
     const fabricatedReview = await server.inject({ method: "POST", url: `/api/approvals/${fabricated.id}/risk-review`, payload: { clientId: "client-a" } });
     expect(fabricatedReview.statusCode).toBe(200);
     expect(fabricatedReview.json().approved).toBe(false);
@@ -249,7 +317,7 @@ describe("product server", () => {
     };
     await system.screenshotAudits.append(screenshotDisclosure);
     const evidenced = await system.approvals.create(
-      "client-a", taskId, { ...approvedOperation, evidence: [`screenshot:${screenshotId}`] }, approvedPlan
+      "client-a", taskId, { ...approvedOperation, evidence: [`screenshot:${screenshotId}`] }, approvedPlan, guardrailFor(approvedOperation)
     );
     const dispatch = vi.spyOn(system.specialists, "dispatch").mockImplementation(async (_role, request) => {
       const input = request.input as { approvalId: string; hasBeforeScreenshot: boolean };
@@ -262,7 +330,7 @@ describe("product server", () => {
     expect(evidencedReview.json().approved).toBe(true);
     dispatch.mockRestore();
 
-    const approval = await system.approvals.create("client-a", taskId, approvedOperation, approvedPlan);
+    const approval = await system.approvals.create("client-a", taskId, approvedOperation, approvedPlan, guardrailFor(approvedOperation));
     await system.approvals.recordRiskReview("client-a", approval.id, true, "Within policy");
     const response = await server.inject({ method: "POST", url: `/api/approvals/${approval.id}/approve`, payload: { clientId: "client-a", approvedBy: "owner" } });
     expect(response.statusCode).toBe(200);
@@ -283,19 +351,19 @@ describe("product server", () => {
     const draft = executionDraft(approvedOperation);
     const draftResponse = await server.inject({
       method: "POST", url: "/api/approvals",
-      payload: { clientId: "client-a", taskId: firstTask, operation: approvedOperation, executionPlan: draft }
+      payload: { clientId: "client-a", taskId: firstTask, operation: approvedOperation, executionPlan: draft, guardrailEvidence }
     });
     expect(draftResponse.statusCode).toBe(201);
-    expect(create).toHaveBeenNthCalledWith(1, { clientId: "client-a", taskId: firstTask, actor: "adpilot_agent", permission: "OBSERVE" }, approvedOperation, draft);
+    expect(create).toHaveBeenNthCalledWith(1, { clientId: "client-a", taskId: firstTask, actor: "adpilot_agent", permission: "OBSERVE" }, approvedOperation, draft, guardrailEvidence);
 
     const secondTask = crypto.randomUUID();
     const complete = executionPlan("client-a", secondTask, approvedOperation);
     const completeResponse = await server.inject({
       method: "POST", url: "/api/approvals",
-      payload: { clientId: "client-a", taskId: secondTask, operation: approvedOperation, executionPlan: complete }
+      payload: { clientId: "client-a", taskId: secondTask, operation: approvedOperation, executionPlan: complete, guardrailEvidence }
     });
     expect(completeResponse.statusCode).toBe(201);
-    expect(create).toHaveBeenNthCalledWith(2, { clientId: "client-a", taskId: secondTask, actor: "adpilot_agent", permission: "OBSERVE" }, approvedOperation, complete);
+    expect(create).toHaveBeenNthCalledWith(2, { clientId: "client-a", taskId: secondTask, actor: "adpilot_agent", permission: "OBSERVE" }, approvedOperation, complete, guardrailEvidence);
 
     const missingPlan = await server.inject({
       method: "POST", url: "/api/approvals",
@@ -314,7 +382,7 @@ describe("product server", () => {
     const taskId = crypto.randomUUID();
     const approvedOperation = operation();
     const approvedPlan = executionPlan("client-a", taskId, approvedOperation);
-    const approval = await system.approvals.create("client-a", taskId, approvedOperation, approvedPlan);
+    const approval = await system.approvals.create("client-a", taskId, approvedOperation, approvedPlan, guardrailFor(approvedOperation));
     await system.approvals.recordRiskReview("client-a", approval.id, true, "Within policy");
     const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
     const approved = await server.inject({ method: "POST", url: `/api/approvals/${approval.id}/approve`, payload: { clientId: "client-a", approvedBy: "owner" } });

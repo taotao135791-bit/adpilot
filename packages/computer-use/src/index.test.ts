@@ -284,9 +284,17 @@ describe("visual action protocol", () => {
     const runtime = new VisualComputerRuntime({ capture: async () => { captures += 1; return before; }, execute: async () => undefined }, {
       ground: async () => ({ action: "done", target: "task", reason: "done", confidence: 1, expected_result: "done", risk_level: "observe" })
     }, { verify: async () => ({ matched: true, confidence: 1, reason: "done" }) });
+    expect(runtime.executionStatus()).toBe("running");
     runtime.pause();
+    expect(runtime.executionStatus()).toBe("paused");
     await expect(runtime.runMicroTask(task)).resolves.toMatchObject({ status: "failed", blockerCode: "PAUSED" });
     expect(captures).toBe(0);
+    runtime.resume();
+    expect(runtime.executionStatus()).toBe("running");
+    runtime.cancel();
+    expect(runtime.executionStatus()).toBe("cancelled");
+    runtime.resume();
+    expect(runtime.executionStatus()).toBe("cancelled");
   });
 
   it("blocks a surface switch after execution without retrying the action", async () => {
