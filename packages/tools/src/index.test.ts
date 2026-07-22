@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Jimp } from "jimp";
@@ -8,6 +8,9 @@ import { ApprovalService } from "@adpilot/approvals";
 import { AuditLog } from "@adpilot/audit";
 import {
   DualVisualIdentityVerifier,
+  FileScreenshotArtifactStore,
+  FileScreenshotModelCallAuditStore,
+  ScreenshotPrivacyPipeline,
   type BrowserSession,
   type BrowserSessionManager,
   type Screenshot,
@@ -15,6 +18,12 @@ import {
   type VisualIdentityObservation
 } from "@adpilot/computer-use";
 import { ExperimentStore } from "@adpilot/experiments";
+import { SharedFactLedger } from "@adpilot/shared";
+import {
+  VisualTableReader,
+  type VisualTableModelRequest,
+  type VisualTableVerifierRequest
+} from "@adpilot/visual-table-reader";
 import { WorkspaceStore } from "@adpilot/workspace";
 import { AdPilotTools, visualTaskFromExecutionPlan, type VisualApprovalPlanDraft } from "./index.js";
 
@@ -221,3 +230,270 @@ describe("production visual approval tools", () => {
     await expect(fixture.approvals.get("client-a", fixture.approval.id)).resolves.toMatchObject({ status: "cancelled" });
   });
 });
+
+describe("production visual table tool", () => {
+  it("captures a managed window, sends audited ROIs, scrolls once, and persists only verified facts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-table-tool-"));
+    const workspace = new WorkspaceStore(root);
+    await workspace.initializeClient({
+      profile: { id: "client-a", name: "A" },
+      kpi: { primary: "CPA", target: 10, currency: "USD" },
+      accounts: {
+        accounts: [{
+          platform: "google_ads",
+          accountRef: "123-456-7890",
+          browserProfile: session.browserProfile,
+          allowedDomains: ["ads.google.com"]
+        }]
+      }
+    });
+    const capturedAt = Date.now();
+    const first = await tableScreenshot(0xf4f3efff, new Date(capturedAt).toISOString());
+    const second = await tableScreenshot(0xe9e7e1ff, new Date(capturedAt + 1_000).toISOString());
+    const readerRequests: VisualTableModelRequest[] = [];
+    const verifierRequests: VisualTableVerifierRequest[] = [];
+    const pages = [tablePage([tableRow("campaign-a", "Campaign A", "$100")], true), tablePage([
+      tableRow("campaign-a", "Campaign A", "$100"),
+      tableRow("campaign-b", "Campaign B", "$200", 32)
+    ], false)];
+    const ledger = new SharedFactLedger();
+    const tableReader = new VisualTableReader({
+      model: {
+        identity: "remote-code/code-vision",
+        readPage: async (request) => {
+          readerRequests.push(request);
+          return pages[Math.min(readerRequests.length - 1, pages.length - 1)]!;
+        }
+      },
+      verifier: {
+        identity: "remote-code/code-vision",
+        verify: async (request) => {
+          verifierRequests.push(request);
+          return {
+            reviews: request.cells.map((cell) => ({
+              rowKey: cell.rowKey,
+              columnKey: cell.columnKey,
+              matched: true,
+              confidence: 0.99,
+              normalizedValue: cell.normalizedValue,
+              reason: "matched in independent verifier call"
+            })),
+            confidence: 0.99,
+            reason: "all visible values matched"
+          };
+        }
+      },
+      factSink: ledger
+    });
+    const runMicroTask = vi.fn(async (
+      task: Parameters<VisualComputerRuntime["runMicroTask"]>[0],
+      initial?: Screenshot,
+      _constraints?: Parameters<VisualComputerRuntime["runMicroTask"]>[2]
+    ) => ({
+      status: "done" as const,
+      attempts: 1,
+      action: {
+        action: "scroll" as const,
+        direction: "down" as const,
+        x: 50,
+        y: 50,
+        target: task.target,
+        reason: "table has more rows",
+        confidence: 0.99,
+        expected_result: task.expectedResult,
+        risk_level: "interact" as const
+      },
+      before: initial ?? first,
+      after: second
+    }));
+    const computer = {
+      captureForTask: vi.fn(async () => first),
+      runMicroTask
+    } as unknown as VisualComputerRuntime;
+    const browserSessions = {
+      get: vi.fn(async () => session),
+      assertActive: vi.fn(async () => session)
+    } as unknown as BrowserSessionManager;
+    const screenshotAudits = new FileScreenshotModelCallAuditStore(root);
+    const privacy = new ScreenshotPrivacyPipeline(new FileScreenshotArtifactStore(root), screenshotAudits);
+    const tools = new AdPilotTools(
+      workspace,
+      new AuditLog(workspace),
+      new ApprovalService(workspace, "0123456789abcdef0123456789abcdef"),
+      new ExperimentStore(workspace),
+      computer,
+      undefined,
+      browserSessions,
+      {
+        reader: tableReader,
+        screenshotPrivacy: privacy,
+        readerModel: { provider: "remote-code", modelId: "code-vision", location: "remote", retentionPolicy: "provider zero retention" },
+        verifierModel: { provider: "remote-code", modelId: "code-vision", location: "remote", retentionPolicy: "provider zero retention" },
+        privacyMode: "minimized"
+      }
+    );
+
+    await expect(tools.readVisualTable(
+      { clientId: "client-a", taskId, actor: "account_operator", permission: "OBSERVE" },
+      {
+        platform: "google_ads",
+        browserProfile: session.browserProfile,
+        targetColumns: [{ key: "name", label: "Campaign", valueType: "text" }],
+        scrollDirection: "down"
+      }
+    )).rejects.toThrow("requires explicit INTERACT permission");
+    expect(runMicroTask).not.toHaveBeenCalled();
+
+    const result = await tools.readVisualTable(
+      { clientId: "client-a", taskId, actor: "account_operator", permission: "INTERACT" },
+      {
+        platform: "google_ads",
+        browserProfile: session.browserProfile,
+        tableRoi: { x: 10, y: 20, width: 80, height: 60, coordinateSpace: "screenshot_pixels" },
+        targetColumns: [
+          { key: "name", label: "Campaign", valueType: "text" },
+          { key: "budget", label: "Budget", valueType: "currency", unit: "USD" }
+        ],
+        scrollDirection: "down",
+        maxPages: 3
+      }
+    );
+
+    expect(result).toMatchObject({ status: "done", checks: { pagesRead: 2, duplicateRowsRemoved: 2 } });
+    expect(result.facts).toHaveLength(4);
+    expect(result.facts.every((fact) => fact.status === "verified")).toBe(true);
+    await expect(ledger.usable("client-a", { taskId })).resolves.toHaveLength(4);
+    expect(runMicroTask).toHaveBeenCalledTimes(1);
+    expect(runMicroTask.mock.calls[0]?.[1]).toBeUndefined();
+    expect(runMicroTask.mock.calls[0]?.[2]).toEqual({ allowedActions: ["scroll", "done", "fail"] });
+    expect(runMicroTask.mock.calls[0]?.[0]).toMatchObject({
+      clientId: "client-a",
+      taskId,
+      platform: "google_ads",
+      permission: "INTERACT",
+      riskLevel: "interact",
+      allowedActions: ["scroll", "done", "fail"],
+      allowedScrollDirections: ["down"],
+      retryPolicy: "none",
+      surface: {
+        applicationId: "com.google.Chrome",
+        processId: 42,
+        windowId: "window-7",
+        browserProfile: session.browserProfile
+      }
+    });
+    expect(readerRequests).toHaveLength(2);
+    expect(verifierRequests).toHaveLength(1);
+    expect(verifierRequests[0]?.screenshots).toHaveLength(2);
+    for (const request of readerRequests) {
+      expect({ width: request.roiWidth, height: request.roiHeight }).toEqual({ width: 80, height: 60 });
+    }
+    for (const screenshot of verifierRequests[0]!.screenshots) {
+      expect({ width: screenshot.width, height: screenshot.height }).toEqual({ width: 80, height: 60 });
+    }
+
+    const audits = await screenshotAudits.list("client-a");
+    expect(audits).toHaveLength(4);
+    expect(audits.map((audit) => audit.callRole)).toEqual(["table_reader", "table_reader", "table_verifier", "table_verifier"]);
+    for (const audit of audits) {
+      expect(audit).toMatchObject({
+        purpose: "table_read",
+        modelProvider: "remote-code",
+        modelId: "code-vision",
+        sentRoi: { x: 10, y: 20, width: 80, height: 60 },
+        transmittedWidth: 80,
+        transmittedHeight: 60,
+        leftLocal: true,
+        fullScreenshotLocalOnly: true,
+        outcome: "prepared"
+      });
+    }
+    const clientKey = createHash("sha256").update("client-a").digest("hex").slice(0, 24);
+    const artifactDirectory = join(root, "screenshots", clientKey);
+    const pngs = (await readdir(artifactDirectory)).filter((name) => name.endsWith(".png"));
+    expect(pngs).toHaveLength(4);
+    for (const name of pngs) expect((await stat(join(artifactDirectory, name))).mode & 0o777).toBe(0o600);
+
+    const defaultRoiResult = await tools.readVisualTable(
+      { clientId: "client-a", taskId, actor: "account_operator", permission: "OBSERVE" },
+      {
+        platform: "google_ads",
+        browserProfile: session.browserProfile,
+        targetColumns: [
+          { key: "name", label: "Campaign", valueType: "text" },
+          { key: "budget", label: "Budget", valueType: "currency", unit: "USD" }
+        ]
+      }
+    );
+    expect(defaultRoiResult.status).toBe("done");
+    expect(readerRequests.at(-1)).toMatchObject({ roiWidth: 120, roiHeight: 88 });
+    const defaultAudits = (await screenshotAudits.list("client-a")).slice(-2);
+    expect(defaultAudits.map((audit) => audit.callRole)).toEqual(["table_reader", "table_verifier"]);
+    expect(defaultAudits.map((audit) => audit.sentRoi)).toEqual([
+      { x: 0, y: 12, width: 120, height: 88 },
+      { x: 0, y: 12, width: 120, height: 88 }
+    ]);
+    expect(defaultAudits.every((audit) => audit.transmittedHeight === 88 && audit.fullScreenshotLocalOnly)).toBe(true);
+    await expect(tools.readVisualTable(
+      { clientId: "client-a", taskId, actor: "account_operator", permission: "OBSERVE" },
+      {
+        platform: "google_ads",
+        browserProfile: session.browserProfile,
+        tableRoi: { x: 100, y: 20, width: 40, height: 60 },
+        targetColumns: [{ key: "name", label: "Campaign", valueType: "text" }]
+      }
+    )).rejects.toThrow("exceeds the managed screenshot bounds");
+  });
+});
+
+async function tableScreenshot(color: number, capturedAt: string): Promise<Screenshot> {
+  const png = await new Jimp({ width: 120, height: 100, color }).getBuffer("image/png");
+  return {
+    base64: png.toString("base64"),
+    width: 120,
+    height: 100,
+    scaleFactor: 2,
+    capturedAt,
+    sha256: createHash("sha256").update(png).digest("hex"),
+    surface: {
+      platform: "darwin",
+      app: "Google Chrome",
+      bundleId: "com.google.Chrome",
+      browserProfile: session.browserProfile,
+      pid: 42,
+      title: "Campaigns - Google Ads",
+      windowId: "window-7",
+      bounds: { x: 0, y: 0, width: 60, height: 50 },
+      screenId: "screen-1",
+      screenBounds: { x: 0, y: 0, width: 1440, height: 900 },
+      scaleFactor: 2
+    },
+    surfaceFingerprint: "f".repeat(64)
+  };
+}
+
+function tablePage(rows: unknown[], hasMore: boolean) {
+  return {
+    state: "ready" as const,
+    headers: [
+      { columnKey: "name", rawText: "Campaign", boundingBox: [0, 0, 40, 10], confidence: 0.99, fixed: true },
+      { columnKey: "budget", rawText: "Budget", boundingBox: [40, 0, 40, 10], confidence: 0.99, fixed: true }
+    ],
+    rows,
+    hasMore
+  };
+}
+
+function tableRow(rowKey: string, rawLabel: string, budget: string, y = 12) {
+  return {
+    rowKey,
+    rawLabel,
+    boundingBox: [0, y, 80, 16],
+    truncated: false,
+    kind: "data" as const,
+    cells: [
+      { columnKey: "name", rawText: rawLabel, boundingBox: [0, y, 40, 16], confidence: 0.99 },
+      { columnKey: "budget", rawText: budget, boundingBox: [40, y, 40, 16], confidence: 0.99 }
+    ]
+  };
+}

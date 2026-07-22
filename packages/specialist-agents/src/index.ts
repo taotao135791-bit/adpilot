@@ -7,8 +7,9 @@ import {
   type SpecialistRole as Role
 } from "@adpilot/shared";
 import { CampaignMetrics, ChangeGuardrailInput } from "@adpilot/advertising-core";
-import { type AdPilotTools, type ToolContext } from "@adpilot/tools";
+import { VisualTableReadToolInput, type AdPilotTools, type ToolContext } from "@adpilot/tools";
 import { VisualAction, type VisualMicroTask } from "@adpilot/computer-use";
+import { VisualTableReadResult } from "@adpilot/visual-table-reader";
 
 export interface SpecialistRequest<I = unknown> {
   context: ToolContext;
@@ -99,8 +100,12 @@ export function selectSharedFactsForSpecialist(
 
 const EvidenceFinding = z.object({ finding: z.string().min(1), evidence: z.array(z.string()).default([]), confidence: z.number().min(0).max(1) });
 
-const AccountOperatorInput = z.object({ visualTask: z.custom<VisualMicroTask>() });
-const AccountOperatorOutput = z.object({ status: z.enum(["done", "blocked"]), attempts: z.number().int().nonnegative(), action: VisualAction.optional(), evidence: z.array(z.string()), blocker: z.string().optional() });
+const AccountOperatorInput = z.union([
+  z.object({ visualTask: z.custom<VisualMicroTask>() }).strict(),
+  z.object({ visualTable: VisualTableReadToolInput }).strict()
+]);
+const VisualActionOutput = z.object({ status: z.enum(["done", "blocked"]), attempts: z.number().int().nonnegative(), action: VisualAction.optional(), evidence: z.array(z.string()), blocker: z.string().optional() });
+const AccountOperatorOutput = z.union([VisualActionOutput, VisualTableReadResult]);
 export class AccountOperator implements SpecialistAgent<z.infer<typeof AccountOperatorInput>, z.infer<typeof AccountOperatorOutput>> {
   readonly role = "account_operator" as const;
   readonly inputSchema = AccountOperatorInput;
@@ -108,6 +113,9 @@ export class AccountOperator implements SpecialistAgent<z.infer<typeof AccountOp
   constructor(private readonly tools: AdPilotTools) {}
   async execute(request: SpecialistRequest<z.infer<typeof AccountOperatorInput>>) {
     const input = this.inputSchema.parse(request.input);
+    if ("visualTable" in input) {
+      return this.outputSchema.parse(await this.tools.readVisualTable(request.context, input.visualTable));
+    }
     const result = await this.tools.executeVisualTask(request.context, input.visualTask);
     return this.outputSchema.parse(result.status === "done"
       ? { status: "done", attempts: result.attempts, action: result.action, evidence: [`screenshot:${result.before.sha256}`, `screenshot:${result.after.sha256}`] }

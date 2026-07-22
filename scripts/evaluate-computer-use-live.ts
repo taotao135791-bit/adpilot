@@ -5,11 +5,14 @@ import {
   evaluateOfflinePredictions,
   metricDefinitions,
   runLiveModelEvaluation,
+  validateSpecialistCorpora,
   validateVisualCorpus,
   type EvalMetrics,
   type ProductLiveProviderSuite,
   type VerificationEvalCorpus,
-  type VisualEvalCorpus
+  type VisualEvalCorpus,
+  type VisualIdentityEvalCorpus,
+  type VisualTableEvalCorpus
 } from "../evals/computer-use-live/evaluator.js";
 import { createProductLiveProviderSuite } from "../evals/computer-use-live/providers.js";
 
@@ -25,20 +28,35 @@ if (process.argv.includes("--help")) {
     "  ADPILOT_REAL_BROWSER_REPORT=<path>      Add a separate real-browser validation manifest.",
     "  ADPILOT_EVAL_OUTPUT=<path>              Override artifacts/evals/computer-use-live-report.json.",
     "",
-    "With no configured visual provider/credential, Live Model Eval is reported as not-run."
+    "Live Model Eval directly invokes GroundingModel, VisualVerifier, VisualTableReader, and DualVisualIdentityVerifier.",
+    "With no configured visual provider/credential, each unavailable live route is reported honestly as not-run."
   ].join("\n"));
   process.exit(0);
 }
 
 const groundingCorpus = JSON.parse(await readFile(resolve("evals/gui-grounding/cases.json"), "utf8")) as VisualEvalCorpus;
 const verificationCorpus = JSON.parse(await readFile(resolve("evals/gui-verification/cases.json"), "utf8")) as VerificationEvalCorpus;
-const corpusValidation = await validateVisualCorpus(groundingCorpus, verificationCorpus);
+const tableCorpus = JSON.parse(await readFile(resolve("evals/computer-use-live/table-cases.json"), "utf8")) as VisualTableEvalCorpus;
+const identityCorpus = JSON.parse(await readFile(resolve("evals/computer-use-live/identity-cases.json"), "utf8")) as VisualIdentityEvalCorpus;
+const baseCorpusValidation = await validateVisualCorpus(groundingCorpus, verificationCorpus);
+const specialistCorpusValidation = await validateSpecialistCorpora(tableCorpus, identityCorpus);
+const corpusValidation = {
+  ...baseCorpusValidation,
+  status: baseCorpusValidation.status === "passed" && specialistCorpusValidation.status === "passed" ? "passed" as const : "failed" as const,
+  specialist: specialistCorpusValidation,
+  errors: [
+    ...baseCorpusValidation.errors,
+    ...specialistCorpusValidation.errors.map((error) => `specialist: ${error}`)
+  ]
+};
 const limit = optionalPositiveInteger(process.env.ADPILOT_EVAL_LIMIT);
 const liveGroundingCorpus = limit ? { ...groundingCorpus, cases: groundingCorpus.cases.slice(0, limit) } : groundingCorpus;
 const liveIds = new Set(liveGroundingCorpus.cases.map((evalCase) => evalCase.id));
 const liveVerificationCorpus = limit
   ? { ...verificationCorpus, cases: verificationCorpus.cases.filter((evalCase) => liveIds.has(evalCase.id)) }
   : verificationCorpus;
+const liveTableCorpus = limit ? { ...tableCorpus, cases: tableCorpus.cases.slice(0, limit) } : tableCorpus;
+const liveIdentityCorpus = limit ? { ...identityCorpus, cases: identityCorpus.cases.slice(0, limit) } : identityCorpus;
 
 const predictionPath = process.env.ADPILOT_EVAL_PREDICTIONS;
 const predictions = predictionPath
@@ -58,6 +76,8 @@ const liveModelEval = corpusValidation.status === "passed"
   ? await runLiveModelEvaluation({
       groundingCorpus: liveGroundingCorpus,
       verificationCorpus: liveVerificationCorpus,
+      tableCorpus: liveTableCorpus,
+      identityCorpus: liveIdentityCorpus,
       providers
     })
   : {
@@ -69,25 +89,33 @@ const liveModelEval = corpusValidation.status === "passed"
         deepVisionModel: notRunRoute("Corpus validation failed.")
       },
       guiVerificationModel: notRunRoute("Corpus validation failed."),
+      visualTableReader: notRunRoute("Corpus validation failed."),
+      dualVisualIdentity: notRunRoute("Corpus validation failed."),
       tokenUsageNote: "No model call was attempted because the corpus failed validation."
     };
 
 const realBrowserValidation = await loadRealBrowserValidation(process.env.ADPILOT_REAL_BROWSER_REPORT);
 const report = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   generatedAt: new Date().toISOString(),
   command: "pnpm eval:computer-use:live",
   guarantees: {
-    liveProvidersCalledDirectly: liveModelEval.status !== "not-run",
-    liveProviderInvocationMode: "GroundingModel.ground and VisualVerifier.verify; no prediction adapter",
+    liveProvidersCalledDirectly: liveProviderResponses(liveModelEval) > 0,
+    liveProviderInvocationMode: "GroundingModel.ground, VisualVerifier.verify, VisualTableReader.read, and DualVisualIdentityVerifier.confirm; no prediction adapter",
     livePredictionsFileUsed: false,
     nativeActionsExecutedByLiveModelEval: false,
-    oraclePresentedAsModelScore: false
+    oraclePresentedAsModelScore: false,
+    corpusValidationContainsModelScores: false,
+    groundingUsedForSpecialistMetrics: false
   },
   metricDefinitions,
   runConfiguration: {
     fullCorpusCases: groundingCorpus.cases.length,
     liveCasesRequested: liveGroundingCorpus.cases.length,
+    fullTableCases: tableCorpus.cases.length,
+    liveTableCasesRequested: liveTableCorpus.cases.length,
+    fullIdentityCases: identityCorpus.cases.length,
+    liveIdentityCasesRequested: liveIdentityCorpus.cases.length,
     limitedBy: limit ? "ADPILOT_EVAL_LIMIT" : null,
     predictionSource: predictionPath ? resolve(predictionPath) : null,
     realBrowserSource: process.env.ADPILOT_REAL_BROWSER_REPORT ? resolve(process.env.ADPILOT_REAL_BROWSER_REPORT) : null,
@@ -116,8 +144,24 @@ function unavailableProviders(reason: string): ProductLiveProviderSuite {
       fastVisionModel: { status: "not-run", reason },
       deepVisionModel: { status: "not-run", reason }
     },
-    verificationAvailability: { status: "not-run", reason }
+    verificationAvailability: { status: "not-run", reason },
+    tableReaderAvailability: { status: "not-run", reason },
+    dualVisualIdentityAvailability: { status: "not-run", reason }
   };
+}
+
+function liveProviderResponses(report: {
+  routes: Record<string, { metrics: EvalMetrics }>;
+  guiVerificationModel: { metrics: EvalMetrics };
+  visualTableReader: { metrics: EvalMetrics };
+  dualVisualIdentity: { metrics: EvalMetrics };
+}): number {
+  return [
+    ...Object.values(report.routes),
+    report.guiVerificationModel,
+    report.visualTableReader,
+    report.dualVisualIdentity
+  ].reduce((total, route) => total + route.metrics.providerResponses, 0);
 }
 
 function notRunRoute(reason: string) {

@@ -16,9 +16,10 @@ import {
   fingerprintSurface,
   type NativeOperator,
   type NativeSurface,
-  type NativeSurfaceIdentity,
-  type Screenshot,
-  type VisualGroundingProvider
+    type NativeSurfaceIdentity,
+    type Screenshot,
+    type VisualGroundingProvider,
+    type VisualMicroTask
 } from "./index.js";
 
 const before: Screenshot = { base64: "before", width: 1000, height: 800, scaleFactor: 2, capturedAt: "2026-01-01T00:00:00.000Z", sha256: "a".repeat(64) };
@@ -126,6 +127,30 @@ describe("visual action protocol", () => {
     })).resolves.toMatchObject({ status: "failed", attempts: 1, blockerCode: "POLICY_BLOCKED" });
     expect(groundings).toBe(1);
     expect(executions).toBe(0);
+  });
+
+  it("requires a table scroll to use the allowed direction and visible in-region coordinates", () => {
+    const allowedRegion = { x: 0, y: 0, width: 100, height: 100, coordinateSpace: "screenshot_pixels" as const };
+    const tableTask: VisualMicroTask = {
+      ...task,
+      allowedRegion,
+      allowedActions: ["scroll", "done", "fail"],
+      allowedScrollDirections: ["down"]
+    };
+    const action = {
+      action: "scroll" as const,
+      direction: "right" as const,
+      x: 20,
+      y: 20,
+      target: task.target,
+      reason: "visible",
+      confidence: 1,
+      expected_result: task.expectedResult,
+      risk_level: "interact" as const,
+      allowedRegion
+    };
+    expect(() => new VisualPolicy().check(action, before, tableTask)).toThrow("scroll direction right");
+    expect(() => new VisualPolicy().check({ ...action, direction: "down", x: undefined, y: undefined }, before, tableTask)).toThrow("requires visible in-region coordinates");
   });
 
   it("stops immediately on timeout to avoid duplicate actions", async () => {

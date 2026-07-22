@@ -14,11 +14,16 @@ The sanitized visual corpus contains 85 tasks across 17 Google Ads-style scenes,
 - `gui-verification/cases.json`
 - `computer-use-replay/cases.json`
 
+The live suite also carries two independent, human-authored specialist oracles:
+
+- `computer-use-live/table-cases.json` — 50 exact row/column/raw/normalized/unit/qualifier cell expectations
+- `computer-use-live/identity-cases.json` — positive identity confirmations plus truncated and obscured safe-blocker expectations
+
 Regenerate and verify them with `pnpm fixtures:visual && pnpm test:visual-replay`.
 
 `pnpm eval:gui` evaluates an optional recorded prediction file. It never presents fixture-oracle coverage as a model score.
 
-`pnpm eval:computer-use:live` calls the product `GroundingModel` and `VisualVerifier` interfaces directly and compares the built-in GUI route, Fast vision, Deep vision, and GUI verification. It produces four deliberately separate report sections:
+`pnpm eval:computer-use:live` calls the product `GroundingModel`, `VisualVerifier`, `VisualTableReader`, and `DualVisualIdentityVerifier` interfaces directly. Table Cell Accuracy is emitted only by verified table cells; account and campaign identity accuracy are emitted only by the dual identity gate. Grounding and corpus validation never populate those specialist scores. The command produces four deliberately separate report sections:
 
 - Corpus Validation
 - Offline Prediction Eval

@@ -143,6 +143,8 @@ export interface VisualMicroTask {
   permission: Permission;
   /** Additional least-privilege action boundary for tightly scoped micro-tasks. */
   allowedActions?: VisualAction["action"][];
+  /** Optional exact direction boundary for scroll-only validation flows. */
+  allowedScrollDirections?: Array<"up" | "down" | "left" | "right">;
   /** `none` permits exactly one grounding/execution attempt. */
   retryPolicy?: "default" | "none";
   surface: SurfaceContext;
@@ -212,6 +214,14 @@ export class VisualPolicy {
     this.checkSurface(task.surface);
     if (task.allowedActions && !task.allowedActions.includes(action.action)) {
       throw new Error(`action ${action.action} is outside this micro-task allowlist`);
+    }
+    if (action.action === "scroll") {
+      if (task.allowedScrollDirections && !task.allowedScrollDirections.includes(action.direction)) {
+        throw new Error(`scroll direction ${action.direction} is outside this micro-task allowlist`);
+      }
+      if (task.allowedRegion && (action.x === undefined || action.y === undefined)) {
+        throw new Error("a region-bound scroll action requires visible in-region coordinates");
+      }
     }
     if (screenshot.surfaceFingerprint && action.surface_fingerprint !== screenshot.surfaceFingerprint) {
       throw new SurfaceChangedBlocker(screenshot.surfaceFingerprint, action.surface_fingerprint ?? "missing");
@@ -691,6 +701,7 @@ export class OpenAICompatibleUiTarsProvider implements VisualGroundingProvider {
                   expected_result: task.expectedResult,
                   risk_level: task.riskLevel,
                   allowed_actions: task.allowedActions,
+                  allowed_scroll_directions: task.allowedScrollDirections,
                   surface_fingerprint: surfaceFingerprintFor(screenshot),
                   screenshot: { width: screenshot.width, height: screenshot.height, scaleFactor: screenshot.scaleFactor }
                 }) },
@@ -838,6 +849,7 @@ export class PiVisionModel implements VisualGroundingProvider, VisualVerifier {
             expectedResult: task.expectedResult,
             declaredRisk: task.riskLevel,
             allowedActions: task.allowedActions,
+            allowedScrollDirections: task.allowedScrollDirections,
             screenshot: { width: screenshot.width, height: screenshot.height }
           }) },
           { type: "image", data: screenshot.base64, mimeType: "image/png" }

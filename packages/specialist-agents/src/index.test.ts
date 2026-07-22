@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import type { RuntimeRequest, RuntimeResult } from "@adpilot/runtime";
 import type { SharedFact } from "@adpilot/shared";
+import type { AdPilotTools } from "@adpilot/tools";
 import {
+  AccountOperator,
   InMemorySpecialistSessionRepository,
   PerformanceAnalyst,
   SpecialistCoordinator,
@@ -118,6 +120,40 @@ describe("specialist agents", () => {
       taskId: crypto.randomUUID(),
       role: "media_buyer"
     })).toThrow();
+  });
+
+  it("routes natural-language account investigation table work through the production table tool", async () => {
+    const readVisualTable = vi.fn(async () => ({
+      status: "done" as const,
+      cells: [],
+      facts: [],
+      screenshots: [],
+      checks: { pagesRead: 0, duplicateRowsRemoved: 0, totalsChecked: 0, totalsConsistent: true, anomalies: [] },
+      verification: null
+    }));
+    const operator = new AccountOperator({ readVisualTable } as unknown as AdPilotTools);
+    const taskId = crypto.randomUUID();
+    await expect(operator.execute({
+      context: { clientId: "client-a", taskId, actor: "adpilot_agent", permission: "OBSERVE" },
+      input: {
+        visualTable: {
+          platform: "google_ads",
+          targetColumns: [{ key: "campaign", label: "Campaign", valueType: "text", unit: "", critical: true }],
+          targetRows: [],
+          scrollDirection: "none",
+          historicalOverlapRows: [],
+          pageScale: 1,
+          factTtlMs: 15 * 60_000,
+          maxPages: 30,
+          sensitiveRegions: []
+        }
+      },
+      sharedFacts: []
+    })).resolves.toMatchObject({ status: "done" });
+    expect(readVisualTable).toHaveBeenCalledWith(expect.objectContaining({ clientId: "client-a", taskId }), expect.objectContaining({
+      platform: "google_ads",
+      targetColumns: [expect.objectContaining({ key: "campaign", valueType: "text" })]
+    }));
   });
 
   it("prevents a media buyer from receiving stale facts", () => {

@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "source": "sanitized generated Google Ads fixtures; human-authored cell oracle",
+  "cases": [
+    {
+      "id": "table-campaign-list-1440-light-en",
+      "screenshot": "fixtures/screenshots/generated/campaign-list--1440-light-en.png",
+      "viewport": { "width": 1440, "height": 900, "logicalWidth": 1440, "logicalHeight": 900, "scaleFactor": 1 },
+      "tableRoi": [248, 243, 1164, 164],
+      "targetColumns": [
+        { "key": "campaign", "label": "Campaign / 广告系列", "valueType": "text", "unit": "", "critical": true },
+        { "key": "spend", "label": "Spend / 消耗", "valueType": "currency", "unit": "", "critical": true },
+        { "key": "conversions", "label": "Conversions / 转化", "valueType": "number", "unit": "", "critical": true },
+        { "key": "daily_budget", "label": "Daily budget / 每日预算", "valueType": "currency", "unit": "", "critical": true },
+        { "key": "bid_target", "label": "Bid target / 出价目标", "valueType": "text", "unit": "", "critical": true }
+      ],
+      "targetRows": ["Android Growth", "iOS Retargeting"],
+      "expectedCells": [
+        { "rowKey": "Android Growth", "columnKey": "campaign", "rawText": "Android Growth", "normalizedValue": "Android Growth", "unit": "", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "spend", "rawText": "¥ 4,620", "normalizedValue": 4620, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "conversions", "rawText": "286", "normalizedValue": 286, "unit": "", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "daily_budget", "rawText": "¥ 800", "normalizedValue": 800, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "bid_target", "rawText": "tCPA ¥ 18", "normalizedValue": "tCPA ¥ 18", "unit": "", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "campaign", "rawText": "iOS Retargeting", "normalizedValue": "iOS Retargeting", "unit": "", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "spend", "rawText": "¥ 1,340", "normalizedValue": 1340, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "conversions", "rawText": "61", "normalizedValue": 61, "unit": "", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "daily_budget", "rawText": "¥ 300", "normalizedValue": 300, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "bid_target", "rawText": "tROAS 420%", "normalizedValue": "tROAS 420%", "unit": "", "qualifier": "exact" }
+      ]
+    },
+    {
+      "id": "table-campaign-list-1280-dark-zh",
+      "screenshot": "fixtures/screenshots/generated/campaign-list--1280-dark-zh.png",
+      "viewport": { "width": 1280, "height": 800, "logicalWidth": 1280, "logicalHeight": 800, "scaleFactor": 1 },
+      "tableRoi": [248, 243, 1004, 164],
+      "targetColumns": [
+        { "key": "campaign", "label": "Campaign / 广告系列", "valueType": "text", "unit": "", "critical": true },
+        { "key": "spend", "label": "Spend / 消耗", "valueType": "currency", "unit": "", "critical": true },
+        { "key": "conversions", "label": "Conversions / 转化", "valueType": "number", "unit": "", "critical": true },
+        { "key": "daily_budget", "label": "Daily budget / 每日预算", "valueType": "currency", "unit": "", "critical": true },
+        { "key": "bid_target", "label": "Bid target / 出价目标", "valueType": "text", "unit": "", "critical": true }
+      ],
+      "targetRows": ["Android Growth", "iOS Retargeting"],
+      "expectedCells": [
+        { "rowKey": "Android Growth", "columnKey": "campaign", "rawText": "Android Growth", "normalizedValue": "Android Growth", "unit": "", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "spend", "rawText": "¥ 4,620", "normalizedValue": 4620, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "conversions", "rawText": "286", "normalizedValue": 286, "unit": "", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "daily_budget", "rawText": "¥ 800", "normalizedValue": 800, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "bid_target", "rawText": "tCPA ¥ 18", "normalizedValue": "tCPA ¥ 18", "unit": "", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "campaign", "rawText": "iOS Retargeting", "normalizedValue": "iOS Retargeting", "unit": "", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "spend", "rawText": "¥ 1,340", "normalizedValue": 1340, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "conversions", "rawText": "61", "normalizedValue": 61, "unit": "", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "daily_budget", "rawText": "¥ 300", "normalizedValue": 300, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "bid_target", "rawText": "tROAS 420%", "normalizedValue": "tROAS 420%", "unit": "", "qualifier": "exact" }
+      ]
+    },
+    {
+      "id": "table-campaign-list-1024-light-zh-retina",
+      "screenshot": "fixtures/screenshots/generated/campaign-list--1024-light-zh-retina.png",
+      "viewport": { "width": 2048, "height": 1536, "logicalWidth": 1024, "logicalHeight": 768, "scaleFactor": 2 },
+      "tableRoi": [496, 486, 1496, 328],
+      "targetColumns": [
+        { "key": "campaign", "label": "Campaign / 广告系列", "valueType": "text", "unit": "", "critical": true },
+        { "key": "spend", "label": "Spend / 消耗", "valueType": "currency", "unit": "", "critical": true },
+        { "key": "conversions", "label": "Conversions / 转化", "valueType": "number", "unit": "", "critical": true },
+        { "key": "daily_budget", "label": "Daily budget / 每日预算", "valueType": "currency", "unit": "", "critical": true },
+        { "key": "bid_target", "label": "Bid target / 出价目标", "valueType": "text", "unit": "", "critical": true }
+      ],
+      "targetRows": ["Android Growth", "iOS Retargeting"],
+      "expectedCells": [
+        { "rowKey": "Android Growth", "columnKey": "campaign", "rawText": "Android Growth", "normalizedValue": "Android Growth", "unit": "", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "spend", "rawText": "¥ 4,620", "normalizedValue": 4620, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "conversions", "rawText": "286", "normalizedValue": 286, "unit": "", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "daily_budget", "rawText": "¥ 800", "normalizedValue": 800, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "bid_target", "rawText": "tCPA ¥ 18", "normalizedValue": "tCPA ¥ 18", "unit": "", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "campaign", "rawText": "iOS Retargeting", "normalizedValue": "iOS Retargeting", "unit": "", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "spend", "rawText": "¥ 1,340", "normalizedValue": 1340, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "conversions", "rawText": "61", "normalizedValue": 61, "unit": "", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "daily_budget", "rawText": "¥ 300", "normalizedValue": 300, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "bid_target", "rawText": "tROAS 420%", "normalizedValue": "tROAS 420%", "unit": "", "qualifier": "exact" }
+      ]
+    },
+    {
+      "id": "table-campaign-list-1600-dark-en-retina",
+      "screenshot": "fixtures/screenshots/generated/campaign-list--1600-dark-en-retina.png",
+      "viewport": { "width": 3200, "height": 2000, "logicalWidth": 1600, "logicalHeight": 1000, "scaleFactor": 2 },
+      "tableRoi": [496, 486, 2648, 328],
+      "targetColumns": [
+        { "key": "campaign", "label": "Campaign / 广告系列", "valueType": "text", "unit": "", "critical": true },
+        { "key": "spend", "label": "Spend / 消耗", "valueType": "currency", "unit": "", "critical": true },
+        { "key": "conversions", "label": "Conversions / 转化", "valueType": "number", "unit": "", "critical": true },
+        { "key": "daily_budget", "label": "Daily budget / 每日预算", "valueType": "currency", "unit": "", "critical": true },
+        { "key": "bid_target", "label": "Bid target / 出价目标", "valueType": "text", "unit": "", "critical": true }
+      ],
+      "targetRows": ["Android Growth", "iOS Retargeting"],
+      "expectedCells": [
+        { "rowKey": "Android Growth", "columnKey": "campaign", "rawText": "Android Growth", "normalizedValue": "Android Growth", "unit": "", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "spend", "rawText": "¥ 4,620", "normalizedValue": 4620, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "conversions", "rawText": "286", "normalizedValue": 286, "unit": "", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "daily_budget", "rawText": "¥ 800", "normalizedValue": 800, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "bid_target", "rawText": "tCPA ¥ 18", "normalizedValue": "tCPA ¥ 18", "unit": "", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "campaign", "rawText": "iOS Retargeting", "normalizedValue": "iOS Retargeting", "unit": "", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "spend", "rawText": "¥ 1,340", "normalizedValue": 1340, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "conversions", "rawText": "61", "normalizedValue": 61, "unit": "", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "daily_budget", "rawText": "¥ 300", "normalizedValue": 300, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "bid_target", "rawText": "tROAS 420%", "normalizedValue": "tROAS 420%", "unit": "", "qualifier": "exact" }
+      ]
+    },
+    {
+      "id": "table-campaign-list-1366-dark-zh",
+      "screenshot": "fixtures/screenshots/generated/campaign-list--1366-dark-zh.png",
+      "viewport": { "width": 1708, "height": 960, "logicalWidth": 1366, "logicalHeight": 768, "scaleFactor": 1.25 },
+      "tableRoi": [310, 304, 1363, 205],
+      "targetColumns": [
+        { "key": "campaign", "label": "Campaign / 广告系列", "valueType": "text", "unit": "", "critical": true },
+        { "key": "spend", "label": "Spend / 消耗", "valueType": "currency", "unit": "", "critical": true },
+        { "key": "conversions", "label": "Conversions / 转化", "valueType": "number", "unit": "", "critical": true },
+        { "key": "daily_budget", "label": "Daily budget / 每日预算", "valueType": "currency", "unit": "", "critical": true },
+        { "key": "bid_target", "label": "Bid target / 出价目标", "valueType": "text", "unit": "", "critical": true }
+      ],
+      "targetRows": ["Android Growth", "iOS Retargeting"],
+      "expectedCells": [
+        { "rowKey": "Android Growth", "columnKey": "campaign", "rawText": "Android Growth", "normalizedValue": "Android Growth", "unit": "", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "spend", "rawText": "¥ 4,620", "normalizedValue": 4620, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "conversions", "rawText": "286", "normalizedValue": 286, "unit": "", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "daily_budget", "rawText": "¥ 800", "normalizedValue": 800, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "Android Growth", "columnKey": "bid_target", "rawText": "tCPA ¥ 18", "normalizedValue": "tCPA ¥ 18", "unit": "", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "campaign", "rawText": "iOS Retargeting", "normalizedValue": "iOS Retargeting", "unit": "", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "spend", "rawText": "¥ 1,340", "normalizedValue": 1340, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "conversions", "rawText": "61", "normalizedValue": 61, "unit": "", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "daily_budget", "rawText": "¥ 300", "normalizedValue": 300, "unit": "CNY", "qualifier": "exact" },
+        { "rowKey": "iOS Retargeting", "columnKey": "bid_target", "rawText": "tROAS 420%", "normalizedValue": "tROAS 420%", "unit": "", "qualifier": "exact" }
+      ]
+    }
+  ]
+}

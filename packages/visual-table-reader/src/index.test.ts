@@ -164,11 +164,14 @@ describe("VisualTableReader", () => {
     expect(result).toMatchObject({ status: "blocked", blocker: { code: "CONFLICTING_OVERLAP_VALUE" } });
   });
 
-  it("requires a distinct verifier identity", async () => {
-    const model = makeModel([page([])], "same-model");
+  it("allows the same vision model through an independent verifier call", async () => {
+    const model = makeModel([page([
+      row("campaign-a", "Campaign A", [cell("name", "Campaign A"), cell("budget", "$100")])
+    ])], "same-model");
     const verifier = makeVerifier("same-model");
     const result = await new VisualTableReader({ model, verifier }).read(baseRequest());
-    expect(result).toMatchObject({ status: "blocked", blocker: { code: "VERIFIER_NOT_INDEPENDENT" } });
+    expect(result).toMatchObject({ status: "done", verification: { confidence: 0.98 } });
+    expect(result.facts.every((fact) => fact.status === "verified")).toBe(true);
   });
 
   it("runs the production Pi multimodal reader and verifier adapters", async () => {

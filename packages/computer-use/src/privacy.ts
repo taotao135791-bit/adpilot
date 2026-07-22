@@ -75,6 +75,7 @@ export const ScreenshotModelCallAudit = z.object({
   clientId: z.string().min(1),
   taskId: z.string().min(1),
   purpose: z.enum(["grounding", "verification", "table_read", "account_identity", "other"]),
+  callRole: z.enum(["table_reader", "table_verifier"]).optional(),
   modelProvider: z.string().min(1),
   modelId: z.string().min(1),
   screenshotId: z.string().uuid(),
@@ -176,6 +177,7 @@ export interface PrepareScreenshotForModelInput {
   clientId: string;
   taskId: string;
   purpose: ScreenshotModelCallAudit["purpose"];
+  callRole?: ScreenshotModelCallAudit["callRole"];
   screenshot: Screenshot;
   roi: ScreenshotRegion;
   sensitiveRegions?: ScreenshotMask[];
@@ -242,6 +244,7 @@ export class ScreenshotPrivacyPipeline {
       clientId: input.clientId,
       taskId: input.taskId,
       purpose: input.purpose,
+      ...(input.callRole ? { callRole: input.callRole } : {}),
       modelProvider: model.provider,
       modelId: model.modelId,
       screenshotId,

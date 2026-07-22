@@ -1,15 +1,19 @@
 import { resolve } from "node:path";
 import type { Api, Model, Models } from "@earendil-works/pi-ai";
 import {
+  DualVisualIdentityVerifier,
   GuiGroundingProviderRouter,
   OpenAICompatibleUiTarsProvider,
+  OpenAICompatibleVisualIdentityReviewer,
   OpenAICompatibleVisualVerifier,
+  PiVisualIdentityReviewer,
   PiVisionModel,
   type VisualGroundingProvider,
   type VisualVerifier
 } from "@adpilot/computer-use";
 import { SettingsStore, WorkspaceCredentialStore } from "@adpilot/configuration";
 import { createPiModels, modelRouterFromEnv, resolvePiModel } from "@adpilot/model-router";
+import { PiVisualTableModel, PiVisualTableVerifier, VisualTableReader } from "@adpilot/visual-table-reader";
 import type { ProductLiveProviderSuite } from "./evaluator.js";
 
 export interface LiveProviderFactoryOptions {
@@ -68,6 +72,21 @@ export async function createProductLiveProviderSuite(options: LiveProviderFactor
     : undefined;
   const dedicatedVerifier = createDedicatedVerifier(effectiveEnv);
   const verifier: VisualVerifier | undefined = dedicatedVerifier ?? piVision;
+  const tableReader = primaryVision && deepVision
+    ? new VisualTableReader({
+        model: new PiVisualTableModel(models, primaryVision, deepVision),
+        verifier: new PiVisualTableVerifier(models, deepVision)
+      })
+    : undefined;
+  const dedicatedIdentity = createDedicatedIdentityReviewer(effectiveEnv);
+  const guiIdentity = dedicatedIdentity
+    ?? (deepVision ? new PiVisualIdentityReviewer(models, deepVision, `gui-verification:${deepVision.provider}/${deepVision.id}`) : undefined);
+  const deepIdentity = deepVision
+    ? new PiVisualIdentityReviewer(models, deepVision, `deep-vision:${deepVision.provider}/${deepVision.id}`)
+    : undefined;
+  const dualVisualIdentity = guiIdentity && deepIdentity
+    ? new DualVisualIdentityVerifier(guiIdentity, deepIdentity)
+    : undefined;
   const productMaxAttempts = visualMaxAttempts(effectiveEnv.ADPILOT_GUI_MAX_RETRIES);
   const visionReason = visionFailures.length
     ? `No authenticated image-capable Pi route: ${[...new Set(visionFailures)].join("; ")}`
@@ -124,7 +143,27 @@ export async function createProductLiveProviderSuite(options: LiveProviderFactor
     } : {}),
     verificationAvailability: verifier
       ? { status: "configured", provider: dedicatedVerifier ? `verifier/${verifierModel(effectiveEnv)}` : piVision!.id }
-      : { status: "not-run", reason: `No GUI verification endpoint or authenticated Pi vision model is configured. ${visionReason}` }
+      : { status: "not-run", reason: `No GUI verification endpoint or authenticated Pi vision model is configured. ${visionReason}` },
+    ...(tableReader && primaryVision && deepVision ? {
+      tableReader: {
+        reader: tableReader,
+        providerLabel: `VisualTableReader reader=${primaryVision.provider}/${primaryVision.id}; verifier=${deepVision.provider}/${deepVision.id}`
+      }
+    } : {}),
+    tableReaderAvailability: tableReader && primaryVision && deepVision
+      ? { status: "configured", provider: `${primaryVision.provider}/${primaryVision.id} + ${deepVision.provider}/${deepVision.id}` }
+      : { status: "not-run", reason: `VisualTableReader needs an authenticated image-capable code model. ${visionReason}` },
+    ...(dualVisualIdentity ? {
+      dualVisualIdentity: {
+        verifier: dualVisualIdentity,
+        providerLabel: dedicatedIdentity
+          ? `${dedicatedIdentity.id} + ${deepIdentity!.id}`
+          : `${guiIdentity!.id} + ${deepIdentity!.id}`
+      }
+    } : {}),
+    dualVisualIdentityAvailability: dualVisualIdentity
+      ? { status: "configured", provider: dedicatedIdentity ? `${dedicatedIdentity.id} + ${deepIdentity!.id}` : `${guiIdentity!.id} + ${deepIdentity!.id}` }
+      : { status: "not-run", reason: `Dual visual identity needs a GUI verification reviewer and an authenticated Deep Vision reviewer. ${visionReason}` }
   };
 
   return { providers, effectiveEnv };
@@ -163,6 +202,20 @@ function createDedicatedVerifier(env: NodeJS.ProcessEnv): VisualVerifier | undef
     ...(key ? { apiKey: key } : {}),
     model,
     ...(mode === "gui" && env.ADPILOT_GUI_STRONG_MODEL ? { strongModel: env.ADPILOT_GUI_STRONG_MODEL } : {}),
+    timeoutMs: positiveInteger(env.ADPILOT_VERIFY_TIMEOUT_MS, 20_000)
+  });
+}
+
+function createDedicatedIdentityReviewer(env: NodeJS.ProcessEnv): OpenAICompatibleVisualIdentityReviewer | undefined {
+  const mode = env.ADPILOT_VERIFY_MODE ?? "auto";
+  const endpoint = mode === "gui" ? env.ADPILOT_GUI_BASE_URL : env.ADPILOT_VERIFY_BASE_URL;
+  const model = mode === "gui" ? env.ADPILOT_GUI_MODEL : env.ADPILOT_VERIFY_MODEL;
+  const key = mode === "gui" ? env.ADPILOT_GUI_API_KEY : env.ADPILOT_VERIFY_API_KEY;
+  if (mode === "strong" || !endpoint || !model) return undefined;
+  return new OpenAICompatibleVisualIdentityReviewer(`gui-verification:${model}`, {
+    baseURL: endpoint,
+    model,
+    ...(key ? { apiKey: key } : {}),
     timeoutMs: positiveInteger(env.ADPILOT_VERIFY_TIMEOUT_MS, 20_000)
   });
 }

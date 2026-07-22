@@ -209,7 +209,7 @@ export class PiVisualTableModel implements VisualTableVisionModel {
   }
 }
 
-/** Independent Pi multimodal reviewer. Use a different model from the reader. */
+/** Independent Pi multimodal verification call; it may use the same configured model as the reader. */
 export class PiVisualTableVerifier implements VisualTableVerifier {
   readonly identity: string;
 
@@ -268,6 +268,29 @@ export interface VisualTableEvidenceStore {
   saveFullScreenshotLocally(screenshot: VisualTableScreenshot): Promise<void>;
 }
 
+export interface VisualTableImagePreparationRequest {
+  clientId: string;
+  taskId: string;
+  phase: "reader" | "verifier";
+  modelIdentity: string;
+  /** Complete native-window capture. Implementations must never forward it to a model. */
+  screenshot: VisualTableScreenshot;
+  tableRoi: z.infer<typeof EvidenceBoundingBox>;
+}
+
+export interface VisualTablePreparedImage {
+  /** Durable local evidence identifier for the complete source screenshot. */
+  screenshotId: string;
+  /** Sanitized table ROI only. */
+  base64: string;
+  width: number;
+  height: number;
+}
+
+export interface VisualTableImagePreparer {
+  prepare(request: VisualTableImagePreparationRequest): Promise<VisualTablePreparedImage>;
+}
+
 export interface VisualTableFactSink {
   observe(draft: SharedFactDraft): Promise<SharedFactValue>;
   verify(clientId: string, factId: string, verification: SharedFactVerification): Promise<SharedFactValue>;
@@ -288,52 +311,51 @@ export const VisualTableBlockerCode = z.enum([
 ]);
 export type VisualTableBlockerCode = z.infer<typeof VisualTableBlockerCode>;
 
-export interface VisualTableBlocker {
-  code: VisualTableBlockerCode;
-  message: string;
-  cells: Array<{ rowKey: string; columnKey: string }>;
-}
+export const VisualTableBlocker = z.object({
+  code: VisualTableBlockerCode,
+  message: z.string().min(1),
+  cells: z.array(z.object({ rowKey: z.string().min(1), columnKey: z.string().min(1) }))
+});
+export type VisualTableBlocker = z.infer<typeof VisualTableBlocker>;
 
-export interface VisualTableChecks {
-  pagesRead: number;
-  duplicateRowsRemoved: number;
-  totalsChecked: number;
-  totalsConsistent: boolean;
-  anomalies: string[];
-}
+export const VisualTableChecks = z.object({
+  pagesRead: z.number().int().nonnegative(),
+  duplicateRowsRemoved: z.number().int().nonnegative(),
+  totalsChecked: z.number().int().nonnegative(),
+  totalsConsistent: z.boolean(),
+  anomalies: z.array(z.string())
+});
+export type VisualTableChecks = z.infer<typeof VisualTableChecks>;
 
-export type VisualTableReadResult = {
-  status: "done";
-  cells: VisualTableCell[];
-  facts: SharedFactValue[];
-  screenshots: string[];
-  checks: VisualTableChecks;
-  verification: VisualTableVerification | null;
-} | {
-  status: "blocked";
-  blocker: VisualTableBlocker;
-  cells: VisualTableCell[];
-  facts: SharedFactValue[];
-  screenshots: string[];
-  checks: VisualTableChecks;
-  verification: VisualTableVerification | null;
-};
+const VisualTableReadResultBase = z.object({
+  cells: z.array(VisualTableCell),
+  facts: z.array(SharedFact),
+  screenshots: z.array(z.string().min(1)),
+  checks: VisualTableChecks,
+  verification: VisualTableVerification.nullable()
+});
+
+export const VisualTableReadResult = z.discriminatedUnion("status", [
+  VisualTableReadResultBase.extend({ status: z.literal("done") }),
+  VisualTableReadResultBase.extend({ status: z.literal("blocked"), blocker: VisualTableBlocker })
+]);
+export type VisualTableReadResult = z.infer<typeof VisualTableReadResult>;
 
 export interface VisualTableReaderOptions {
   model: VisualTableVisionModel;
   verifier: VisualTableVerifier;
   surface?: VisualTableSurface;
   evidenceStore?: VisualTableEvidenceStore;
+  imagePreparer?: VisualTableImagePreparer;
   factSink?: VisualTableFactSink;
   confidenceThreshold?: number;
   loadingRetries?: number;
 }
 
-interface PreparedRoi {
-  screenshotId: string;
-  base64: string;
-  width: number;
-  height: number;
+export interface VisualTableRuntimeBindings {
+  surface?: VisualTableSurface;
+  evidenceStore?: VisualTableEvidenceStore;
+  imagePreparer?: VisualTableImagePreparer;
 }
 
 /** Pure screenshot + visual-model table reader. */
@@ -348,10 +370,22 @@ export class VisualTableReader {
     this.loadingRetries = z.number().int().min(0).max(5).parse(options.loadingRetries ?? 2);
   }
 
+  /** Bind one managed browser call without mutating the reusable production reader. */
+  withRuntime(bindings: VisualTableRuntimeBindings): VisualTableReader {
+    return new VisualTableReader({
+      ...this.options,
+      ...bindings,
+      factSink: this.factSink,
+      confidenceThreshold: this.threshold,
+      loadingRetries: this.loadingRetries
+    });
+  }
+
   async read(input: z.input<typeof VisualTableReadRequest>): Promise<VisualTableReadResult> {
     const request = VisualTableReadRequest.parse(input);
     const checks: VisualTableChecks = { pagesRead: 0, duplicateRowsRemoved: 0, totalsChecked: 0, totalsConsistent: true, anomalies: [] };
-    const screenshots = new Map<string, PreparedRoi>();
+    const sourceScreenshots = new Map<string, VisualTableScreenshot>();
+    const evidenceScreenshotIds: string[] = [];
     const cellMap = new Map<string, VisualTableCell>();
     const rowKinds = new Map<string, "data" | "total">();
     let blocker: VisualTableBlocker | undefined;
@@ -359,18 +393,23 @@ export class VisualTableReader {
     let current = request.screenshot;
     let loadingAttempts = 0;
 
-    if (this.options.model.identity === this.options.verifier.identity) {
-      return blocked("VERIFIER_NOT_INDEPENDENT", "table values require an independent visual verifier", [], [], [], checks);
-    }
-
     for (let page = 0; page < request.maxPages; page += 1) {
       await this.options.evidenceStore?.saveFullScreenshotLocally(current);
-      const roi = await cropRoi(current, request.tableRoi);
-      screenshots.set(current.screenshotId, roi);
       let rawObservation: unknown;
+      let roi: VisualTablePreparedImage;
       try {
+        sourceScreenshots.set(current.screenshotId, current);
+        roi = await this.prepareImage({
+          clientId: request.clientId,
+          taskId: request.taskId,
+          phase: "reader",
+          modelIdentity: this.options.model.identity,
+          screenshot: current,
+          tableRoi: request.tableRoi
+        });
+        evidenceScreenshotIds.push(roi.screenshotId);
         rawObservation = await this.options.model.readPage({
-          screenshotId: current.screenshotId,
+          screenshotId: roi.screenshotId,
           roiImageBase64: roi.base64,
           roiWidth: roi.width,
           roiHeight: roi.height,
@@ -462,8 +501,8 @@ export class VisualTableReader {
             qualifier: normalized.qualifier,
             confidence: Math.min(rawCell.confidence, visibleHeaders.get(column.key)?.confidence ?? rawCell.confidence),
             boundingBox: offsetBox(rawCell.boundingBox, request.tableRoi),
-            screenshotId: current.screenshotId,
-            evidenceScreenshotIds: [current.screenshotId],
+            screenshotId: roi.screenshotId,
+            evidenceScreenshotIds: [roi.screenshotId],
             verified: false
           });
           const key = cellKey(cell.rowKey, cell.columnKey);
@@ -537,8 +576,21 @@ export class VisualTableReader {
     if (!blocker && cells.length > 0) {
       let verificationRaw: unknown;
       try {
+        const verifierScreenshots: VisualTablePreparedImage[] = [];
+        for (const screenshot of sourceScreenshots.values()) {
+          const prepared = await this.prepareImage({
+            clientId: request.clientId,
+            taskId: request.taskId,
+            phase: "verifier",
+            modelIdentity: this.options.verifier.identity,
+            screenshot,
+            tableRoi: request.tableRoi
+          });
+          verifierScreenshots.push(prepared);
+          evidenceScreenshotIds.push(prepared.screenshotId);
+        }
         verificationRaw = await this.options.verifier.verify({
-          screenshots: [...screenshots.values()].map((item) => ({ screenshotId: item.screenshotId, roiImageBase64: item.base64, width: item.width, height: item.height })),
+          screenshots: verifierScreenshots.map((item) => ({ screenshotId: item.screenshotId, roiImageBase64: item.base64, width: item.width, height: item.height })),
           cells,
           targetColumns: request.targetColumns
         });
@@ -547,7 +599,15 @@ export class VisualTableReader {
         verificationRaw = undefined;
       }
       if (blocker) {
-        return { status: "blocked", blocker, cells, facts, screenshots: [...screenshots.keys()], checks, verification: null };
+        return VisualTableReadResult.parse({
+          status: "blocked",
+          blocker,
+          cells,
+          facts,
+          screenshots: [...new Set(evidenceScreenshotIds)],
+          checks,
+          verification: null
+        });
       }
       const verification = VisualTableVerification.safeParse(verificationRaw);
       if (!verification.success) {
@@ -586,10 +646,21 @@ export class VisualTableReader {
       }
     }
 
-    const screenshotIds = [...screenshots.keys()];
-    return blocker
+    const screenshotIds = [...new Set(evidenceScreenshotIds)];
+    return VisualTableReadResult.parse(blocker
       ? { status: "blocked", blocker, cells, facts, screenshots: screenshotIds, checks, verification: verificationResult }
-      : { status: "done", cells, facts: facts.map((fact) => SharedFact.parse(fact)), screenshots: screenshotIds, checks, verification: verificationResult };
+      : { status: "done", cells, facts: facts.map((fact) => SharedFact.parse(fact)), screenshots: screenshotIds, checks, verification: verificationResult });
+  }
+
+  private async prepareImage(request: VisualTableImagePreparationRequest): Promise<VisualTablePreparedImage> {
+    const prepared = this.options.imagePreparer
+      ? await this.options.imagePreparer.prepare(request)
+      : await cropRoi(request.screenshot, request.tableRoi);
+    if (!prepared.screenshotId || !prepared.base64 || !Number.isInteger(prepared.width) || prepared.width < 1
+      || !Number.isInteger(prepared.height) || prepared.height < 1) {
+      throw new Error("visual table image preparer returned an invalid ROI");
+    }
+    return prepared;
   }
 }
 
@@ -624,7 +695,7 @@ export function normalizeVisualValue(rawText: string, column: VisualTableColumn)
   return { value: raw, unit: column.unit, qualifier: "exact" };
 }
 
-async function cropRoi(screenshot: VisualTableScreenshot, roi: z.infer<typeof EvidenceBoundingBox>): Promise<PreparedRoi> {
+async function cropRoi(screenshot: VisualTableScreenshot, roi: z.infer<typeof EvidenceBoundingBox>): Promise<VisualTablePreparedImage> {
   const [x, y, width, height] = roi.map((value) => Math.round(value)) as [number, number, number, number];
   if (x + width > screenshot.width || y + height > screenshot.height) throw new Error("table ROI exceeds screenshot bounds");
   const source = Buffer.from(screenshot.base64.replace(/^data:image\/\w+;base64,/, ""), "base64");
@@ -725,7 +796,7 @@ function blocked(
   screenshots: string[],
   checks: VisualTableChecks
 ): VisualTableReadResult {
-  return { status: "blocked", blocker: makeBlocker(code, message), cells, facts, screenshots, checks, verification: null };
+  return VisualTableReadResult.parse({ status: "blocked", blocker: makeBlocker(code, message), cells, facts, screenshots, checks, verification: null });
 }
 
 export function screenshotSha256(base64: string): string {

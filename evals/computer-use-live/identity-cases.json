@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "source": "sanitized generated Google Ads fixtures; human-authored identity and blocker oracle",
+  "cases": [
+    {
+      "id": "identity-confirm-dialog-1440-light-en",
+      "screenshot": "fixtures/screenshots/generated/confirm-dialog--1440-light-en.png",
+      "viewport": { "width": 1440, "height": 900, "logicalWidth": 1440, "logicalHeight": 900, "scaleFactor": 1 },
+      "dimensions": ["account", "campaign"],
+      "expected": { "platform": "google_ads", "pageType": "budget_change_confirmation", "accountName": "Demo Account", "accountId": "123-456-7890", "campaignName": "Android Growth", "campaignId": "Android Growth", "currency": "CNY", "currentValue": 800, "operation": "set_daily_budget", "proposedValue": 880, "target": "Apply" },
+      "expectedOutcome": "confirmed"
+    },
+    {
+      "id": "identity-confirm-dialog-1280-dark-zh",
+      "screenshot": "fixtures/screenshots/generated/confirm-dialog--1280-dark-zh.png",
+      "viewport": { "width": 1280, "height": 800, "logicalWidth": 1280, "logicalHeight": 800, "scaleFactor": 1 },
+      "dimensions": ["account", "campaign"],
+      "expected": { "platform": "google_ads", "pageType": "budget_change_confirmation", "accountName": "Demo Account", "accountId": "123-456-7890", "campaignName": "Android Growth", "campaignId": "Android Growth", "currency": "CNY", "currentValue": 800, "operation": "set_daily_budget", "proposedValue": 880, "target": "应用" },
+      "expectedOutcome": "confirmed"
+    },
+    {
+      "id": "identity-confirm-dialog-1024-light-zh-retina",
+      "screenshot": "fixtures/screenshots/generated/confirm-dialog--1024-light-zh-retina.png",
+      "viewport": { "width": 2048, "height": 1536, "logicalWidth": 1024, "logicalHeight": 768, "scaleFactor": 2 },
+      "dimensions": ["account", "campaign"],
+      "expected": { "platform": "google_ads", "pageType": "budget_change_confirmation", "accountName": "Demo Account", "accountId": "123-456-7890", "campaignName": "Android Growth", "campaignId": "Android Growth", "currency": "CNY", "currentValue": 800, "operation": "set_daily_budget", "proposedValue": 880, "target": "应用" },
+      "expectedOutcome": "confirmed"
+    },
+    {
+      "id": "identity-confirm-dialog-1600-dark-en-retina",
+      "screenshot": "fixtures/screenshots/generated/confirm-dialog--1600-dark-en-retina.png",
+      "viewport": { "width": 3200, "height": 2000, "logicalWidth": 1600, "logicalHeight": 1000, "scaleFactor": 2 },
+      "dimensions": ["account", "campaign"],
+      "expected": { "platform": "google_ads", "pageType": "budget_change_confirmation", "accountName": "Demo Account", "accountId": "123-456-7890", "campaignName": "Android Growth", "campaignId": "Android Growth", "currency": "CNY", "currentValue": 800, "operation": "set_daily_budget", "proposedValue": 880, "target": "Apply" },
+      "expectedOutcome": "confirmed"
+    },
+    {
+      "id": "identity-confirm-dialog-1366-dark-zh",
+      "screenshot": "fixtures/screenshots/generated/confirm-dialog--1366-dark-zh.png",
+      "viewport": { "width": 1708, "height": 960, "logicalWidth": 1366, "logicalHeight": 768, "scaleFactor": 1.25 },
+      "dimensions": ["account", "campaign"],
+      "expected": { "platform": "google_ads", "pageType": "budget_change_confirmation", "accountName": "Demo Account", "accountId": "123-456-7890", "campaignName": "Android Growth", "campaignId": "Android Growth", "currency": "CNY", "currentValue": 800, "operation": "set_daily_budget", "proposedValue": 880, "target": "应用" },
+      "expectedOutcome": "confirmed"
+    },
+    {
+      "id": "identity-truncated-campaign-1440-light-en",
+      "screenshot": "fixtures/screenshots/generated/truncated-name--1440-light-en.png",
+      "viewport": { "width": 1440, "height": 900, "logicalWidth": 1440, "logicalHeight": 900, "scaleFactor": 1 },
+      "dimensions": ["campaign"],
+      "expected": { "platform": "google_ads", "pageType": "campaign_identity_check", "accountName": "Demo Account", "accountId": "123-456-7890", "campaignName": "Android Growth International Expansion 2026", "campaignId": "Android Growth International Expansion 2026", "currency": "CNY", "currentValue": 800, "operation": "set_daily_budget", "proposedValue": 880, "target": "Apply" },
+      "expectedOutcome": "blocked",
+      "expectedBlockerCodes": ["UNRELIABLE_VISUAL_IDENTITY", "VISUAL_IDENTITY_CONFLICT"]
+    },
+    {
+      "id": "identity-obscured-account-campaign-1440-light-en",
+      "screenshot": "fixtures/screenshots/generated/obscured-popup--1440-light-en.png",
+      "viewport": { "width": 1440, "height": 900, "logicalWidth": 1440, "logicalHeight": 900, "scaleFactor": 1 },
+      "dimensions": ["account", "campaign"],
+      "expected": { "platform": "google_ads", "pageType": "campaigns", "accountName": "Demo Account", "accountId": "123-456-7890", "campaignName": "Android Growth", "campaignId": "Android Growth", "currency": "CNY", "currentValue": 800, "operation": "set_daily_budget", "proposedValue": 880, "target": "Daily budget" },
+      "expectedOutcome": "blocked",
+      "expectedBlockerCodes": ["OBSCURED_VISUAL_IDENTITY", "UNRELIABLE_VISUAL_IDENTITY", "VISUAL_IDENTITY_CONFLICT"]
+    }
+  ]
+}

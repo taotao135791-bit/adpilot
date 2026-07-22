@@ -23,7 +23,12 @@ import { WorkspaceStore } from "@adpilot/workspace";
 import {
   BrowserSessionManager,
   DualVisualIdentityVerifier,
+  defaultBrowserContentRoi,
   fingerprintSurface,
+  ModelPrivacyDescriptor,
+  ScreenshotMask,
+  ScreenshotPrivacyMode,
+  ScreenshotPrivacyPipeline,
   type BrowserSession,
   type ExpectedVisualIdentity,
   type Screenshot,
@@ -32,6 +37,14 @@ import {
   VisualComputerRuntime
 } from "@adpilot/computer-use";
 import { Platform, RiskLevel, type PermissionLevel } from "@adpilot/shared";
+import {
+  VisualTableColumn,
+  VisualTableReadResult,
+  VisualTableReader,
+  VisualTableScreenshot,
+  type VisualTableImagePreparer,
+  type VisualTableSurface
+} from "@adpilot/visual-table-reader";
 
 const ExecutionValue = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
 
@@ -72,6 +85,42 @@ export interface ToolContext {
   permission: PermissionLevel;
 }
 
+export const VisualTableRoi = z.object({
+  x: z.number().int().nonnegative(),
+  y: z.number().int().nonnegative(),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  coordinateSpace: z.literal("screenshot_pixels").default("screenshot_pixels")
+}).strict();
+export type VisualTableRoi = z.infer<typeof VisualTableRoi>;
+
+export const VisualTableReadToolInput = z.object({
+  platform: Platform,
+  browserProfile: z.string().min(1).optional(),
+  domain: z.string().min(1).optional(),
+  tableRoi: VisualTableRoi.optional(),
+  targetColumns: z.array(VisualTableColumn).min(1),
+  targetRows: z.array(z.string().min(1)).default([]),
+  scrollDirection: z.enum(["none", "down", "right"]).default("none"),
+  historicalOverlapRows: z.array(z.union([
+    z.string().min(1),
+    z.object({ rowKey: z.string().min(1), fingerprint: z.string().min(1).optional() }).strict()
+  ])).default([]),
+  pageScale: z.number().positive().default(1),
+  factTtlMs: z.number().int().positive().default(15 * 60_000),
+  maxPages: z.number().int().min(1).max(100).default(30),
+  sensitiveRegions: z.array(ScreenshotMask).default([])
+}).strict();
+export type VisualTableReadToolInput = z.infer<typeof VisualTableReadToolInput>;
+
+export interface VisualTableToolsRuntime {
+  reader: VisualTableReader;
+  screenshotPrivacy: ScreenshotPrivacyPipeline;
+  readerModel: ModelPrivacyDescriptor;
+  verifierModel: ModelPrivacyDescriptor;
+  privacyMode: ScreenshotPrivacyMode;
+}
+
 export class AdPilotTools {
   constructor(
     readonly workspace: WorkspaceStore,
@@ -80,7 +129,8 @@ export class AdPilotTools {
     readonly experiments: ExperimentStore,
     readonly computer?: VisualComputerRuntime,
     readonly visualIdentity?: DualVisualIdentityVerifier,
-    readonly browserSessions?: BrowserSessionManager
+    readonly browserSessions?: BrowserSessionManager,
+    readonly visualTables?: VisualTableToolsRuntime
   ) {}
 
   async readWorkspace(context: ToolContext) {
@@ -131,29 +181,205 @@ export class AdPilotTools {
     return experiment;
   }
 
+  /**
+   * Reads a table from one strictly managed browser window. Complete captures
+   * stay local; the reader and independent verifier receive separately audited
+   * sanitized ROIs. Scrolling is a one-attempt, scroll-only Computer Use task.
+   */
+  async readVisualTable(context: ToolContext, rawInput: z.input<typeof VisualTableReadToolInput>): Promise<VisualTableReadResult> {
+    if (!this.computer || !this.browserSessions || !this.visualTables) {
+      throw new Error("managed visual table reading is unavailable");
+    }
+    const input = VisualTableReadToolInput.parse(rawInput);
+    const permissionIssue = context.permission === "MUTATE" || context.permission === "DESTRUCTIVE"
+      ? "visual table reading accepts only OBSERVE or INTERACT permission"
+      : input.scrollDirection !== "none" && context.permission !== "INTERACT"
+        ? "visual table scrolling requires explicit INTERACT permission"
+        : undefined;
+    if (permissionIssue) {
+      await this.audit.append({
+        clientId: context.clientId,
+        taskId: context.taskId,
+        actor: context.actor,
+        action: "read_visual_table",
+        status: "denied",
+        details: { reason: permissionIssue, scrollDirection: input.scrollDirection, permission: context.permission }
+      });
+      throw new Error(permissionIssue);
+    }
+    const found = await this.browserSessions.get(context.clientId, input.browserProfile);
+    if (!found) throw new Error("visual table reading requires a connected managed browser session");
+    if (found.platform !== input.platform) throw new Error("visual table platform differs from the managed browser session");
+    const session = await this.browserSessions.assertActive(context.clientId, found.browserProfile, input.platform);
+    if (!session.processId || !session.windowId) throw new Error("managed browser session is missing process or window identity");
+    const domain = (input.domain ?? platformDefaultDomain(input.platform))?.toLowerCase();
+    if (!domain) throw new Error("visual table reading requires an exact platform domain");
+    assertPlatformDomain(input.platform, domain, [domain]);
+
+    const captureTask = await this.bindManagedTask(context, {
+      clientId: context.clientId,
+      taskId: context.taskId,
+      platform: input.platform,
+      instruction: "Capture the visible advertising table without changing the page",
+      target: "visible advertising table",
+      expectedResult: "the current table remains visible",
+      riskLevel: "observe",
+      permission: "OBSERVE",
+      allowedActions: ["screenshot", "done", "fail"],
+      retryPolicy: "none",
+      surface: {
+        app: session.browserApp,
+        applicationId: session.browserApplicationId,
+        processId: session.processId,
+        windowId: session.windowId,
+        browserProfile: session.browserProfile,
+        domain,
+        allowedApps: [session.browserApplicationId, session.browserApp],
+        allowedDomains: [domain]
+      }
+    });
+    await this.assertClientSurfaceBinding(context, captureTask);
+
+    try {
+      const firstNative = await this.computer.captureForTask(captureTask);
+      assertTaskSurfaceExact(captureTask, firstNative);
+      const tableRoi = resolveVisualTableRoi(input.tableRoi, firstNative);
+      const tableTask: VisualMicroTask = { ...captureTask, allowedRegion: tableRoi };
+      const nativeScreenshots = new Map<string, Screenshot>();
+      let queuedAfterScroll: Screenshot | undefined;
+      let scrollStep = 0;
+      const register = (screenshot: Screenshot): VisualTableScreenshot => {
+        assertTaskSurfaceExact(tableTask, screenshot);
+        const screenshotId = crypto.randomUUID();
+        nativeScreenshots.set(screenshotId, screenshot);
+        return VisualTableScreenshot.parse({
+          screenshotId,
+          base64: screenshot.base64,
+          width: screenshot.width,
+          height: screenshot.height,
+          sha256: screenshot.sha256,
+          capturedAt: screenshot.capturedAt
+        });
+      };
+      const capture = async (): Promise<VisualTableScreenshot> => {
+        const screenshot = queuedAfterScroll ?? await this.computer!.captureForTask(tableTask);
+        queuedAfterScroll = undefined;
+        return register(screenshot);
+      };
+      const surface: VisualTableSurface = {
+        capture,
+        scroll: async (direction) => {
+          const scrollTask: VisualMicroTask = {
+            ...tableTask,
+            stepId: `table-scroll-${++scrollStep}-${crypto.randomUUID()}`,
+            instruction: `Scroll the visible advertising table ${direction} exactly once. Do not click, type, drag, or change filters.`,
+            target: "visible advertising table body",
+            expectedResult: `the next table ${direction === "down" ? "rows" : "columns"} are visible, or the table boundary is visibly reached`,
+            riskLevel: "interact",
+            permission: "INTERACT",
+            allowedActions: ["scroll", "done", "fail"],
+            allowedScrollDirections: [direction],
+            retryPolicy: "none"
+          };
+          const result = await this.executeVisualTask(context, scrollTask);
+          if (result.status === "failed") throw new Error(`visual table scroll failed: ${result.blocker}`);
+          if (result.action.action === "done") return "end";
+          if (result.action.action !== "scroll" || result.action.direction !== direction) {
+            throw new Error(`visual table scroll returned an unexpected ${result.action.action} action`);
+          }
+          queuedAfterScroll = result.after;
+          return "advanced";
+        }
+      };
+      const imagePreparer: VisualTableImagePreparer = {
+        prepare: async (request) => {
+          const native = nativeScreenshots.get(request.screenshot.screenshotId);
+          if (!native) throw new Error("visual table image is not linked to a managed native capture");
+          const model = request.phase === "reader" ? this.visualTables!.readerModel : this.visualTables!.verifierModel;
+          if (request.modelIdentity !== `${model.provider}/${model.modelId}`) {
+            throw new Error(`visual table ${request.phase} model differs from its screenshot audit descriptor`);
+          }
+          const prepared = await this.visualTables!.screenshotPrivacy.prepareForModel({
+            clientId: context.clientId,
+            taskId: context.taskId,
+            purpose: "table_read",
+            callRole: request.phase === "reader" ? "table_reader" : "table_verifier",
+            screenshot: native,
+            roi: { x: tableRoi.x, y: tableRoi.y, width: tableRoi.width, height: tableRoi.height },
+            sensitiveRegions: input.sensitiveRegions,
+            model,
+            privacyMode: this.visualTables!.privacyMode,
+            localFullRetentionPolicy: `local visual-table ${request.phase} evidence`
+          });
+          return {
+            screenshotId: prepared.screenshotId,
+            base64: prepared.screenshot.base64,
+            width: prepared.screenshot.width,
+            height: prepared.screenshot.height
+          };
+        }
+      };
+      const initial = register(firstNative);
+      const result = await this.visualTables.reader.withRuntime({ surface, imagePreparer }).read({
+        clientId: context.clientId,
+        taskId: context.taskId,
+        platform: input.platform,
+        screenshot: initial,
+        tableRoi: [tableRoi.x, tableRoi.y, tableRoi.width, tableRoi.height],
+        targetColumns: input.targetColumns,
+        targetRows: input.targetRows,
+        scrollDirection: input.scrollDirection,
+        historicalOverlapRows: input.historicalOverlapRows,
+        pageScale: input.pageScale,
+        dpr: firstNative.scaleFactor,
+        factTtlMs: input.factTtlMs,
+        maxPages: input.maxPages
+      });
+      await this.audit.append({
+        clientId: context.clientId,
+        taskId: context.taskId,
+        actor: context.actor,
+        action: "read_visual_table",
+        status: result.status === "done" ? "succeeded" : "failed",
+        details: {
+          status: result.status,
+          platform: input.platform,
+          browserProfile: session.browserProfile,
+          applicationId: session.browserApplicationId,
+          windowId: session.windowId,
+          tableRoi,
+          tableRoiSource: input.tableRoi ? "explicit" : "browser_content_default",
+          cells: result.cells.length,
+          verifiedFacts: result.facts.filter((fact) => fact.status === "verified").map((fact) => fact.factId),
+          screenshots: result.screenshots,
+          checks: result.checks,
+          ...(result.status === "blocked" ? { blocker: result.blocker } : {})
+        }
+      });
+      return VisualTableReadResult.parse(result);
+    } catch (error) {
+      await this.audit.append({
+        clientId: context.clientId,
+        taskId: context.taskId,
+        actor: context.actor,
+        action: "read_visual_table",
+        status: "failed",
+        details: { reason: error instanceof Error ? error.message : String(error), platform: input.platform, tableRoi: input.tableRoi }
+      });
+      throw error;
+    }
+  }
+
   async executeVisualTask(context: ToolContext, task: VisualMicroTask, initialScreenshot?: Screenshot): Promise<VisualStepResult> {
     if (!this.computer) throw new Error("native computer runtime is unavailable");
     if (task.permission !== context.permission) throw new Error("visual task permission differs from tool context");
     const boundTask = await this.bindManagedTask(context, task);
-    const client = await this.workspace.readClient(context.clientId);
-    const profile = boundTask.surface.browserProfile;
-    const domain = boundTask.surface.domain?.toLowerCase();
-    if (domain && (domain === "ads.google.com" || domain.endsWith(".ads.google.com")) && !/browser|chrome|safari|edge|arc|brave|firefox/i.test(boundTask.surface.app)) {
-      throw new Error(`Google Ads visual work requires an allowlisted browser application, not ${boundTask.surface.app}`);
-    }
-    const account = client.accounts?.accounts.find((candidate) => {
-      if (!profile || candidate.browserProfile !== profile) return false;
-      if (!domain) return true;
-      return candidate.allowedDomains.some((allowed) => domain === allowed.toLowerCase() || domain.endsWith(`.${allowed.toLowerCase()}`));
-    });
-    if (client.accounts?.accounts.length && !account) throw new Error("visual surface is not bound to an allowed client browser Profile and domain");
-    if (account) {
-      const overlyBroadDomain = boundTask.surface.allowedDomains.some((candidate) => !account.allowedDomains.some((allowed) => candidate.toLowerCase() === allowed.toLowerCase()));
-      if (overlyBroadDomain) throw new Error("visual task attempted to broaden the client domain allowlist");
-    } else {
-      assertPlatformDomain(boundTask.platform, domain, boundTask.surface.allowedDomains);
-    }
-    const result = await this.computer.runMicroTask(boundTask, initialScreenshot);
+    await this.assertClientSurfaceBinding(context, boundTask);
+    const result = await this.computer.runMicroTask(
+      boundTask,
+      initialScreenshot,
+      boundTask.allowedActions ? { allowedActions: boundTask.allowedActions } : undefined
+    );
     if (result.status === "done") {
       await this.workspace.writeJson(context.clientId, `screenshots/${context.taskId}-${Date.now()}.json`, {
         task: {
@@ -355,6 +581,30 @@ export class AdPilotTools {
     return bound;
   }
 
+  private async assertClientSurfaceBinding(context: ToolContext, task: VisualMicroTask): Promise<void> {
+    const client = await this.workspace.readClient(context.clientId);
+    const profile = task.surface.browserProfile;
+    const domain = task.surface.domain?.toLowerCase();
+    if (domain && (domain === "ads.google.com" || domain.endsWith(".ads.google.com"))
+      && !/browser|chrome|safari|edge|arc|brave|firefox/i.test(task.surface.app)) {
+      throw new Error(`Google Ads visual work requires an allowlisted browser application, not ${task.surface.app}`);
+    }
+    const account = client.accounts?.accounts.find((candidate) => {
+      if (!profile || candidate.browserProfile !== profile) return false;
+      if (!domain) return true;
+      return candidate.allowedDomains.some((allowed) => domain === allowed.toLowerCase() || domain.endsWith(`.${allowed.toLowerCase()}`));
+    });
+    if (client.accounts?.accounts.length && !account) {
+      throw new Error("visual surface is not bound to an allowed client browser Profile and domain");
+    }
+    if (account) {
+      const overlyBroadDomain = task.surface.allowedDomains.some((candidate) => !account.allowedDomains.some((allowed) => candidate.toLowerCase() === allowed.toLowerCase()));
+      if (overlyBroadDomain) throw new Error("visual task attempted to broaden the client domain allowlist");
+    } else {
+      assertPlatformDomain(task.platform, domain, task.surface.allowedDomains);
+    }
+  }
+
   private async bindManagedTask(context: ToolContext, task: VisualMicroTask): Promise<VisualMicroTask> {
     if (task.clientId && task.clientId !== context.clientId) throw new Error("visual task client differs from tool context");
     if (task.taskId && task.taskId !== context.taskId) throw new Error("visual task id differs from tool context");
@@ -392,7 +642,7 @@ export class AdPilotTools {
   }
 
   toPiTools(context: ToolContext): AgentTool[] {
-    return [
+    const tools: AgentTool[] = [
       {
         name: "read_workspace",
         label: "Read client workspace",
@@ -433,6 +683,44 @@ export class AdPilotTools {
         execute: async (_id, params) => textResult(this.evaluateChange(context, ChangeGuardrailInput.parse(params)))
       }
     ];
+    if (this.visualTables && this.computer && this.browserSessions) {
+      tools.push({
+        name: "read_visual_table",
+        label: "Read a visible advertising table",
+        description: "Read and independently verify values from a managed browser table. Only cropped, sanitized table ROIs are sent to vision models; complete screenshots remain local. Scrolling is restricted to one scroll action at a time.",
+        parameters: Type.Object({
+          platform: Type.Union(Platform.options.map((value) => Type.Literal(value))),
+          browserProfile: Type.Optional(Type.String({ minLength: 1 })),
+          domain: Type.Optional(Type.String({ minLength: 1 })),
+          tableRoi: Type.Optional(Type.Object({
+            x: Type.Number({ minimum: 0 }),
+            y: Type.Number({ minimum: 0 }),
+            width: Type.Number({ exclusiveMinimum: 0 }),
+            height: Type.Number({ exclusiveMinimum: 0 }),
+            coordinateSpace: Type.Optional(Type.Literal("screenshot_pixels"))
+          })),
+          targetColumns: Type.Array(Type.Object({
+            key: Type.String({ minLength: 1 }),
+            label: Type.String({ minLength: 1 }),
+            valueType: Type.Optional(Type.Union(["auto", "currency", "percentage", "number", "text", "status"].map((value) => Type.Literal(value)))),
+            unit: Type.Optional(Type.String()),
+            critical: Type.Optional(Type.Boolean())
+          }), { minItems: 1 }),
+          targetRows: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+          scrollDirection: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("down"), Type.Literal("right")])),
+          historicalOverlapRows: Type.Optional(Type.Array(Type.Union([
+            Type.String({ minLength: 1 }),
+            Type.Object({ rowKey: Type.String({ minLength: 1 }), fingerprint: Type.Optional(Type.String({ minLength: 1 })) })
+          ]))),
+          pageScale: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
+          factTtlMs: Type.Optional(Type.Number({ minimum: 1 })),
+          maxPages: Type.Optional(Type.Number({ minimum: 1, maximum: 100 }))
+        }),
+        executionMode: "sequential",
+        execute: async (_id, params) => textResult(await this.readVisualTable(context, VisualTableReadToolInput.parse(params)))
+      });
+    }
+    return tools;
   }
 }
 
@@ -538,6 +826,18 @@ function platformDefaultDomain(platform: string): string | undefined {
     linkedin_ads: "campaignmanager.linkedin.com",
     youtube_ads: "ads.google.com"
   } as Record<string, string>)[platform];
+}
+
+function resolveVisualTableRoi(explicit: VisualTableRoi | undefined, screenshot: Screenshot): VisualTableRoi {
+  const content = explicit ?? defaultBrowserContentRoi(screenshot.width, screenshot.height);
+  const roi = VisualTableRoi.parse({ ...content, coordinateSpace: "screenshot_pixels" });
+  if (roi.x + roi.width > screenshot.width || roi.y + roi.height > screenshot.height) {
+    throw new Error("visual table ROI exceeds the managed screenshot bounds");
+  }
+  if (!explicit && roi.x === 0 && roi.y === 0 && roi.width === screenshot.width && roi.height === screenshot.height) {
+    throw new Error("default visual table ROI must exclude browser chrome from the model image");
+  }
+  return roi;
 }
 
 function assertPlatformDomain(platform: string | undefined, domain: string | undefined, allowedDomains: string[]): void {
