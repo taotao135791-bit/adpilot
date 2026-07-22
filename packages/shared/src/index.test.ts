@@ -22,7 +22,7 @@ describe("shared contracts", () => {
 
   it("defines the complete shared-fact lifecycle and verifier contract", () => {
     expect(SharedFactStatus.options).toEqual([
-      "observed", "verified", "disputed", "rejected", "superseded", "expired"
+      "hypothesis", "observed", "verified", "disputed", "rejected", "superseded", "expired", "stale"
     ]);
     const taskId = crypto.randomUUID();
     expect(SharedFact.parse({

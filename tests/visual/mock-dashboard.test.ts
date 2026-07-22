@@ -34,7 +34,8 @@ function screenshot(state: DashboardState): Screenshot {
   const content = JSON.stringify(state);
   return {
     base64: Buffer.from(content).toString("base64"), width: 1280, height: 800, scaleFactor: 1,
-    capturedAt: new Date().toISOString(), sha256: createHash("sha256").update(content).digest("hex")
+    capturedAt: new Date().toISOString(), sha256: createHash("sha256").update(content).digest("hex"),
+    surfaceFingerprint: surface.surfaceFingerprint
   };
 }
 

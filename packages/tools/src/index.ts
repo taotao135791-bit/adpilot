@@ -2,7 +2,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import { AuditLog } from "@adpilot/audit";
-import { ApprovalService, type ApprovalExecutionPlan, type ApprovalOperation } from "@adpilot/approvals";
+import { ApprovalExecutionPlan, ApprovalService, type ApprovalOperation } from "@adpilot/approvals";
 import {
   CampaignMetrics,
   calculateMetrics,
@@ -55,7 +55,19 @@ export class AdPilotTools {
 
   async createApproval(context: ToolContext, operation: ApprovalOperation, executionPlan?: ApprovalExecutionPlan) {
     if (context.permission !== "OBSERVE" && context.permission !== "INTERACT" && context.permission !== "MUTATE" && context.permission !== "DESTRUCTIVE") throw new Error("invalid permission context");
-    const approval = await this.approvals.create(context.clientId, context.taskId, operation, executionPlan);
+    let boundPlan = executionPlan;
+    if (executionPlan) {
+      if (!this.computer) throw new Error("a native computer runtime is required to bind an approval to a live surface");
+      const live = await this.computer.identifySurface();
+      if (live.surface && live.surface.app !== executionPlan.surface.app) {
+        throw new Error(`approval surface does not match the active application: ${live.surface.app}`);
+      }
+      boundPlan = ApprovalExecutionPlan.parse({
+        ...executionPlan,
+        surface: { ...executionPlan.surface, surfaceFingerprint: live.fingerprint }
+      });
+    }
+    const approval = await this.approvals.create(context.clientId, context.taskId, operation, boundPlan);
     await this.audit.append({ clientId: context.clientId, taskId: context.taskId, actor: context.actor, action: "create_approval", status: "succeeded", details: { approvalId: approval.id, operation: approval.operation } });
     return approval;
   }
@@ -99,7 +111,9 @@ export class AdPilotTools {
     if (context.permission !== "MUTATE" && context.permission !== "DESTRUCTIVE") throw new Error("commit requires mutation permission");
     const unfinished = (await this.experiments.list(context.clientId)).filter((item) => ["active", "waiting"].includes(item.status));
     if (unfinished.length > 0) throw new Error("an unfinished experiment blocks a new mutation");
-    const executing = await this.approvals.consume(context.clientId, approvalId, token, operation);
+    if (!this.computer) throw new Error("native computer runtime is unavailable");
+    const liveSurface = await this.computer.identifySurface();
+    const executing = await this.approvals.consume(context.clientId, approvalId, token, operation, liveSurface.fingerprint);
     try {
       const result = await this.executeVisualTask(context, task);
       if (result.status === "done" && executing.executionPlan) {

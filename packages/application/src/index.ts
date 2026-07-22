@@ -4,7 +4,16 @@ import { resolve } from "node:path";
 import { AuditLog } from "@adpilot/audit";
 import { ApprovalService } from "@adpilot/approvals";
 import { AdPilotAgent } from "@adpilot/agent-orchestrator";
-import { PiVisionModel, UiTarsNativeOperator, VisualComputerRuntime, type VisualRuntimeEvent } from "@adpilot/computer-use";
+import {
+  GuiGroundingProviderRouter,
+  OpenAICompatibleUiTarsProvider,
+  OpenAICompatibleVisualVerifier,
+  PiVisionModel,
+  UiTarsNativeOperator,
+  VisualComputerRuntime,
+  type VisualRuntimeEvent,
+  type VisualVerifier
+} from "@adpilot/computer-use";
 import { ExperimentStore } from "@adpilot/experiments";
 import { createPiModels, modelRouterFromEnv, resolvePiModel } from "@adpilot/model-router";
 import { PiAgentRuntime } from "@adpilot/runtime";
@@ -72,12 +81,32 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   const strongVisionCandidate = strongModel.input.includes("image") ? strongModel : primaryVisionCandidate;
   const primaryVision = primaryVisionCandidate === fastModel ? (fastAuth ? fastModel : strongModel.input.includes("image") && strongAuth ? strongModel : undefined) : strongAuth ? primaryVisionCandidate : undefined;
   const strongVision = strongVisionCandidate === strongModel && strongAuth ? strongModel : primaryVision;
-  const guiConfigured = Boolean(primaryVision && strongVision);
-  const computer = primaryVision && strongVision && guiConfigured
+  const piVision = primaryVision && strongVision ? new PiVisionModel(models, primaryVision, strongVision) : undefined;
+  const dedicatedGrounding = env.ADPILOT_GUI_BASE_URL && env.ADPILOT_GUI_MODEL
+    ? new OpenAICompatibleUiTarsProvider({
+        baseURL: env.ADPILOT_GUI_BASE_URL,
+        ...(env.ADPILOT_GUI_API_KEY ? { apiKey: env.ADPILOT_GUI_API_KEY } : {}),
+        model: env.ADPILOT_GUI_MODEL,
+        ...(env.ADPILOT_GUI_STRONG_MODEL ? { strongModel: env.ADPILOT_GUI_STRONG_MODEL } : {}),
+        timeoutMs: positiveInteger(env.ADPILOT_GUI_TIMEOUT_MS, 20_000)
+      })
+    : undefined;
+  const grounding = dedicatedGrounding || piVision ? new GuiGroundingProviderRouter(dedicatedGrounding, piVision) : undefined;
+  const dedicatedVerifier = env.ADPILOT_VERIFY_BASE_URL && env.ADPILOT_VERIFY_MODEL
+    ? new OpenAICompatibleVisualVerifier({
+        baseURL: env.ADPILOT_VERIFY_BASE_URL,
+        ...(env.ADPILOT_VERIFY_API_KEY ? { apiKey: env.ADPILOT_VERIFY_API_KEY } : {}),
+        model: env.ADPILOT_VERIFY_MODEL,
+        timeoutMs: positiveInteger(env.ADPILOT_VERIFY_TIMEOUT_MS, 20_000)
+      })
+    : undefined;
+  const verifier: VisualVerifier | undefined = dedicatedVerifier ?? piVision;
+  const guiConfigured = Boolean(grounding && verifier);
+  const computer = grounding && verifier
     ? new VisualComputerRuntime(
         new UiTarsNativeOperator(),
-        new PiVisionModel(models, primaryVision, strongVision),
-        new PiVisionModel(models, primaryVision, strongVision),
+        grounding,
+        verifier,
         undefined,
         (event) => events.publish({ type: "computer", event })
       )
@@ -106,12 +135,17 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     modelStatus: {
       fast: `${fastModel.provider}/${fastModel.id}`,
       strong: `${strongModel.provider}/${strongModel.id}`,
-      gui: primaryVisionCandidate ? `${primaryVisionCandidate.provider}/${primaryVisionCandidate.id}` : "not supported",
-      guiStrong: strongVisionCandidate ? `${strongVisionCandidate.provider}/${strongVisionCandidate.id}` : "not supported",
+      gui: dedicatedGrounding ? `UI-TARS/${env.ADPILOT_GUI_MODEL}` : primaryVisionCandidate ? `${primaryVisionCandidate.provider}/${primaryVisionCandidate.id}` : "not configured",
+      guiStrong: dedicatedVerifier ? `Verifier/${env.ADPILOT_VERIFY_MODEL}` : strongVisionCandidate ? `${strongVisionCandidate.provider}/${strongVisionCandidate.id}` : "not configured",
       chatConfigured: fastAuth,
       guiConfigured
     }
   };
+}
+
+function positiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 async function loadApprovalSecret(root: string, configured?: string): Promise<string> {

@@ -85,8 +85,18 @@ const specialFields: Record<string, SettingsField[]> = {
   ]
 };
 
-// Computer Use reuses the selected Pi code models. There is no second VLM credential surface.
-const computerFields: SettingsField[] = [];
+// Dedicated GUI roles are optional. When absent, image-capable Pi code models remain the fallback.
+const computerFields: SettingsField[] = [
+  field("ADPILOT_GUI_BASE_URL", "GUI 定位服务地址", "GUI grounding endpoint", false, false, "http://127.0.0.1:8000/v1"),
+  field("ADPILOT_GUI_API_KEY", "GUI 定位密钥", "GUI grounding API key", true),
+  field("ADPILOT_GUI_MODEL", "GUI 定位模型", "GUI grounding model", false, false, "ui-tars-1.5"),
+  field("ADPILOT_GUI_STRONG_MODEL", "GUI 强化模型", "GUI strong model", false, false, "ui-tars-1.5"),
+  field("ADPILOT_GUI_TIMEOUT_MS", "GUI 超时（毫秒）", "GUI timeout (ms)", false, false, "20000"),
+  field("ADPILOT_VERIFY_BASE_URL", "视觉复核服务地址", "Visual verification endpoint", false, false, "http://127.0.0.1:8000/v1"),
+  field("ADPILOT_VERIFY_API_KEY", "视觉复核密钥", "Visual verification API key", true),
+  field("ADPILOT_VERIFY_MODEL", "视觉复核模型", "Visual verification model", false),
+  field("ADPILOT_VERIFY_TIMEOUT_MS", "视觉复核超时（毫秒）", "Verification timeout (ms)", false, false, "20000")
+];
 
 function field(env: string, zh: string, en: string, secret: boolean, required = false, placeholder?: string): SettingsField {
   return { env, label: { zh, en }, secret, required, ...(placeholder ? { placeholder } : {}) };

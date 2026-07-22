@@ -211,6 +211,16 @@ export class VisualComputerRuntime {
   resume(): void { this.paused = false; }
   cancel(): void { this.cancelled = true; }
 
+  /** Resolve the live execution surface through the same native operator used for actions. */
+  async identifySurface(): Promise<{ surface?: NativeSurface; fingerprint: string }> {
+    if (this.operator.identifySurface) return this.operator.identifySurface();
+    const screenshot = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "surface identity");
+    return {
+      ...(screenshot.surface ? { surface: screenshot.surface } : {}),
+      fingerprint: surfaceFingerprintFor(screenshot)
+    };
+  }
+
   async runMicroTask(task: VisualMicroTask): Promise<VisualStepResult> {
     let lastAction: VisualAction | undefined;
     const executedCoordinates = new Set<string>();
@@ -529,12 +539,13 @@ export interface GuiGroundingRouteEvent {
 export class GuiGroundingProviderRouter implements GroundingModel {
   constructor(
     private readonly dedicated: VisualGroundingProvider | undefined,
-    private readonly piVisionFallback: VisualGroundingProvider,
+    private readonly piVisionFallback: VisualGroundingProvider | undefined,
     private readonly onRoute: (event: GuiGroundingRouteEvent) => void | Promise<void> = () => undefined
   ) {}
 
   async ground(task: VisualMicroTask, screenshot: Screenshot, tier: ModelTier): Promise<VisualAction> {
-    const providers = this.dedicated ? [this.dedicated, this.piVisionFallback] : [this.piVisionFallback];
+    const providers = [this.dedicated, this.piVisionFallback].filter((provider): provider is VisualGroundingProvider => Boolean(provider));
+    if (!providers.length) throw new Error("no GUI grounding provider is configured");
     const failures: string[] = [];
     for (const provider of providers) {
       try {
@@ -696,26 +707,37 @@ export class ImageChangeVerifier implements VisualVerifier {
 }
 
 export class OpenAICompatibleVisualVerifier implements VisualVerifier {
-  constructor(private readonly config: { apiKey: string; baseURL: string; model: string }) {}
+  constructor(private readonly config: { apiKey?: string; baseURL: string; model: string; strongModel?: string; timeoutMs?: number; fetch?: typeof fetch }) {}
 
   async verify(expectedResult: string, before: Screenshot, after: Screenshot): Promise<{ matched: boolean; confidence: number; reason: string }> {
-    const response = await fetch(`${this.config.baseURL.replace(/\/$/, "")}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${this.config.apiKey}` },
-      body: JSON.stringify({
-        model: this.config.model, temperature: 0,
-        response_format: { type: "json_object" },
-        messages: [{ role: "user", content: [
-          { type: "text", text: `Did the AFTER screenshot satisfy this expected result: ${expectedResult}? Return JSON only: {\"matched\":boolean,\"confidence\":number,\"reason\":string}.` },
-          { type: "text", text: "BEFORE" }, { type: "image_url", image_url: { url: `data:image/png;base64,${before.base64}` } },
-          { type: "text", text: "AFTER" }, { type: "image_url", image_url: { url: `data:image/png;base64,${after.base64}` } }
-        ] }]
-      })
-    });
-    if (!response.ok) throw new Error(`visual verification failed: HTTP ${response.status}`);
-    const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    const parsed = z.object({ matched: z.boolean(), confidence: z.number().min(0).max(1), reason: z.string().min(1) }).parse(JSON.parse(body.choices?.[0]?.message?.content ?? ""));
-    return parsed;
+    const schema = z.object({ matched: z.boolean(), confidence: z.number().min(0).max(1), reason: z.string().min(1) });
+    let invalid = "";
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs ?? 20_000);
+      try {
+        const request = this.config.fetch ?? globalThis.fetch;
+        const response = await request(`${this.config.baseURL.replace(/\/$/, "")}/chat/completions`, {
+          method: "POST", signal: controller.signal,
+          headers: { "content-type": "application/json", ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {}) },
+          body: JSON.stringify({
+            model: attempt === 3 ? this.config.strongModel ?? this.config.model : this.config.model,
+            temperature: 0, response_format: { type: "json_object" },
+            messages: [{ role: "user", content: [
+              { type: "text", text: `${attempt > 1 ? `Repair the invalid previous output (${invalid.slice(0, 400)}). ` : ""}Did the AFTER screenshot satisfy this expected result: ${expectedResult}? Return JSON only: {\"matched\":boolean,\"confidence\":number,\"reason\":string}.` },
+              { type: "text", text: "BEFORE" }, { type: "image_url", image_url: { url: `data:image/png;base64,${before.base64}` } },
+              { type: "text", text: "AFTER" }, { type: "image_url", image_url: { url: `data:image/png;base64,${after.base64}` } }
+            ] }]
+          })
+        });
+        if (!response.ok) throw new Error(`visual verification failed: HTTP ${response.status}`);
+        const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+        invalid = body.choices?.[0]?.message?.content ?? "";
+        try { return schema.parse(parseModelJson(invalid)); }
+        catch (error) { if (attempt === 3) throw new VisualRuntimeBlocker("VERIFICATION_FAILED", `visual verifier returned invalid structured output after recovery: ${error instanceof Error ? error.message : String(error)}`); }
+      } finally { clearTimeout(timeout); }
+    }
+    throw new VisualRuntimeBlocker("VERIFICATION_FAILED", "visual verifier recovery exhausted");
   }
 }
 
