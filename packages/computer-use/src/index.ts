@@ -20,11 +20,27 @@ import { BrowserSessionLostError } from "./browser-session.js";
 export * from "./surface.js";
 export * from "./browser-session.js";
 export * from "./privacy.js";
+export * from "./account-fingerprint.js";
+
+export const VisualTaskAllowedRegion = z.object({
+  x: z.number().finite().nonnegative(),
+  y: z.number().finite().nonnegative(),
+  width: z.number().finite().positive(),
+  height: z.number().finite().positive(),
+  coordinateSpace: z.enum(["screenshot_pixels", "screen_points"])
+}).strict();
+export type VisualTaskAllowedRegion = z.infer<typeof VisualTaskAllowedRegion>;
 
 const common = {
   task_id: z.string().min(1).optional(),
   step_id: z.string().min(1).optional(),
   surface_fingerprint: z.string().length(64).optional(),
+  taskId: z.string().min(1).optional(),
+  stepId: z.string().min(1).optional(),
+  planId: z.string().min(1).optional(),
+  surfaceFingerprint: z.string().length(64).optional(),
+  accountFingerprint: z.string().length(64).optional(),
+  allowedRegion: VisualTaskAllowedRegion.optional(),
   target: z.string().min(1),
   reason: z.string().min(1),
   confidence: z.number().min(0).max(1),
@@ -54,7 +70,13 @@ export type VisualAction = z.infer<typeof VisualAction>;
 export const ExecutableVisualAction = VisualAction.and(z.object({
   task_id: z.string().min(1),
   step_id: z.string().min(1),
-  surface_fingerprint: z.string().length(64)
+  surface_fingerprint: z.string().length(64),
+  taskId: z.string().min(1),
+  stepId: z.string().min(1),
+  planId: z.string().min(1),
+  surfaceFingerprint: z.string().length(64),
+  accountFingerprint: z.string().length(64),
+  allowedRegion: VisualTaskAllowedRegion
 }));
 export type ExecutableVisualAction = z.infer<typeof ExecutableVisualAction>;
 
@@ -72,6 +94,9 @@ export type Screenshot = z.infer<typeof Screenshot>;
 
 export interface SurfaceContext {
   app: string;
+  applicationId?: string;
+  processId?: number;
+  windowId?: string;
   domain?: string;
   browserProfile?: string;
   allowedApps: string[];
@@ -79,8 +104,13 @@ export interface SurfaceContext {
 }
 
 export interface VisualMicroTask {
+  clientId?: string;
   taskId?: string;
   stepId?: string;
+  planId?: string;
+  platform?: string;
+  accountFingerprint?: string;
+  allowedRegion?: VisualTaskAllowedRegion;
   instruction: string;
   target: string;
   expectedResult: string;
@@ -99,10 +129,11 @@ export interface VisualGroundingProvider extends GroundingModel {
 }
 
 export interface VisualVerifier {
-  verify(expectedResult: string, before: Screenshot, after: Screenshot): Promise<{ matched: boolean; confidence: number; reason: string }>;
+  verify(expectedResult: string, before: Screenshot, after: Screenshot, task?: VisualMicroTask): Promise<{ matched: boolean; confidence: number; reason: string }>;
 }
 
 export interface NativeOperator {
+  bindTask?(task: VisualMicroTask): void | Promise<void>;
   capture(): Promise<Screenshot>;
   execute(action: VisualAction, screenshot: Screenshot): Promise<void>;
   identifySurface?(): Promise<{ surface: NativeSurface; fingerprint: string }>;
@@ -155,12 +186,30 @@ export class VisualPolicy {
     }
     if (task.taskId && action.task_id !== task.taskId) throw new Error("grounded action is not bound to the requested task");
     if (task.stepId && action.step_id !== task.stepId) throw new Error("grounded action is not bound to the requested step");
+    if (action.taskId !== undefined && action.taskId !== action.task_id) throw new Error("grounded action task aliases are inconsistent");
+    if (action.stepId !== undefined && action.stepId !== action.step_id) throw new Error("grounded action step aliases are inconsistent");
+    if (action.surfaceFingerprint !== undefined && action.surfaceFingerprint !== action.surface_fingerprint) throw new Error("grounded action surface aliases are inconsistent");
+    if (task.planId && action.planId !== task.planId) throw new Error("grounded action is not bound to the approved plan");
+    if (task.accountFingerprint && action.accountFingerprint !== task.accountFingerprint) throw new Error("grounded action is not bound to the approved account fingerprint");
+    if (task.allowedRegion && stableJsonValue(action.allowedRegion) !== stableJsonValue(task.allowedRegion)) throw new Error("grounded action changed the approved region");
+    if (action.target !== task.target) throw new Error("grounded action changed the requested target");
+    if (action.expected_result !== task.expectedResult) throw new Error("grounded action changed the expected result");
     if (screenshot.surface) {
       if (!task.surface.allowedApps.includes(screenshot.surface.app)) {
         throw new Error(`active application is not allowlisted: ${screenshot.surface.app}`);
       }
       if (task.surface.app !== screenshot.surface.app) {
         throw new Error(`active application does not match requested surface: ${screenshot.surface.app}`);
+      }
+      const applicationId = screenshot.surface.bundleId ?? screenshot.surface.app;
+      if (task.surface.applicationId && task.surface.applicationId !== applicationId) {
+        throw new Error(`active application identity does not match requested surface: ${applicationId}`);
+      }
+      if (task.surface.processId && task.surface.processId !== screenshot.surface.pid) {
+        throw new Error(`active process does not match requested surface: ${screenshot.surface.pid}`);
+      }
+      if (task.surface.windowId && task.surface.windowId !== screenshot.surface.windowId) {
+        throw new Error(`active window does not match requested surface: ${screenshot.surface.windowId}`);
       }
       if (task.surface.browserProfile && screenshot.surface.browserProfile && task.surface.browserProfile !== screenshot.surface.browserProfile) {
         throw new Error(`active browser profile does not match requested surface: ${screenshot.surface.browserProfile}`);
@@ -172,6 +221,10 @@ export class VisualPolicy {
     if (permissionRank[permission] < permissionRank[riskPermission[action.risk_level]]) {
       throw new Error(`${permission} does not allow ${action.risk_level} action`);
     }
+    if ((action.risk_level === "mutate" || action.risk_level === "destructive")
+      && (!task.planId || !task.accountFingerprint || !task.allowedRegion)) {
+      throw new Error("mutating actions require plan, account fingerprint, and allowed-region bindings");
+    }
     const terminalOrUtility = ["done", "fail", "screenshot", "wait"].includes(action.action);
     if (!terminalOrUtility && action.action !== "move" && permissionRank[permission] < permissionRank.INTERACT) {
       throw new Error(`${permission} does not allow native input action ${action.action}`);
@@ -182,6 +235,9 @@ export class VisualPolicy {
     if (action.action === "drag") points.push([action.end_x, action.end_y]);
     for (const [x, y] of points) {
       if (x < 0 || y < 0 || x >= screenshot.width || y >= screenshot.height) throw new Error("action coordinates are outside the screenshot");
+      if (action.allowedRegion && !pointInsideAllowedRegion(x, y, action.allowedRegion, screenshot.scaleFactor)) {
+        throw new Error("action coordinates are outside the approved region");
+      }
       if (screenshot.surface) {
         const logicalX = x / screenshot.scaleFactor;
         const logicalY = y / screenshot.scaleFactor;
@@ -226,7 +282,8 @@ export class VisualComputerRuntime {
   cancel(): void { this.cancelled = true; }
 
   /** Resolve the live execution surface through the same native operator used for actions. */
-  async identifySurface(): Promise<{ surface?: NativeSurface; fingerprint: string }> {
+  async identifySurface(task?: VisualMicroTask): Promise<{ surface?: NativeSurface; fingerprint: string }> {
+    if (task && this.operator.bindTask) await this.operator.bindTask(task);
     if (this.operator.identifySurface) return this.operator.identifySurface();
     const screenshot = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "surface identity");
     return {
@@ -236,12 +293,21 @@ export class VisualComputerRuntime {
   }
 
   /** Read-only verifier preflight used before consuming a mutation approval. */
-  async verifyVisible(expectedResult: string): Promise<{ matched: boolean; confidence: number; reason: string; screenshot: Screenshot }> {
+  async verifyVisible(expectedResult: string, task?: VisualMicroTask): Promise<{ matched: boolean; confidence: number; reason: string; screenshot: Screenshot }> {
+    if (task && this.operator.bindTask) await this.operator.bindTask(task);
     const screenshot = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "verification preflight screenshot");
     await this.onEvent({ type: "screenshot", phase: "before", screenshot });
-    const result = await withTimeout(this.verifier.verify(expectedResult, screenshot, screenshot), this.stepTimeoutMs, "verification preflight");
+    const result = await withTimeout(this.verifier.verify(expectedResult, screenshot, screenshot, task), this.stepTimeoutMs, "verification preflight");
     await this.onEvent({ type: "verified", attempt: 0, ...result });
     return { ...result, screenshot };
+  }
+
+  /** Capture one current native window after applying the task/session binding. */
+  async captureForTask(task: VisualMicroTask): Promise<Screenshot> {
+    if (this.operator.bindTask) await this.operator.bindTask(task);
+    const screenshot = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "task-bound screenshot capture");
+    await this.onEvent({ type: "screenshot", phase: "before", screenshot });
+    return screenshot;
   }
 
   async runMicroTask(task: VisualMicroTask): Promise<VisualStepResult> {
@@ -250,6 +316,9 @@ export class VisualComputerRuntime {
     let mutationExecuted = false;
     const taskId = task.taskId ?? stableId("task", task.instruction, task.target);
     const stepId = task.stepId ?? stableId("step", taskId, task.expectedResult);
+    const planId = task.planId ?? stableId("plan", taskId, task.instruction, task.target, task.expectedResult);
+    const boundTask = { ...task, taskId, stepId, planId };
+    if (this.operator.bindTask) await this.operator.bindTask(boundTask);
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
       if (this.cancelled) return failedResult(attempt - 1, "user cancelled", "CANCELLED", lastAction);
       if (this.paused) return failedResult(attempt - 1, "paused for user takeover", "PAUSED", lastAction);
@@ -261,10 +330,14 @@ export class VisualComputerRuntime {
         const before = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "screenshot capture");
         await this.onEvent({ type: "screenshot", phase: "before", screenshot: before });
         const expectedFingerprint = surfaceFingerprintFor(before);
-        const grounded = await withTimeout(this.grounding.ground({ ...task, taskId, stepId }, before, tier), this.stepTimeoutMs, "visual grounding");
-        const action = bindActionContext(grounded, taskId, stepId, expectedFingerprint);
+        const grounded = await withTimeout(this.grounding.ground(boundTask, before, tier), this.stepTimeoutMs, "visual grounding");
+        const action = bindActionContext(grounded, boundTask, before, expectedFingerprint);
         lastAction = action;
-        this.policy.check(action, before, { ...task, taskId, stepId });
+        try { this.policy.check(action, before, boundTask); }
+        catch (error) {
+          if (error instanceof VisualRuntimeBlocker) throw error;
+          throw new VisualRuntimeBlocker("POLICY_BLOCKED", error instanceof Error ? error.message : String(error));
+        }
         await this.onEvent({ type: "grounded", attempt, tier, action });
         if (action.action === "fail") return { status: "failed", attempts: attempt, blocker: action.reason, lastAction: action };
         if (action.action === "done") return { status: "done", attempts: attempt, action, before, after: before };
@@ -284,7 +357,7 @@ export class VisualComputerRuntime {
         if (afterFingerprint !== expectedFingerprint && !(before.surface && after.surface && sameNativeWindow(before.surface, after.surface))) {
           throw new SurfaceChangedBlocker(expectedFingerprint, afterFingerprint);
         }
-        const verified = await withTimeout(this.verifier.verify(action.expected_result, before, after), this.stepTimeoutMs, "visual verification");
+        const verified = await withTimeout(this.verifier.verify(action.expected_result, before, after, boundTask), this.stepTimeoutMs, "visual verification");
         await this.onEvent({ type: "verified", attempt, ...verified });
         if (verified.matched) return { status: "done", attempts: attempt, action, before, after };
         if (mutationExecuted) {
@@ -362,8 +435,37 @@ function stableJsonValue(value: unknown): string {
   return JSON.stringify(Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))));
 }
 
-function bindActionContext(action: VisualAction, taskId: string, stepId: string, surfaceFingerprint: string): VisualAction {
-  return ExecutableVisualAction.parse({ ...action, task_id: taskId, step_id: stepId, surface_fingerprint: surfaceFingerprint });
+function bindActionContext(
+  action: VisualAction,
+  task: VisualMicroTask & { taskId: string; stepId: string; planId: string },
+  screenshot: Screenshot,
+  surfaceFingerprint: string
+): VisualAction {
+  const allowedRegion = task.allowedRegion ?? {
+    x: 0,
+    y: 0,
+    width: screenshot.width,
+    height: screenshot.height,
+    coordinateSpace: "screenshot_pixels" as const
+  };
+  return ExecutableVisualAction.parse({
+    ...action,
+    task_id: task.taskId,
+    step_id: task.stepId,
+    surface_fingerprint: surfaceFingerprint,
+    taskId: task.taskId,
+    stepId: task.stepId,
+    planId: task.planId,
+    surfaceFingerprint,
+    accountFingerprint: task.accountFingerprint ?? screenshot.sha256,
+    allowedRegion
+  });
+}
+
+function pointInsideAllowedRegion(x: number, y: number, region: VisualTaskAllowedRegion, scaleFactor: number): boolean {
+  const pointX = region.coordinateSpace === "screen_points" ? x / scaleFactor : x;
+  const pointY = region.coordinateSpace === "screen_points" ? y / scaleFactor : y;
+  return pointX >= region.x && pointY >= region.y && pointX < region.x + region.width && pointY < region.y + region.height;
 }
 
 function actionCoordinateKey(action: VisualAction): string | undefined {

@@ -38,7 +38,7 @@ describe("visual action protocol", () => {
   it("rejects invalid actions and coordinates", () => {
     expect(() => VisualAction.parse({ action: "click", x: -1 })).toThrow();
     expect(() => ExecutableVisualAction.parse({ action: "done", target: "x", reason: "x", confidence: 1, expected_result: "x", risk_level: "observe" })).toThrow();
-    const action = VisualAction.parse({ action: "click", x: 1200, y: 20, target: "x", reason: "x", confidence: 1, expected_result: "x", risk_level: "interact" });
+    const action = VisualAction.parse({ action: "click", x: 1200, y: 20, target: task.target, reason: "x", confidence: 1, expected_result: task.expectedResult, risk_level: "interact" });
     expect(() => new VisualPolicy().check(action, before, task)).toThrow("outside");
   });
 
@@ -71,7 +71,7 @@ describe("visual action protocol", () => {
   });
 
   it("blocks mutation under observe permission and non-allowlisted domains", () => {
-    const action = VisualAction.parse({ action: "click", x: 10, y: 10, target: "save", reason: "submit", confidence: 1, expected_result: "saved", risk_level: "mutate" });
+    const action = VisualAction.parse({ action: "click", x: 10, y: 10, target: task.target, reason: "submit", confidence: 1, expected_result: task.expectedResult, risk_level: "mutate" });
     expect(() => new VisualPolicy().check(action, before, { ...task, riskLevel: "mutate", permission: "OBSERVE" })).toThrow("does not allow");
     expect(() => new VisualPolicy().check({ ...action, risk_level: "interact" }, before, { ...task, surface: { ...task.surface, domain: "evil.example" } })).toThrow("not allowlisted");
   });
@@ -134,8 +134,8 @@ describe("visual action protocol", () => {
   it("validates coordinates inside the captured active window", () => {
     const shot: Screenshot = { ...before, width: 1200, height: 800, surface: nativeSurface, surfaceFingerprint: fingerprintSurface(nativeSurface) };
     const action = VisualAction.parse({
-      action: "click", x: 1100, y: 10, target: "x", reason: "x", confidence: 1,
-      expected_result: "x", risk_level: "interact", surface_fingerprint: shot.surfaceFingerprint
+      action: "click", x: 1100, y: 10, target: task.target, reason: "x", confidence: 1,
+      expected_result: task.expectedResult, risk_level: "interact", surface_fingerprint: shot.surfaceFingerprint
     });
     expect(() => new VisualPolicy().check(action, shot, task)).toThrow("outside the active window");
   });
@@ -151,7 +151,7 @@ describe("visual action protocol", () => {
       execute: async () => { executions += 1; }
     };
     const runtime = new VisualComputerRuntime(operator, {
-      ground: async () => ({ action: "click", x: 20, y: 20, target: "date selector", reason: "visible", confidence: 1, expected_result: "open", risk_level: "interact" })
+      ground: async () => ({ action: "click", x: 20, y: 20, target: "date selector", reason: "visible", confidence: 1, expected_result: task.expectedResult, risk_level: "interact" })
     }, { verify: async () => ({ matched: true, confidence: 1, reason: "open" }) });
     await expect(runtime.runMicroTask(task)).resolves.toMatchObject({ status: "failed", attempts: 1, blockerCode: "SURFACE_CHANGED" });
     expect(executions).toBe(0);
@@ -167,7 +167,7 @@ describe("visual action protocol", () => {
       capture: async () => shot,
       identifySurface: async () => ({ surface: changedSurface, fingerprint: fingerprintSurface(changedSurface) }),
       execute: async () => { throw new Error("must not execute"); }
-    }, { ground: async () => ({ action: "click", x: 20, y: 20, target: "date selector", reason: "visible", confidence: 1, expected_result: "open", risk_level: "interact" }) }, { verify: async () => ({ matched: true, confidence: 1, reason: "open" }) });
+    }, { ground: async () => ({ action: "click", x: 20, y: 20, target: "date selector", reason: "visible", confidence: 1, expected_result: task.expectedResult, risk_level: "interact" }) }, { verify: async () => ({ matched: true, confidence: 1, reason: "open" }) });
     await expect(runtime.runMicroTask(task)).resolves.toMatchObject({ status: "failed", blockerCode: "SURFACE_CHANGED" });
   });
 
@@ -177,7 +177,7 @@ describe("visual action protocol", () => {
       capture: async () => shot,
       identifySurface: async () => { throw new NativeSurfaceUnavailableError("foreground application exited"); },
       execute: async () => { throw new Error("must not execute"); }
-    }, { ground: async () => ({ action: "click", x: 20, y: 20, target: "date selector", reason: "visible", confidence: 1, expected_result: "open", risk_level: "interact" }) }, { verify: async () => ({ matched: true, confidence: 1, reason: "open" }) });
+    }, { ground: async () => ({ action: "click", x: 20, y: 20, target: "date selector", reason: "visible", confidence: 1, expected_result: task.expectedResult, risk_level: "interact" }) }, { verify: async () => ({ matched: true, confidence: 1, reason: "open" }) });
     await expect(runtime.runMicroTask(task)).resolves.toMatchObject({ status: "failed", attempts: 1, blockerCode: "SURFACE_CHANGED" });
   });
 
@@ -208,7 +208,7 @@ describe("visual action protocol", () => {
       execute: async () => { executions += 1; }
     };
     const runtime = new VisualComputerRuntime(operator, {
-      ground: async () => ({ action: "click", x: 20, y: 20, target: "date selector", reason: "visible", confidence: 1, expected_result: "open", risk_level: "interact" })
+      ground: async () => ({ action: "click", x: 20, y: 20, target: "date selector", reason: "visible", confidence: 1, expected_result: task.expectedResult, risk_level: "interact" })
     }, { verify: async () => ({ matched: true, confidence: 1, reason: "open" }) });
     await expect(runtime.runMicroTask(task)).resolves.toMatchObject({ status: "failed", attempts: 1, blockerCode: "SURFACE_CHANGED" });
     expect(executions).toBe(1);
@@ -222,7 +222,16 @@ describe("visual action protocol", () => {
       { ground: async () => ({ action: "type", text: "120", target: "budget", reason: "draft", confidence: 1, expected_result: "draft is 120", risk_level: "mutate" }) },
       { verify: async () => ({ matched: false, confidence: 1, reason: "not visible" }) }
     );
-    await expect(mutationRuntime.runMicroTask({ ...task, riskLevel: "mutate", permission: "MUTATE" })).resolves.toMatchObject({
+    await expect(mutationRuntime.runMicroTask({
+      ...task,
+      target: "budget",
+      expectedResult: "draft is 120",
+      riskLevel: "mutate",
+      permission: "MUTATE",
+      planId: "plan-budget-1",
+      accountFingerprint: "c".repeat(64),
+      allowedRegion: { x: 0, y: 0, width: before.width, height: before.height, coordinateSpace: "screenshot_pixels" }
+    })).resolves.toMatchObject({
       status: "failed", attempts: 1, blockerCode: "MUTATION_RETRY_FORBIDDEN"
     });
     expect(mutationExecutions).toBe(1);
@@ -230,7 +239,7 @@ describe("visual action protocol", () => {
     let clickExecutions = 0;
     const duplicateRuntime = new VisualComputerRuntime(
       { capture: async () => before, execute: async () => { clickExecutions += 1; } },
-      { ground: async () => ({ action: "click", x: 10, y: 10, target: "date selector", reason: "same", confidence: 1, expected_result: "open", risk_level: "interact" }) },
+      { ground: async () => ({ action: "click", x: 10, y: 10, target: "date selector", reason: "same", confidence: 1, expected_result: task.expectedResult, risk_level: "interact" }) },
       { verify: async () => ({ matched: false, confidence: 1, reason: "unchanged" }) }
     );
     await expect(duplicateRuntime.runMicroTask(task)).resolves.toMatchObject({ status: "failed", attempts: 2, blockerCode: "DUPLICATE_COORDINATE" });

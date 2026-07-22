@@ -10,6 +10,11 @@ import type {
   VisualMicroTask,
   VisualVerifier
 } from "./index.js";
+import {
+  VisualIdentityObservation,
+  type ExpectedVisualIdentity,
+  type VisualIdentityReviewer
+} from "./account-fingerprint.js";
 import type { ModelTier } from "@adpilot/shared";
 
 export const ScreenshotRegion = z.object({
@@ -331,15 +336,15 @@ export class PrivacyAwareVisualVerifier implements VisualVerifier {
   constructor(
     private readonly underlying: VisualVerifier,
     private readonly privacy: ScreenshotPrivacyPipeline,
-    private readonly context: (expectedResult: string) => { clientId: string; taskId: string },
+    private readonly context: (expectedResult: string, task?: VisualMicroTask) => { clientId: string; taskId: string },
     private readonly roi: VerificationRoiSelector,
     private readonly model: ModelPrivacyDescriptor,
     private readonly privacyMode: () => ScreenshotPrivacyMode = () => "minimized",
     private readonly masks: (expectedResult: string, screenshot: Screenshot, phase: "before" | "after") => ScreenshotMask[] | Promise<ScreenshotMask[]> = () => []
   ) {}
 
-  async verify(expectedResult: string, before: Screenshot, after: Screenshot): Promise<{ matched: boolean; confidence: number; reason: string }> {
-    const context = this.context(expectedResult);
+  async verify(expectedResult: string, before: Screenshot, after: Screenshot, task?: VisualMicroTask): Promise<{ matched: boolean; confidence: number; reason: string }> {
+    const context = this.context(expectedResult, task);
     const regions = await this.roi(expectedResult, before, after);
     const [privateBefore, privateAfter] = await Promise.all([
       this.privacy.prepareForModel({
@@ -361,7 +366,45 @@ export class PrivacyAwareVisualVerifier implements VisualVerifier {
         privacyMode: this.privacyMode()
       })
     ]);
-    return this.underlying.verify(expectedResult, privateBefore.screenshot, privateAfter.screenshot);
+    return this.underlying.verify(expectedResult, privateBefore.screenshot, privateAfter.screenshot, task);
+  }
+}
+
+/** Forces account-identity reviewers to receive only a masked browser ROI. */
+export class PrivacyAwareVisualIdentityReviewer implements VisualIdentityReviewer {
+  readonly id: string;
+
+  constructor(
+    private readonly underlying: VisualIdentityReviewer,
+    private readonly privacy: ScreenshotPrivacyPipeline,
+    private readonly roi: (expected: ExpectedVisualIdentity, screenshot: Screenshot) => ScreenshotRegion | Promise<ScreenshotRegion>,
+    private readonly model: ModelPrivacyDescriptor,
+    private readonly privacyMode: () => ScreenshotPrivacyMode = () => "minimized",
+    private readonly masks: (expected: ExpectedVisualIdentity, screenshot: Screenshot) => ScreenshotMask[] | Promise<ScreenshotMask[]> = () => []
+  ) {
+    this.id = underlying.id;
+  }
+
+  async review(expected: ExpectedVisualIdentity, screenshot: Screenshot) {
+    const prepared = await this.privacy.prepareForModel({
+      clientId: expected.clientId,
+      taskId: expected.taskId,
+      purpose: "account_identity",
+      screenshot,
+      roi: await this.roi(expected, screenshot),
+      sensitiveRegions: await this.masks(expected, screenshot),
+      model: this.model,
+      privacyMode: this.privacyMode()
+    });
+    const observation = VisualIdentityObservation.parse(await this.underlying.review(expected, prepared.screenshot));
+    return VisualIdentityObservation.parse({
+      ...observation,
+      regions: Object.fromEntries(Object.entries(observation.regions).map(([key, region]) => [key, {
+        ...region,
+        x: region.x + prepared.originalRoi.x,
+        y: region.y + prepared.originalRoi.y
+      }]))
+    });
   }
 }
 
