@@ -10,6 +10,7 @@ import { PermissionLevel, RiskLevel, type ModelTier, type PermissionLevel as Per
 import {
   MacOSNativeSurfaceIdentity,
   NativeSurface,
+  NativeSurfaceUnavailableError,
   SurfaceCaptureChangedError,
   fingerprintSurface,
   type NativeSurfaceIdentity
@@ -157,6 +158,9 @@ export class VisualPolicy {
       if (task.surface.app !== screenshot.surface.app) {
         throw new Error(`active application does not match requested surface: ${screenshot.surface.app}`);
       }
+      if (task.surface.browserProfile && screenshot.surface.browserProfile && task.surface.browserProfile !== screenshot.surface.browserProfile) {
+        throw new Error(`active browser profile does not match requested surface: ${screenshot.surface.browserProfile}`);
+      }
     }
     const permission = PermissionLevel.parse(task.permission);
     const permissionRank = { OBSERVE: 0, INTERACT: 1, MUTATE: 2, DESTRUCTIVE: 3 } as const;
@@ -165,6 +169,9 @@ export class VisualPolicy {
       throw new Error(`${permission} does not allow ${action.risk_level} action`);
     }
     const terminalOrUtility = ["done", "fail", "screenshot", "wait"].includes(action.action);
+    if (!terminalOrUtility && action.action !== "move" && permissionRank[permission] < permissionRank.INTERACT) {
+      throw new Error(`${permission} does not allow native input action ${action.action}`);
+    }
     if (!terminalOrUtility && action.risk_level !== task.riskLevel) throw new Error("grounded action changed the declared risk level");
     const points: Array<[number, number]> = [];
     if ("x" in action && action.x !== undefined && "y" in action && action.y !== undefined) points.push([action.x, action.y]);
@@ -204,8 +211,11 @@ export class VisualComputerRuntime {
     private readonly verifier: VisualVerifier,
     private readonly policy = new VisualPolicy(),
     private readonly onEvent: (event: VisualRuntimeEvent) => void | Promise<void> = () => undefined,
-    private readonly stepTimeoutMs = 20_000
-  ) {}
+    private readonly stepTimeoutMs = 20_000,
+    private readonly maxAttempts = 3
+  ) {
+    if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3) throw new Error("visual max attempts must be between 1 and 3");
+  }
 
   pause(): void { this.paused = true; }
   resume(): void { this.paused = false; }
@@ -221,19 +231,28 @@ export class VisualComputerRuntime {
     };
   }
 
+  /** Read-only verifier preflight used before consuming a mutation approval. */
+  async verifyVisible(expectedResult: string): Promise<{ matched: boolean; confidence: number; reason: string; screenshot: Screenshot }> {
+    const screenshot = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "verification preflight screenshot");
+    await this.onEvent({ type: "screenshot", phase: "before", screenshot });
+    const result = await withTimeout(this.verifier.verify(expectedResult, screenshot, screenshot), this.stepTimeoutMs, "verification preflight");
+    await this.onEvent({ type: "verified", attempt: 0, ...result });
+    return { ...result, screenshot };
+  }
+
   async runMicroTask(task: VisualMicroTask): Promise<VisualStepResult> {
     let lastAction: VisualAction | undefined;
     const executedCoordinates = new Set<string>();
     let mutationExecuted = false;
     const taskId = task.taskId ?? stableId("task", task.instruction, task.target);
     const stepId = task.stepId ?? stableId("step", taskId, task.expectedResult);
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
       if (this.cancelled) return failedResult(attempt - 1, "user cancelled", "CANCELLED", lastAction);
       if (this.paused) return failedResult(attempt - 1, "paused for user takeover", "PAUSED", lastAction);
       if (mutationExecuted) {
         return failedResult(attempt - 1, "mutating actions are never retried after execution", "MUTATION_RETRY_FORBIDDEN", lastAction);
       }
-      const tier: ModelTier = attempt >= 3 ? "strong" : "gui";
+      const tier: ModelTier = attempt >= this.maxAttempts ? "strong" : "gui";
       try {
         const before = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "screenshot capture");
         await this.onEvent({ type: "screenshot", phase: "before", screenshot: before });
@@ -271,7 +290,7 @@ export class VisualComputerRuntime {
         const reason = error instanceof Error ? error.message : String(error);
         const code = blockerCode(error);
         await this.onEvent({ type: "blocked", attempt, reason, ...(code ? { code } : {}) });
-        if (error instanceof SurfaceCaptureChangedError) {
+        if (error instanceof SurfaceCaptureChangedError || error instanceof NativeSurfaceUnavailableError) {
           return failedResult(attempt, reason, "SURFACE_CHANGED", lastAction);
         }
         if (error instanceof VisualRuntimeBlocker) {
@@ -285,7 +304,7 @@ export class VisualComputerRuntime {
         }
       }
     }
-    return failedResult(3, "visual action failed three times; blind operation stopped", "VERIFICATION_FAILED", lastAction);
+    return failedResult(this.maxAttempts, `visual action failed ${this.maxAttempts} times; blind operation stopped`, "VERIFICATION_FAILED", lastAction);
   }
 
   private async assertSurfaceUnchanged(expectedFingerprint: string): Promise<void> {
@@ -322,6 +341,7 @@ function sameNativeWindow(left: NativeSurface, right: NativeSurface): boolean {
   return left.platform === right.platform
     && left.app === right.app
     && left.bundleId === right.bundleId
+    && left.browserProfile === right.browserProfile
     && left.pid === right.pid
     && left.windowId === right.windowId
     && left.screenId === right.screenId
@@ -462,6 +482,9 @@ export interface OpenAICompatibleUiTarsConfig {
   timeoutMs?: number;
   fetch?: typeof fetch;
   uiTarsVersion?: UITarsModelVersion;
+  protocol?: "ui-tars" | "adpilot-json";
+  coordinateFormat?: "pixels" | "normalized" | "ui-tars-1000";
+  normalization?: "screenshot" | "window";
 }
 
 /** Dedicated UI-TARS/OpenAI-compatible one-step grounding provider. It never owns a task loop. */
@@ -524,6 +547,9 @@ export class OpenAICompatibleUiTarsProvider implements VisualGroundingProvider {
       const body = await response.json() as { choices?: Array<{ message?: { content?: string | Array<{ type?: string; text?: string }> } }> };
       const prediction = openAIMessageText(body.choices?.[0]?.message?.content);
       if (!prediction) throw new Error("dedicated GUI grounding returned no prediction");
+      if (this.config.protocol === "adpilot-json") {
+        return normalizeJsonAction(VisualAction.parse(parseModelJson(prediction)), screenshot, this.config.coordinateFormat ?? "pixels");
+      }
       const parsed = actionParser({
         prediction,
         factor: [1000, 1000],
@@ -540,6 +566,20 @@ export class OpenAICompatibleUiTarsProvider implements VisualGroundingProvider {
       clearTimeout(timeout);
     }
   }
+}
+
+function normalizeJsonAction(action: VisualAction, screenshot: Screenshot, format: "pixels" | "normalized" | "ui-tars-1000"): VisualAction {
+  if (format === "pixels") return action;
+  const factorX = format === "normalized" ? screenshot.width : screenshot.width / 1000;
+  const factorY = format === "normalized" ? screenshot.height : screenshot.height / 1000;
+  const scaled: Record<string, unknown> = { ...action };
+  if ("x" in action && action.x !== undefined) scaled.x = action.x * factorX;
+  if ("y" in action && action.y !== undefined) scaled.y = action.y * factorY;
+  if (action.action === "drag") {
+    scaled.end_x = action.end_x * factorX;
+    scaled.end_y = action.end_y * factorY;
+  }
+  return VisualAction.parse(scaled);
 }
 
 /** Backward-compatible name for the dedicated provider. */

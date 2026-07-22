@@ -91,10 +91,16 @@ const computerFields: SettingsField[] = [
   field("ADPILOT_GUI_API_KEY", "GUI 定位密钥", "GUI grounding API key", true),
   field("ADPILOT_GUI_MODEL", "GUI 定位模型", "GUI grounding model", false, false, "ui-tars-1.5"),
   field("ADPILOT_GUI_STRONG_MODEL", "GUI 强化模型", "GUI strong model", false, false, "ui-tars-1.5"),
+  field("ADPILOT_GUI_PROTOCOL", "动作协议", "Action protocol", false, false, "ui-tars"),
+  field("ADPILOT_GUI_IMAGE_INPUT", "支持图像输入", "Image input capability", false, false, "true"),
+  field("ADPILOT_GUI_COORDINATE_FORMAT", "坐标格式", "Coordinate format", false, false, "ui-tars-1000"),
+  field("ADPILOT_GUI_NORMALIZATION", "坐标归一化区域", "Coordinate normalization", false, false, "window"),
   field("ADPILOT_GUI_TIMEOUT_MS", "GUI 超时（毫秒）", "GUI timeout (ms)", false, false, "20000"),
+  field("ADPILOT_GUI_MAX_RETRIES", "GUI 最大重试次数", "GUI maximum retries", false, false, "2"),
   field("ADPILOT_VERIFY_BASE_URL", "视觉复核服务地址", "Visual verification endpoint", false, false, "http://127.0.0.1:8000/v1"),
   field("ADPILOT_VERIFY_API_KEY", "视觉复核密钥", "Visual verification API key", true),
   field("ADPILOT_VERIFY_MODEL", "视觉复核模型", "Visual verification model", false),
+  field("ADPILOT_VERIFY_MODE", "复核模式", "Verification mode", false, false, "auto"),
   field("ADPILOT_VERIFY_TIMEOUT_MS", "视觉复核超时（毫秒）", "Verification timeout (ms)", false, false, "20000")
 ];
 
@@ -225,11 +231,33 @@ export class SettingsStore {
       if (value === null || value.trim() === "") delete nextEnv[name];
       else nextEnv[name] = value.trim();
     }
+    validateComputerSettings(nextEnv);
     this.data = StoredSettings.parse({ version: 1, locale: update.locale, appearance: update.appearance, models: update.models, env: nextEnv });
     await mkdir(resolve(this.workspaceRoot, ".adpilot"), { recursive: true, mode: 0o700 });
     const temporary = `${this.path}.${randomUUID()}.tmp`;
     await writeFile(temporary, `${JSON.stringify(this.data, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     await rename(temporary, this.path);
+  }
+}
+
+function validateComputerSettings(env: Record<string, string>): void {
+  const enums: Record<string, string[]> = {
+    ADPILOT_GUI_PROTOCOL: ["ui-tars", "adpilot-json"],
+    ADPILOT_GUI_IMAGE_INPUT: ["true", "false"],
+    ADPILOT_GUI_COORDINATE_FORMAT: ["pixels", "normalized", "ui-tars-1000"],
+    ADPILOT_GUI_NORMALIZATION: ["screenshot", "window"],
+    ADPILOT_VERIFY_MODE: ["auto", "independent", "gui", "strong"]
+  };
+  for (const [name, values] of Object.entries(enums)) {
+    if (env[name] && !values.includes(env[name])) throw new Error(`${name} must be one of: ${values.join(", ")}`);
+  }
+  for (const name of ["ADPILOT_GUI_TIMEOUT_MS", "ADPILOT_VERIFY_TIMEOUT_MS"]) {
+    if (env[name] && (!Number.isInteger(Number(env[name])) || Number(env[name]) < 1000 || Number(env[name]) > 120_000)) {
+      throw new Error(`${name} must be an integer between 1000 and 120000`);
+    }
+  }
+  if (env.ADPILOT_GUI_MAX_RETRIES && (!Number.isInteger(Number(env.ADPILOT_GUI_MAX_RETRIES)) || Number(env.ADPILOT_GUI_MAX_RETRIES) < 0 || Number(env.ADPILOT_GUI_MAX_RETRIES) > 2)) {
+    throw new Error("ADPILOT_GUI_MAX_RETRIES must be an integer between 0 and 2");
   }
 }
 

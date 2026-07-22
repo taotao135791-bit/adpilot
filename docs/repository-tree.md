@@ -26,7 +26,8 @@ adpilot/
 │   ├── pi/                     # pinned v0.80.10 source submodule
 │   └── ui-tars/                # pinned reviewed source submodule
 ├── tests/visual/               # mock console and approval/execute/verify tests
-├── evals/                      # evaluation index
+├── evals/                      # 60-case grounding, verification, and replay corpus
+├── fixtures/screenshots/       # sanitized synthetic visual fixtures
 ├── docs/
 │   ├── architecture-decisions/
 │   └── screenshots/

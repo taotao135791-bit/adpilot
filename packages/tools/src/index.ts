@@ -84,6 +84,9 @@ export class AdPilotTools {
     const client = await this.workspace.readClient(context.clientId);
     const profile = task.surface.browserProfile;
     const domain = task.surface.domain?.toLowerCase();
+    if (domain && (domain === "ads.google.com" || domain.endsWith(".ads.google.com")) && !/browser|chrome|safari|edge|arc|brave|firefox/i.test(task.surface.app)) {
+      throw new Error(`Google Ads visual work requires an allowlisted browser application, not ${task.surface.app}`);
+    }
     const account = client.accounts?.accounts.find((candidate) => {
       if (!profile || candidate.browserProfile !== profile) return false;
       if (!domain) return true;
@@ -112,6 +115,25 @@ export class AdPilotTools {
     const unfinished = (await this.experiments.list(context.clientId)).filter((item) => ["active", "waiting"].includes(item.status));
     if (unfinished.length > 0) throw new Error("an unfinished experiment blocks a new mutation");
     if (!this.computer) throw new Error("native computer runtime is unavailable");
+    let confirmation: Awaited<ReturnType<VisualComputerRuntime["verifyVisible"]>>;
+    try {
+      confirmation = await this.computer.verifyVisible([
+        `Platform: ${operation.platform}`,
+        `Account: ${operation.account}`,
+        `Campaign: ${operation.campaign}`,
+        `Operation: ${operation.operation}`,
+        `Current value: ${String(operation.currentValue)}`,
+        `Proposed value: ${String(operation.proposedValue)}`,
+        "All six facts are visible and consistent on the current authorized surface."
+      ].join("\n"));
+    } catch (error) {
+      await this.approvals.cancel(context.clientId, approvalId);
+      throw error;
+    }
+    if (!confirmation.matched || confirmation.confidence < 0.7) {
+      await this.approvals.cancel(context.clientId, approvalId);
+      throw new Error(`mutation preflight could not confirm the exact platform/account/campaign/values: ${confirmation.reason}`);
+    }
     const liveSurface = await this.computer.identifySurface();
     const executing = await this.approvals.consume(context.clientId, approvalId, token, operation, liveSurface.fingerprint);
     try {

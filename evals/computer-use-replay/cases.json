@@ -24,7 +24,7 @@
         "yMax": 357
       },
       "expectedResult": "Campaign list is visible",
-      "riskLevel": "observe",
+      "riskLevel": "interact",
       "shouldExecute": true,
       "failureConditions": [
         "target outside allowed rectangle",
@@ -56,7 +56,7 @@
         "yMax": 357
       },
       "expectedResult": "Campaign list is visible",
-      "riskLevel": "observe",
+      "riskLevel": "interact",
       "shouldExecute": true,
       "failureConditions": [
         "target outside allowed rectangle",
@@ -88,7 +88,7 @@
         "yMax": 714
       },
       "expectedResult": "Campaign list is visible",
-      "riskLevel": "observe",
+      "riskLevel": "interact",
       "shouldExecute": true,
       "failureConditions": [
         "target outside allowed rectangle",
@@ -120,7 +120,7 @@
         "yMax": 714
       },
       "expectedResult": "Campaign list is visible",
-      "riskLevel": "observe",
+      "riskLevel": "interact",
       "shouldExecute": true,
       "failureConditions": [
         "target outside allowed rectangle",
@@ -152,7 +152,7 @@
         "yMax": 446
       },
       "expectedResult": "Campaign list is visible",
-      "riskLevel": "observe",
+      "riskLevel": "interact",
       "shouldExecute": true,
       "failureConditions": [
         "target outside allowed rectangle",
@@ -664,7 +664,7 @@
         "yMax": 341
       },
       "expectedResult": "Payment conversion status is visible",
-      "riskLevel": "observe",
+      "riskLevel": "interact",
       "shouldExecute": true,
       "failureConditions": [
         "target outside allowed rectangle",
@@ -696,7 +696,7 @@
         "yMax": 341
       },
       "expectedResult": "Payment conversion status is visible",
-      "riskLevel": "observe",
+      "riskLevel": "interact",
       "shouldExecute": true,
       "failureConditions": [
         "target outside allowed rectangle",
@@ -728,7 +728,7 @@
         "yMax": 681
       },
       "expectedResult": "Payment conversion status is visible",
-      "riskLevel": "observe",
+      "riskLevel": "interact",
       "shouldExecute": true,
       "failureConditions": [
         "target outside allowed rectangle",
@@ -760,7 +760,7 @@
         "yMax": 681
       },
       "expectedResult": "Payment conversion status is visible",
-      "riskLevel": "observe",
+      "riskLevel": "interact",
       "shouldExecute": true,
       "failureConditions": [
         "target outside allowed rectangle",
@@ -792,7 +792,7 @@
         "yMax": 426
       },
       "expectedResult": "Payment conversion status is visible",
-      "riskLevel": "observe",
+      "riskLevel": "interact",
       "shouldExecute": true,
       "failureConditions": [
         "target outside allowed rectangle",
@@ -824,7 +824,7 @@
         "yMax": 341
       },
       "expectedResult": "Asset performance is visible",
-      "riskLevel": "observe",
+      "riskLevel": "interact",
       "shouldExecute": true,
       "failureConditions": [
         "target outside allowed rectangle",
@@ -856,7 +856,7 @@
         "yMax": 341
       },
       "expectedResult": "Asset performance is visible",
-      "riskLevel": "observe",
+      "riskLevel": "interact",
       "shouldExecute": true,
       "failureConditions": [
         "target outside allowed rectangle",
@@ -888,7 +888,7 @@
         "yMax": 681
       },
       "expectedResult": "Asset performance is visible",
-      "riskLevel": "observe",
+      "riskLevel": "interact",
       "shouldExecute": true,
       "failureConditions": [
         "target outside allowed rectangle",
@@ -920,7 +920,7 @@
         "yMax": 681
       },
       "expectedResult": "Asset performance is visible",
-      "riskLevel": "observe",
+      "riskLevel": "interact",
       "shouldExecute": true,
       "failureConditions": [
         "target outside allowed rectangle",
@@ -952,7 +952,7 @@
         "yMax": 426
       },
       "expectedResult": "Asset performance is visible",
-      "riskLevel": "observe",
+      "riskLevel": "interact",
       "shouldExecute": true,
       "failureConditions": [
         "target outside allowed rectangle",

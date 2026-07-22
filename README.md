@@ -101,11 +101,11 @@ pnpm check
 在已获授权、已登录且置于前台的 Google Ads 浏览器窗口上，可运行显式的原生验证；命令不会使用 DOM 自动化：
 
 ```bash
-pnpm validate:google-ads:readonly -- --client <id> --browser-profile <profile>
+pnpm validate:google-ads:readonly -- --client <id> --browser-profile <profile> --campaign "Campaign name"
 pnpm validate:google-ads:prepare -- --client <id> --browser-profile <profile> --campaign "Campaign name" --draft-budget 120
 ```
 
-第二条命令只填写未提交的预算草稿，禁止 Save / Apply / Publish。证据写入 `artifacts/google-ads-validation/`；没有真实授权账户时不会声称线上验证通过。
+第二条命令只填写未提交的预算草稿，禁止 Save / Apply / Publish。证据写入 `artifacts/validation/`；没有真实授权账户时不会声称线上验证通过。
 
 本地视觉闭环使用 `apps/mock-ad-dashboard/index.html`，不会连接真实广告平台。架构边界见 [docs/architecture.md](docs/architecture.md)，模型配置见 [docs/model-configuration.md](docs/model-configuration.md)，Computer Use 权限见 [docs/computer-use-permissions.md](docs/computer-use-permissions.md)，安全模型见 [docs/security.md](docs/security.md)，上游升级流程见 [docs/upstream-sync.md](docs/upstream-sync.md)。测试结果和已知外部限制分别见 [docs/test-report.md](docs/test-report.md) 与 [docs/known-limitations.md](docs/known-limitations.md)。
 

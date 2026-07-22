@@ -6,6 +6,7 @@ import {
   GuiGroundingProviderRouter,
   ExecutableVisualAction,
   MacOSNativeSurfaceIdentity,
+  NativeSurfaceUnavailableError,
   OpenAICompatibleUiTarsProvider,
   PiVisionModel,
   UiTarsNativeOperator,
@@ -156,6 +157,40 @@ describe("visual action protocol", () => {
     expect(executions).toBe(0);
   });
 
+  it.each([
+    ["application", { ...nativeSurface, app: "Notes", bundleId: "com.apple.Notes" }],
+    ["window bounds", { ...nativeSurface, bounds: { ...nativeSurface.bounds, x: 140 } }],
+    ["DPI", { ...nativeSurface, scaleFactor: 1 }]
+  ])("blocks changed %s before execution", async (_label, changedSurface) => {
+    const shot: Screenshot = { ...before, surface: nativeSurface, surfaceFingerprint: fingerprintSurface(nativeSurface) };
+    const runtime = new VisualComputerRuntime({
+      capture: async () => shot,
+      identifySurface: async () => ({ surface: changedSurface, fingerprint: fingerprintSurface(changedSurface) }),
+      execute: async () => { throw new Error("must not execute"); }
+    }, { ground: async () => ({ action: "click", x: 20, y: 20, target: "date selector", reason: "visible", confidence: 1, expected_result: "open", risk_level: "interact" }) }, { verify: async () => ({ matched: true, confidence: 1, reason: "open" }) });
+    await expect(runtime.runMicroTask(task)).resolves.toMatchObject({ status: "failed", blockerCode: "SURFACE_CHANGED" });
+  });
+
+  it("fails closed when the foreground application exits", async () => {
+    const shot: Screenshot = { ...before, surface: nativeSurface, surfaceFingerprint: fingerprintSurface(nativeSurface) };
+    const runtime = new VisualComputerRuntime({
+      capture: async () => shot,
+      identifySurface: async () => { throw new NativeSurfaceUnavailableError("foreground application exited"); },
+      execute: async () => { throw new Error("must not execute"); }
+    }, { ground: async () => ({ action: "click", x: 20, y: 20, target: "date selector", reason: "visible", confidence: 1, expected_result: "open", risk_level: "interact" }) }, { verify: async () => ({ matched: true, confidence: 1, reason: "open" }) });
+    await expect(runtime.runMicroTask(task)).resolves.toMatchObject({ status: "failed", attempts: 1, blockerCode: "SURFACE_CHANGED" });
+  });
+
+  it("honors user takeover before the next screenshot", async () => {
+    let captures = 0;
+    const runtime = new VisualComputerRuntime({ capture: async () => { captures += 1; return before; }, execute: async () => undefined }, {
+      ground: async () => ({ action: "done", target: "task", reason: "done", confidence: 1, expected_result: "done", risk_level: "observe" })
+    }, { verify: async () => ({ matched: true, confidence: 1, reason: "done" }) });
+    runtime.pause();
+    await expect(runtime.runMicroTask(task)).resolves.toMatchObject({ status: "failed", blockerCode: "PAUSED" });
+    expect(captures).toBe(0);
+  });
+
   it("blocks a surface switch after execution without retrying the action", async () => {
     let captures = 0;
     let executions = 0;
@@ -232,6 +267,17 @@ describe("visual action protocol", () => {
     const shot: Screenshot = { ...before, base64: image.toString("base64") };
     await expect(provider.ground({ ...task, taskId: "task-1", stepId: "step-1" }, shot, "strong")).resolves.toMatchObject({ action: "click", target: "date selector" });
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("adapts normalized JSON actions from a custom OpenAI-compatible GUI provider", async () => {
+    const request = vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: '{"action":"click","x":0.5,"y":0.25,"target":"date selector","reason":"visible","confidence":0.9,"expected_result":"open","risk_level":"interact"}' } }] }), { status: 200 }));
+    const provider = new OpenAICompatibleUiTarsProvider({
+      baseURL: "https://custom.example/v1", model: "gui-json", protocol: "adpilot-json",
+      coordinateFormat: "normalized", fetch: request as typeof fetch
+    });
+    const image = await new Jimp({ width: 20, height: 10, color: 0xffffffff }).getBuffer("image/png");
+    const shot: Screenshot = { ...before, base64: image.toString("base64") };
+    await expect(provider.ground(task, shot, "gui")).resolves.toMatchObject({ action: "click", x: 500, y: 200 });
   });
 
   it("uses native macOS surface probing before AppleScript fallback", async () => {

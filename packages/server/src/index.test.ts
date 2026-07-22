@@ -79,6 +79,30 @@ describe("product server", () => {
     await restoredServer.close();
   });
 
+  it("restores pending approvals and active experiments after application restart", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-product-restart-"));
+    const first = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+    await first.workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
+    const taskId = crypto.randomUUID();
+    const approval = await first.approvals.create("client-a", taskId, {
+      platform: "google_ads", account: "acct-1", campaign: "campaign-1", operation: "set_daily_budget",
+      currentValue: 100, proposedValue: 110, changePercentage: 10, reason: "controlled increase",
+      evidence: ["workspace:baseline"], expectedImpact: "more volume", observationWindow: "7 days",
+      rollbackCondition: "CPA exceeds 12", riskLevel: "mutate"
+    });
+    const experiment = await first.experiments.create({
+      clientId: "client-a", taskId, approvalId: approval.id, hypothesis: "budget adds volume", variable: "daily_budget",
+      baseline: { budget: 100, cpa: 10 }, expected: "more conversions", successCriteria: "CPA remains below 12",
+      failureCriteria: "CPA exceeds 12", maturityWindowDays: 7, rollbackCondition: "CPA exceeds 12",
+      reviewAt: "2026-08-01T00:00:00.000Z"
+    });
+    await first.experiments.start("client-a", experiment.id);
+
+    const restored = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+    await expect(restored.approvals.list("client-a")).resolves.toMatchObject([{ id: approval.id, status: "pending_risk_review" }]);
+    await expect(restored.experiments.list("client-a")).resolves.toMatchObject([{ id: experiment.id, status: "active" }]);
+  });
+
   it("serves workspace state and keeps one-time approval tokens off the HTTP response", async () => {
     const root = await mkdtemp(join(tmpdir(), "adpilot-server-"));
     const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });

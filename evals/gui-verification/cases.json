@@ -6,7 +6,7 @@
       "before": "fixtures/screenshots/generated/campaign-list--1440-light-en.png",
       "after": "fixtures/screenshots/generated/campaign-list--1440-light-en.png",
       "expectedResult": "Campaign list is visible",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "campaign-list"
     },
     {
@@ -14,7 +14,7 @@
       "before": "fixtures/screenshots/generated/campaign-list--1280-dark-zh.png",
       "after": "fixtures/screenshots/generated/campaign-list--1280-dark-zh.png",
       "expectedResult": "Campaign list is visible",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "campaign-list"
     },
     {
@@ -22,7 +22,7 @@
       "before": "fixtures/screenshots/generated/campaign-list--1024-light-zh-retina.png",
       "after": "fixtures/screenshots/generated/campaign-list--1024-light-zh-retina.png",
       "expectedResult": "Campaign list is visible",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "campaign-list"
     },
     {
@@ -30,7 +30,7 @@
       "before": "fixtures/screenshots/generated/campaign-list--1600-dark-en-retina.png",
       "after": "fixtures/screenshots/generated/campaign-list--1600-dark-en-retina.png",
       "expectedResult": "Campaign list is visible",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "campaign-list"
     },
     {
@@ -38,7 +38,7 @@
       "before": "fixtures/screenshots/generated/campaign-list--1366-dark-zh.png",
       "after": "fixtures/screenshots/generated/campaign-list--1366-dark-zh.png",
       "expectedResult": "Campaign list is visible",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "campaign-list"
     },
     {
@@ -46,7 +46,7 @@
       "before": "fixtures/screenshots/generated/date-picker--1440-light-en.png",
       "after": "fixtures/screenshots/generated/date-picker--1440-light-en.png",
       "expectedResult": "Last 7 days is selected",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "date-picker"
     },
     {
@@ -54,7 +54,7 @@
       "before": "fixtures/screenshots/generated/date-picker--1280-dark-zh.png",
       "after": "fixtures/screenshots/generated/date-picker--1280-dark-zh.png",
       "expectedResult": "Last 7 days is selected",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "date-picker"
     },
     {
@@ -62,7 +62,7 @@
       "before": "fixtures/screenshots/generated/date-picker--1024-light-zh-retina.png",
       "after": "fixtures/screenshots/generated/date-picker--1024-light-zh-retina.png",
       "expectedResult": "Last 7 days is selected",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "date-picker"
     },
     {
@@ -70,7 +70,7 @@
       "before": "fixtures/screenshots/generated/date-picker--1600-dark-en-retina.png",
       "after": "fixtures/screenshots/generated/date-picker--1600-dark-en-retina.png",
       "expectedResult": "Last 7 days is selected",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "date-picker"
     },
     {
@@ -78,7 +78,7 @@
       "before": "fixtures/screenshots/generated/date-picker--1366-dark-zh.png",
       "after": "fixtures/screenshots/generated/date-picker--1366-dark-zh.png",
       "expectedResult": "Last 7 days is selected",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "date-picker"
     },
     {
@@ -86,7 +86,7 @@
       "before": "fixtures/screenshots/generated/budget-edit--1440-light-en.png",
       "after": "fixtures/screenshots/generated/budget-edit--1440-light-en.png",
       "expectedResult": "Draft budget value is entered",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "budget-edit"
     },
     {
@@ -94,7 +94,7 @@
       "before": "fixtures/screenshots/generated/budget-edit--1280-dark-zh.png",
       "after": "fixtures/screenshots/generated/budget-edit--1280-dark-zh.png",
       "expectedResult": "Draft budget value is entered",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "budget-edit"
     },
     {
@@ -102,7 +102,7 @@
       "before": "fixtures/screenshots/generated/budget-edit--1024-light-zh-retina.png",
       "after": "fixtures/screenshots/generated/budget-edit--1024-light-zh-retina.png",
       "expectedResult": "Draft budget value is entered",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "budget-edit"
     },
     {
@@ -110,7 +110,7 @@
       "before": "fixtures/screenshots/generated/budget-edit--1600-dark-en-retina.png",
       "after": "fixtures/screenshots/generated/budget-edit--1600-dark-en-retina.png",
       "expectedResult": "Draft budget value is entered",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "budget-edit"
     },
     {
@@ -118,7 +118,7 @@
       "before": "fixtures/screenshots/generated/budget-edit--1366-dark-zh.png",
       "after": "fixtures/screenshots/generated/budget-edit--1366-dark-zh.png",
       "expectedResult": "Draft budget value is entered",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "budget-edit"
     },
     {
@@ -126,7 +126,7 @@
       "before": "fixtures/screenshots/generated/bid-edit--1440-light-en.png",
       "after": "fixtures/screenshots/generated/bid-edit--1440-light-en.png",
       "expectedResult": "Draft bid target is entered",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "bid-edit"
     },
     {
@@ -134,7 +134,7 @@
       "before": "fixtures/screenshots/generated/bid-edit--1280-dark-zh.png",
       "after": "fixtures/screenshots/generated/bid-edit--1280-dark-zh.png",
       "expectedResult": "Draft bid target is entered",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "bid-edit"
     },
     {
@@ -142,7 +142,7 @@
       "before": "fixtures/screenshots/generated/bid-edit--1024-light-zh-retina.png",
       "after": "fixtures/screenshots/generated/bid-edit--1024-light-zh-retina.png",
       "expectedResult": "Draft bid target is entered",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "bid-edit"
     },
     {
@@ -150,7 +150,7 @@
       "before": "fixtures/screenshots/generated/bid-edit--1600-dark-en-retina.png",
       "after": "fixtures/screenshots/generated/bid-edit--1600-dark-en-retina.png",
       "expectedResult": "Draft bid target is entered",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "bid-edit"
     },
     {
@@ -158,7 +158,7 @@
       "before": "fixtures/screenshots/generated/bid-edit--1366-dark-zh.png",
       "after": "fixtures/screenshots/generated/bid-edit--1366-dark-zh.png",
       "expectedResult": "Draft bid target is entered",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "bid-edit"
     },
     {
@@ -166,7 +166,7 @@
       "before": "fixtures/screenshots/generated/conversion-goals--1440-light-en.png",
       "after": "fixtures/screenshots/generated/conversion-goals--1440-light-en.png",
       "expectedResult": "Payment conversion status is visible",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "conversion-goals"
     },
     {
@@ -174,7 +174,7 @@
       "before": "fixtures/screenshots/generated/conversion-goals--1280-dark-zh.png",
       "after": "fixtures/screenshots/generated/conversion-goals--1280-dark-zh.png",
       "expectedResult": "Payment conversion status is visible",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "conversion-goals"
     },
     {
@@ -182,7 +182,7 @@
       "before": "fixtures/screenshots/generated/conversion-goals--1024-light-zh-retina.png",
       "after": "fixtures/screenshots/generated/conversion-goals--1024-light-zh-retina.png",
       "expectedResult": "Payment conversion status is visible",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "conversion-goals"
     },
     {
@@ -190,7 +190,7 @@
       "before": "fixtures/screenshots/generated/conversion-goals--1600-dark-en-retina.png",
       "after": "fixtures/screenshots/generated/conversion-goals--1600-dark-en-retina.png",
       "expectedResult": "Payment conversion status is visible",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "conversion-goals"
     },
     {
@@ -198,7 +198,7 @@
       "before": "fixtures/screenshots/generated/conversion-goals--1366-dark-zh.png",
       "after": "fixtures/screenshots/generated/conversion-goals--1366-dark-zh.png",
       "expectedResult": "Payment conversion status is visible",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "conversion-goals"
     },
     {
@@ -206,7 +206,7 @@
       "before": "fixtures/screenshots/generated/asset-list--1440-light-en.png",
       "after": "fixtures/screenshots/generated/asset-list--1440-light-en.png",
       "expectedResult": "Asset performance is visible",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "asset-list"
     },
     {
@@ -214,7 +214,7 @@
       "before": "fixtures/screenshots/generated/asset-list--1280-dark-zh.png",
       "after": "fixtures/screenshots/generated/asset-list--1280-dark-zh.png",
       "expectedResult": "Asset performance is visible",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "asset-list"
     },
     {
@@ -222,7 +222,7 @@
       "before": "fixtures/screenshots/generated/asset-list--1024-light-zh-retina.png",
       "after": "fixtures/screenshots/generated/asset-list--1024-light-zh-retina.png",
       "expectedResult": "Asset performance is visible",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "asset-list"
     },
     {
@@ -230,7 +230,7 @@
       "before": "fixtures/screenshots/generated/asset-list--1600-dark-en-retina.png",
       "after": "fixtures/screenshots/generated/asset-list--1600-dark-en-retina.png",
       "expectedResult": "Asset performance is visible",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "asset-list"
     },
     {
@@ -238,7 +238,7 @@
       "before": "fixtures/screenshots/generated/asset-list--1366-dark-zh.png",
       "after": "fixtures/screenshots/generated/asset-list--1366-dark-zh.png",
       "expectedResult": "Asset performance is visible",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "asset-list"
     },
     {
@@ -246,7 +246,7 @@
       "before": "fixtures/screenshots/generated/account-switch--1440-light-en.png",
       "after": "fixtures/screenshots/generated/account-switch--1440-light-en.png",
       "expectedResult": "Authorized account identity is selected",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "account-switch"
     },
     {
@@ -254,7 +254,7 @@
       "before": "fixtures/screenshots/generated/account-switch--1280-dark-zh.png",
       "after": "fixtures/screenshots/generated/account-switch--1280-dark-zh.png",
       "expectedResult": "Authorized account identity is selected",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "account-switch"
     },
     {
@@ -262,7 +262,7 @@
       "before": "fixtures/screenshots/generated/account-switch--1024-light-zh-retina.png",
       "after": "fixtures/screenshots/generated/account-switch--1024-light-zh-retina.png",
       "expectedResult": "Authorized account identity is selected",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "account-switch"
     },
     {
@@ -270,7 +270,7 @@
       "before": "fixtures/screenshots/generated/account-switch--1600-dark-en-retina.png",
       "after": "fixtures/screenshots/generated/account-switch--1600-dark-en-retina.png",
       "expectedResult": "Authorized account identity is selected",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "account-switch"
     },
     {
@@ -278,7 +278,7 @@
       "before": "fixtures/screenshots/generated/account-switch--1366-dark-zh.png",
       "after": "fixtures/screenshots/generated/account-switch--1366-dark-zh.png",
       "expectedResult": "Authorized account identity is selected",
-      "expectedMatched": false,
+      "expectedMatched": true,
       "scene": "account-switch"
     },
     {

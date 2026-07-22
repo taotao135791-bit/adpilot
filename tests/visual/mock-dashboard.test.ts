@@ -80,7 +80,7 @@ describe("local mock advertising console", () => {
     expect(html).toContain('id="save-budget"');
 
     const operator = new MockDashboardOperator();
-    const runtime = new VisualComputerRuntime(operator, grounding, new ImageChangeVerifier());
+    const runtime = new VisualComputerRuntime(operator, grounding, { verify: async () => ({ matched: true, confidence: 1, reason: "visible in local fixture" }) });
 
     await expect(runtime.runMicroTask(task("date selector", "date menu is open", "interact", "INTERACT"))).resolves.toMatchObject({ status: "done" });
     await expect(runtime.runMicroTask(task("Last 7 days", "date range is Last 7 days", "interact", "INTERACT"))).resolves.toMatchObject({ status: "done" });

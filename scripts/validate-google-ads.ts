@@ -12,7 +12,7 @@ if (!(["readonly", "prepare"] as string[]).includes(mode) || process.argv.includ
     "Google Ads native visual validation (never uses DOM/Playwright).",
     "",
     "Usage:",
-    "  pnpm validate:google-ads:readonly -- --client <id> --browser-profile <name>",
+    "  pnpm validate:google-ads:readonly -- --client <id> --browser-profile <name> --campaign <name>",
     "  pnpm validate:google-ads:prepare -- --client <id> --browser-profile <name> --campaign <name> --draft-budget <value>",
     "",
     "Open the authorized Google Ads account in the foreground before starting.",
@@ -23,9 +23,9 @@ if (!(["readonly", "prepare"] as string[]).includes(mode) || process.argv.includ
 
 const clientId = requiredFlag("--client");
 const browserProfile = requiredFlag("--browser-profile");
-const campaign = flag("--campaign");
+const campaign = requiredFlag("--campaign");
 const draftBudget = flag("--draft-budget");
-if (mode === "prepare" && (!campaign || !draftBudget)) throw new Error("prepare requires --campaign and --draft-budget");
+if (mode === "prepare" && !draftBudget) throw new Error("prepare requires --draft-budget");
 
 const system = await createAdPilotSystem();
 if (!system.computer) throw new Error("computer use is not configured; configure GUI grounding plus verification in Settings");
@@ -41,26 +41,27 @@ if (!/chrome|safari|edge|arc|brave|firefox/i.test(`${live.surface.app} ${live.su
 }
 
 const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${mode}`;
-const artifactRoot = resolve(process.cwd(), "artifacts", "google-ads-validation", runId);
+const artifactRoot = resolve(process.cwd(), "artifacts", "validation", runId);
 await mkdir(artifactRoot, { recursive: true });
 const records: Array<Record<string, unknown>> = [];
 let screenshotIndex = 0;
 
 const readonlySteps = [
-  ["Confirm the visible Google Ads customer account name and customer ID; do not click if they are not visible", "account identity", "the authorized Google Ads account identity is visibly confirmed"],
+  ["Confirm from the visible logo and navigation that the foreground page is Google Ads; do not click if uncertain", "Google Ads visual identity", "Google Ads logo and navigation are visibly confirmed"],
+  ["Read and confirm the visible Google Ads customer account name and customer ID", "account identity", "the authorized account name and customer ID are visibly confirmed"],
+  ["Open the Campaigns page using the visible Google Ads navigation", "Campaigns navigation", "the Campaigns page is visibly open"],
   ["Open the visible date-range selector without changing campaign settings", "date range selector", "the date range menu is visibly open"],
-  ["Choose Last 30 days in the open date-range selector", "Last 30 days", "the visible date range is Last 30 days"],
-  ["Inspect the visible campaign table without editing anything", "campaign table", "campaign names and status columns are visible"],
-  ["Open the visible Columns menu without applying changes", "Columns menu", "the columns menu is visibly open"],
-  ["Close the columns menu without applying changes", "Close columns menu", "the columns menu is visibly closed"],
-  ["Open the visible Filters control without applying a filter", "Filters control", "the filter panel is visibly open"],
-  ["Close the filter panel without applying changes", "Close filters", "the campaign table is visible again"],
-  ["Scroll the campaign table enough to inspect more visible rows; do not open an edit control", "campaign table rows", "additional campaign rows are visible"],
-  ["Finish after confirming no Save, Apply, Publish, Remove, or destructive control was used", "read-only completion", "the campaign table remains visible and unchanged"]
+  ["Choose Last 7 days in the open date-range selector", "Last 7 days", "the visible date range is Last 7 days"],
+  [`Find the visible campaign named ${campaign} without opening an edit control`, campaign, `campaign ${campaign} is visibly identified`],
+  [`Read the visible status for campaign ${campaign} without changing it`, `${campaign} status`, `the campaign status is visibly readable`],
+  [`Read the visible daily budget for campaign ${campaign} without editing it`, `${campaign} budget`, `the campaign budget is visibly readable`],
+  [`Read the visible bid strategy or bid target for campaign ${campaign} without editing it`, `${campaign} bid target`, `the bid strategy or target is visibly readable`],
+  ["Open the visible Goals or Conversions page using navigation; do not edit a goal", "Goals and conversions navigation", "conversion goals are visibly listed"],
+  ["Take final evidence and stop. Do not click Save, Apply, Publish, Remove, or Delete", "read-only completion", "Google Ads remains visible with no mutation confirmation"]
 ] as const;
 
 const prepareSteps = [
-  [`Open the visible campaign row named ${campaign}; do not edit yet`, campaign!, `campaign ${campaign} details are visibly open`],
+  [`Open the visible campaign row named ${campaign}; do not edit yet`, campaign, `campaign ${campaign} details are visibly open`],
   ["Open the campaign budget edit control, but do not save or apply", "budget edit control", "the budget edit field is visibly available"],
   ["Focus the daily budget input without submitting", "daily budget input", "the budget input is visibly focused"],
   [`Replace the draft value in the focused daily budget input with ${draftBudget}; do not click Save, Apply, Publish, or press Enter`, "daily budget input", `the unsaved draft budget visibly shows ${draftBudget}`],

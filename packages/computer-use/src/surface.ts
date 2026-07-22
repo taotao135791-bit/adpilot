@@ -21,6 +21,7 @@ export const NativeSurface = z.object({
   platform: z.enum(["darwin", "win32", "linux"]),
   app: z.string().min(1),
   bundleId: z.string().min(1).optional(),
+  browserProfile: z.string().min(1).optional(),
   pid: z.number().int().positive(),
   title: z.string(),
   windowId: z.string().min(1),
@@ -51,6 +52,7 @@ export function fingerprintSurface(surface: NativeSurface): string {
     platform: surface.platform,
     app: surface.app,
     bundleId: surface.bundleId ?? "",
+    browserProfile: surface.browserProfile ?? "",
     pid: surface.pid,
     title: surface.title,
     windowId: surface.windowId,
@@ -78,10 +80,10 @@ export class MacOSNativeSurfaceIdentity implements NativeSurfaceIdentity {
 
   async identifyActiveSurface(): Promise<NativeSurface> {
     try {
-      return NativeSurface.parse(await this.runNativeProbe());
+      return await enrichBrowserProfile(NativeSurface.parse(await this.runNativeProbe()));
     } catch (nativeError) {
       try {
-        return NativeSurface.parse(await this.runAppleScriptProbe());
+        return await enrichBrowserProfile(NativeSurface.parse(await this.runAppleScriptProbe()));
       } catch (fallbackError) {
         const nativeMessage = nativeError instanceof Error ? nativeError.message : String(nativeError);
         const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
@@ -115,6 +117,19 @@ export class MacOSNativeSurfaceIdentity implements NativeSurfaceIdentity {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  }
+}
+
+async function enrichBrowserProfile(surface: NativeSurface): Promise<NativeSurface> {
+  if (!/chrome|chromium|edge|brave|arc/i.test(`${surface.app} ${surface.bundleId ?? ""}`)) return surface;
+  try {
+    const { stdout } = await execFileAsync("/bin/ps", ["-ww", "-p", String(surface.pid), "-o", "command="], { timeout: 2_000, maxBuffer: 128 * 1024 });
+    const profile = stdout.match(/--profile-directory=(?:"([^"]+)"|'([^']+)'|([^\s]+))/)?.slice(1).find(Boolean);
+    const userData = stdout.match(/--user-data-dir=(?:"([^"]+)"|'([^']+)'|([^\s]+))/)?.slice(1).find(Boolean);
+    const browserProfile = profile ?? (userData ? `user-data:${createHash("sha256").update(userData).digest("hex").slice(0, 16)}` : undefined);
+    return browserProfile ? NativeSurface.parse({ ...surface, browserProfile }) : surface;
+  } catch {
+    return surface;
   }
 }
 

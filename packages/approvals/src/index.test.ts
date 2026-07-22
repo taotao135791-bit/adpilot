@@ -27,7 +27,7 @@ async function fixture(now = new Date("2026-01-01T00:00:00Z")) {
   const workspace = new WorkspaceStore(root);
   await workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
   const clock = { now: () => now };
-  return { service: new ApprovalService(workspace, "0123456789abcdef0123456789abcdef", clock), clock };
+  return { workspace, service: new ApprovalService(workspace, "0123456789abcdef0123456789abcdef", clock), clock };
 }
 
 describe("ApprovalService", () => {
@@ -70,6 +70,17 @@ describe("ApprovalService", () => {
     await service.recordRiskReview("client-a", cancellable.id, true, "Safe");
     await service.approveByUser("client-a", cancellable.id, "owner");
     await expect(service.cancel("client-a", cancellable.id)).resolves.toMatchObject({ status: "cancelled", tokenNonceHash: null });
+  });
+
+  it("invalidates in-memory-only tokens after an application restart", async () => {
+    const { workspace, service } = await fixture();
+    const created = await service.create("client-a", crypto.randomUUID(), operation, plan);
+    await service.recordRiskReview("client-a", created.id, true, "Safe");
+    const { token } = await service.approveByUser("client-a", created.id, "owner");
+    const restarted = new ApprovalService(workspace, "0123456789abcdef0123456789abcdef");
+    await restarted.recoverInterrupted("client-a");
+    await expect(restarted.get("client-a", created.id)).resolves.toMatchObject({ status: "cancelled", tokenNonceHash: null });
+    await expect(restarted.consume("client-a", created.id, token, operation, "f".repeat(64))).rejects.toThrow("not usable");
   });
 
   it("rejects inconsistent or over-cap numeric proposals before review", async () => {

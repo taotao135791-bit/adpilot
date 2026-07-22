@@ -68,6 +68,7 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   const secret = await loadApprovalSecret(workspaceRoot, env.ADPILOT_APPROVAL_SECRET);
   const audit = new AuditLog(workspace);
   const approvals = new ApprovalService(workspace, secret);
+  for (const client of await workspace.listClients()) await approvals.recoverInterrupted(client.id);
   const experiments = new ExperimentStore(workspace);
   const router = modelRouterFromEnv(env);
   const models = options.models ?? createPiModels(env, credentials);
@@ -82,21 +83,29 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   const primaryVision = primaryVisionCandidate === fastModel ? (fastAuth ? fastModel : strongModel.input.includes("image") && strongAuth ? strongModel : undefined) : strongAuth ? primaryVisionCandidate : undefined;
   const strongVision = strongVisionCandidate === strongModel && strongAuth ? strongModel : primaryVision;
   const piVision = primaryVision && strongVision ? new PiVisionModel(models, primaryVision, strongVision) : undefined;
-  const dedicatedGrounding = env.ADPILOT_GUI_BASE_URL && env.ADPILOT_GUI_MODEL
+  const dedicatedGrounding = env.ADPILOT_GUI_BASE_URL && env.ADPILOT_GUI_MODEL && env.ADPILOT_GUI_IMAGE_INPUT !== "false"
     ? new OpenAICompatibleUiTarsProvider({
         baseURL: env.ADPILOT_GUI_BASE_URL,
         ...(env.ADPILOT_GUI_API_KEY ? { apiKey: env.ADPILOT_GUI_API_KEY } : {}),
         model: env.ADPILOT_GUI_MODEL,
         ...(env.ADPILOT_GUI_STRONG_MODEL ? { strongModel: env.ADPILOT_GUI_STRONG_MODEL } : {}),
-        timeoutMs: positiveInteger(env.ADPILOT_GUI_TIMEOUT_MS, 20_000)
+        timeoutMs: positiveInteger(env.ADPILOT_GUI_TIMEOUT_MS, 20_000),
+        protocol: env.ADPILOT_GUI_PROTOCOL === "adpilot-json" ? "adpilot-json" : "ui-tars",
+        coordinateFormat: env.ADPILOT_GUI_COORDINATE_FORMAT === "normalized" ? "normalized" : env.ADPILOT_GUI_COORDINATE_FORMAT === "pixels" ? "pixels" : "ui-tars-1000",
+        normalization: env.ADPILOT_GUI_NORMALIZATION === "screenshot" ? "screenshot" : "window"
       })
     : undefined;
   const grounding = dedicatedGrounding || piVision ? new GuiGroundingProviderRouter(dedicatedGrounding, piVision) : undefined;
-  const dedicatedVerifier = env.ADPILOT_VERIFY_BASE_URL && env.ADPILOT_VERIFY_MODEL
+  const verifyMode = env.ADPILOT_VERIFY_MODE ?? "auto";
+  const verifierEndpoint = verifyMode === "gui" ? env.ADPILOT_GUI_BASE_URL : env.ADPILOT_VERIFY_BASE_URL;
+  const verifierModel = verifyMode === "gui" ? env.ADPILOT_GUI_MODEL : env.ADPILOT_VERIFY_MODEL;
+  const verifierKey = verifyMode === "gui" ? env.ADPILOT_GUI_API_KEY : env.ADPILOT_VERIFY_API_KEY;
+  const dedicatedVerifier = verifyMode !== "strong" && verifierEndpoint && verifierModel
     ? new OpenAICompatibleVisualVerifier({
-        baseURL: env.ADPILOT_VERIFY_BASE_URL,
-        ...(env.ADPILOT_VERIFY_API_KEY ? { apiKey: env.ADPILOT_VERIFY_API_KEY } : {}),
-        model: env.ADPILOT_VERIFY_MODEL,
+        baseURL: verifierEndpoint,
+        ...(verifierKey ? { apiKey: verifierKey } : {}),
+        model: verifierModel,
+        ...(verifyMode === "gui" && env.ADPILOT_GUI_STRONG_MODEL ? { strongModel: env.ADPILOT_GUI_STRONG_MODEL } : {}),
         timeoutMs: positiveInteger(env.ADPILOT_VERIFY_TIMEOUT_MS, 20_000)
       })
     : undefined;
@@ -108,7 +117,9 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
         grounding,
         verifier,
         undefined,
-        (event) => events.publish({ type: "computer", event })
+        (event) => events.publish({ type: "computer", event }),
+        positiveInteger(env.ADPILOT_GUI_TIMEOUT_MS, 20_000),
+        Math.min(3, positiveInteger(env.ADPILOT_GUI_MAX_RETRIES, 2) + 1)
       )
     : undefined;
   const tools = new AdPilotTools(workspace, audit, approvals, experiments, computer);
@@ -136,7 +147,7 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
       fast: `${fastModel.provider}/${fastModel.id}`,
       strong: `${strongModel.provider}/${strongModel.id}`,
       gui: dedicatedGrounding ? `UI-TARS/${env.ADPILOT_GUI_MODEL}` : primaryVisionCandidate ? `${primaryVisionCandidate.provider}/${primaryVisionCandidate.id}` : "not configured",
-      guiStrong: dedicatedVerifier ? `Verifier/${env.ADPILOT_VERIFY_MODEL}` : strongVisionCandidate ? `${strongVisionCandidate.provider}/${strongVisionCandidate.id}` : "not configured",
+      guiStrong: dedicatedVerifier ? `Verifier/${verifierModel}` : strongVisionCandidate ? `${strongVisionCandidate.provider}/${strongVisionCandidate.id}` : "not configured",
       chatConfigured: fastAuth,
       guiConfigured
     }

@@ -211,6 +211,17 @@ export class ApprovalService {
     return Promise.all(unique.map((id) => this.get(clientId, id)));
   }
 
+  /** Tokens live only in process memory; restart makes interrupted states terminal and non-replayable. */
+  async recoverInterrupted(clientId: string): Promise<Approval[]> {
+    const approvals = await this.list(clientId);
+    const recovered: Approval[] = [];
+    for (const approval of approvals) {
+      if (approval.status === "approved") recovered.push(await this.invalidate(approval, "cancelled"));
+      else if (approval.status === "executing") recovered.push(await this.invalidate(approval, "failed"));
+    }
+    return recovered;
+  }
+
   private fingerprint(operation: ApprovalOperation): string {
     return this.sign(stableJson({
       platform: operation.platform,

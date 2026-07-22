@@ -7,12 +7,12 @@ const source = pathToFileURL(resolve("fixtures/screenshots/source/mock-google-ad
 const outputRoot = resolve("fixtures/screenshots/generated");
 const executablePath = process.env.ADPILOT_CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const scenes = [
-  ["campaign-list", "#campaign-row", "click", "observe", "Campaign list is visible"],
+  ["campaign-list", "#campaign-row", "click", "interact", "Campaign list is visible"],
   ["date-picker", "#last-7-days", "click", "interact", "Last 7 days is selected"],
   ["budget-edit", "#budget-input", "type", "mutate", "Draft budget value is entered"],
   ["bid-edit", "#bid-input", "type", "mutate", "Draft bid target is entered"],
-  ["conversion-goals", "#conversion-payment", "click", "observe", "Payment conversion status is visible"],
-  ["asset-list", "#asset-row", "click", "observe", "Asset performance is visible"],
+  ["conversion-goals", "#conversion-payment", "click", "interact", "Payment conversion status is visible"],
+  ["asset-list", "#asset-row", "click", "interact", "Asset performance is visible"],
   ["account-switch", "#account-switcher", "click", "interact", "Authorized account identity is selected"],
   ["confirm-dialog", "#confirm-submit", "click", "mutate", "Change confirmation is submitted"],
   ["loading", "#loading-state", "wait", "observe", "Campaign data finishes loading"],
@@ -60,7 +60,8 @@ try {
 } finally { await browser.close(); }
 
 const grounding = { version: 1, generatedAt: new Date().toISOString(), source: "synthetic sanitized Google Ads-style console", cases };
-const verification = { version: 1, cases: cases.map((item) => ({ id: item.id, before: item.screenshot, after: item.screenshot, expectedResult: item.expectedResult, expectedMatched: item.action === "done", scene: item.scene })) };
+const visiblySatisfied = new Set(["campaign-list", "date-picker", "budget-edit", "bid-edit", "conversion-goals", "asset-list", "account-switch"]);
+const verification = { version: 1, cases: cases.map((item) => ({ id: item.id, before: item.screenshot, after: item.screenshot, expectedResult: item.expectedResult, expectedMatched: visiblySatisfied.has(item.scene), scene: item.scene })) };
 const replay = { version: 1, cases: cases.map((item) => ({ ...item, expectedBlocker: item.action === "fail" ? (item.scene === "browser-switched" || item.scene === "unauthorized-app" ? "SURFACE_CHANGED" : "USER_TAKEOVER") : null })) };
 for (const [path, value] of [["evals/gui-grounding/cases.json", grounding], ["evals/gui-verification/cases.json", verification], ["evals/computer-use-replay/cases.json", replay]]) {
   await mkdir(dirname(resolve(path)), { recursive: true });
