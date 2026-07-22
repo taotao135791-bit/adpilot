@@ -1,49 +1,44 @@
 # Test report
 
-Run date: 2026-07-21. Environment: macOS arm64, Node 24.13.1 (product minimum Node 22), pnpm 10.30.3, Python 3.13.
+Run date: 2026-07-22. Environment: macOS arm64, Node 24.13.1 (product minimum Node 22), pnpm 10.30.3, Python 3.13.
 
-## Product suite
+## Complete quality gate
 
-Command: `pnpm typecheck && pnpm test`
+Command: `pnpm check`
 
-- TypeScript strict typecheck: passed.
-- Vitest: 15 files, 39 tests, all passed.
-- Coverage includes action schema/policy, visual retries/timeouts/cancel, Pi code-model screenshot grounding and verification, first-launch Workspace creation, persistent natural-language conversation, workspace isolation, audit redaction/hash chain, approval binding/expiry/caps, experiments, model routing, private settings and OAuth persistence, Skills, Pi runtime tool calls, specialist isolation, main-Agent approval creation, server token handling and local visual execution.
+- Strict TypeScript: passed.
+- Vitest: 18 files, 132 tests, all passed.
+- Advertising core: 410 Pytest tests passed in 8.45 seconds.
+- CLI, React desktop, and Electron production builds: passed.
 
-## Advertising-core suite
+The 132 product tests include stable client/conversation session IDs, disk-backed Pi Session storage, tool messages/results, real Pi compaction, recovery checkpoints, restart conversation continuation, task-scoped specialist continuation across reconstructed runtimes, SharedFact lifecycle/isolation, structured JSON repair, GUI model routing/fallback, action schema, native window identity, active-window screenshot capture, screenshot/window/DPR coordinates, application/window/bounds/DPI changes, application exit, pause/takeover/cancel, timeout, duplicate coordinates, mutation non-retry, approval value/surface/signature/expiry/replay/restart invalidation, pending approval and active experiment restart recovery, end-to-end approval/execute/verify, and server secret isolation.
 
-Command: `pnpm test:ads-core`
+## Visual replay and model evaluation
 
-- Pytest: 410 tests passed.
-- Covers UAC behavior, doctor, CLI, schema migration, normalization, numeric policy, policy overrides, Quick Ops, replay, safety edges, signal derivation, terminology and workspace boundaries.
+Commands:
 
-## Build and runtime
+```bash
+pnpm fixtures:visual
+pnpm test:visual-replay
+pnpm eval:gui
+```
 
-Command: `pnpm build`
+- 60 sanitized visual tasks, plus one corpus-coverage test: 61/61 passed.
+- 12 scenes: campaign list, date selector, budget, bid, conversions, assets, account switch, confirmation, loading, error, switched browser, unauthorized app.
+- Five variants per scene cover Chinese/English, light/dark, 1024–1600 logical widths, and DPR 1/1.25/2.
+- Fixture-protocol oracle: grounding/action/completion 100%, false-click/unsafe-action 0%. This validates corpus annotations and replay mechanics, not model quality.
+- PiVision, UI-TARS, and Strong GUI live scores are honestly `not-run` because no external credentials/prediction file was supplied. `ADPILOT_EVAL_PREDICTIONS` enables a recorded three-route comparison without embedding customer data.
 
-- Strict typecheck: passed.
-- CLI ESM bundle: passed.
-- React production bundle: passed.
-- Electron ESM main-process bundle: passed.
-- Post-build executable permission: verified as `-rwxr-xr-x`.
+## Native and packaging checks
 
-Smoke checks:
+- The macOS probe was exercised against a real foreground window and returned application, bundle id, PID, window id/title/bounds, display, DPR=2, and an exact active-window capture.
+- `pnpm validate:google-ads:readonly -- --help` passed preflight. No authorized real Google Ads account was used, so no live-account pass is claimed.
+- `CSC_IDENTITY_AUTO_DISCOVERY=false pnpm desktop:dmg` produced the unsigned arm64 application and DMG.
+- `hdiutil verify release/AdPilot-0.1.1-arm64.dmg` reported a valid checksum.
+- Final DMG: `release/AdPilot-0.1.1-arm64.dmg`, 145,773,330 bytes.
 
-- `adpilot init` created a private client Workspace and all four YAML control files.
-- `adpilot doctor` read the installed Workspace and model routing state.
-- A clean-prefix global npm install produced a working `adpilot` executable; `adpilot providers` returned all 36 Pi providers.
-- `adpilot serve` launched from `/tmp`, proving the compiled CLI resolves its sibling UI without relying on repository CWD.
-- `/api/health`, `/api/about`, `/api/state` and `/` returned successfully.
-- `node scripts/verify-upstreams.mjs` matched both reviewed git pins.
-- A real headless Chrome session loaded the production UI and captured `docs/screenshots/adpilot-console.png`.
-- Bilingual settings smoke tests passed: Chinese and English shells contained only their selected interface language, all 36 Pi providers were selectable, OAuth controls rendered for OAuth providers, settings survived a process restart, and the 1440×1000 viewport had no horizontal overflow.
-- A real browser completed the primary chat flow against Pi's deterministic faux provider: automatic personal Workspace, user message, assistant response, persisted two-sided history, and reload through `/api/state`.
-- First-launch onboarding opened the model tab directly from “Configure model”; the Computer Use panel contained no separate VLM fields and reported the selected code model for screenshot grounding and verification.
-- Responsive UI checks passed at 1440×1000 and 390×844 with no horizontal overflow; the mobile command surface remains reachable above the fixed navigation.
-- The Electron development shell started the same local API on a random loopback port with sandboxing, context isolation and navigation restrictions enabled.
-- `pnpm desktop:dir` produced a runnable arm64 `AdPilot.app`; its packaged API, HTML, JavaScript and CSS assets all returned successfully.
-- `pnpm desktop:dmg` produced `AdPilot-0.1.1-arm64.dmg`; `hdiutil verify` passed and the mounted image contained `AdPilot.app` plus the `/Applications` install link.
+## External requirements
 
-## Upstream audit baseline
+Live model evaluation needs configured model credentials. Live Google Ads validation additionally needs Screen Recording and Accessibility permissions, an authorized dedicated browser Profile, a logged-in foreground account, and an explicit client account allowlist. The harness writes screenshots, grounding, actions, verification, model route, latency, failures, and available usage data to `artifacts/validation/`; the prepare flow fills a draft and forbids submission.
 
-Before integration, reviewed upstream suites passed at their pinned revisions: the advertising-policy source reported 650 passed / 6 skipped; targeted UI-TARS parser/SDK/operator suites reported 80 passing tests; reviewed Pi agent/runtime/session/provider suites passed. AdPilot's retained tests are the ongoing compatibility gate.
+The only recurring non-failing warning is Node's `DEP0040` warning from a transitive UI-TARS dependency.
