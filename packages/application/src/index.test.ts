@@ -4,9 +4,25 @@ import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { describe, expect, it } from "vitest";
-import { createAdPilotSystem, identitySafeRoi, identitySensitiveMasks } from "./index.js";
+import { ProductEventBus, createAdPilotSystem, identitySafeRoi, identitySensitiveMasks, sanitizeVisualRuntimeEvent } from "./index.js";
 
 describe("application visual table assembly", () => {
+  it("scopes UI events per client and strips full screenshot bytes", () => {
+    const event = sanitizeVisualRuntimeEvent({
+      type: "screenshot",
+      phase: "before",
+      clientId: "client-a",
+      taskId: "task-a",
+      screenshot: { base64: "sensitive-image", width: 100, height: 80, scaleFactor: 2, capturedAt: "2026-07-22T00:00:00.000Z", sha256: "a".repeat(64) }
+    });
+    expect(JSON.stringify(event)).not.toContain("sensitive-image");
+    const bus = new ProductEventBus();
+    bus.publish({ type: "computer", clientId: "client-a", taskId: "task-a", event });
+    bus.publish({ type: "task", clientId: "client-b", status: "running", message: "private-b" });
+    expect(bus.history("client-a")).toHaveLength(1);
+    expect(JSON.stringify(bus.history("client-a"))).not.toContain("private-b");
+  });
+
   it("keeps advertising identity headers visible while masking browser and personal chrome", () => {
     expect(identitySafeRoi(1200, 800)).toEqual({ x: 0, y: 56, width: 1200, height: 744 });
     const masks = identitySensitiveMasks(1200, 800);

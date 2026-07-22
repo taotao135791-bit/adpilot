@@ -108,7 +108,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const clientId = query.clientId ?? clients[0]?.id;
     const computerUse = await computerUseState(system, clientId);
     const models = { ...system.modelStatus, browserSession: computerUse.browserStatus };
-    if (!clientId) return { clients, tasks: [], approvals: [], experiments: [], audit: [], messages: [], browserSessions: computerUse.sessions, computerUse, events: system.events.history(), models };
+    if (!clientId) return { clients, tasks: [], approvals: [], experiments: [], audit: [], messages: [], browserSessions: computerUse.sessions, computerUse, events: [], models };
     const [tasks, approvals, experiments, audit, messages, settings] = await Promise.all([
       system.workspace.listTasks(clientId), system.approvals.list(clientId), system.experiments.list(clientId), system.audit.list(clientId),
       system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage), system.settings.publicView()
@@ -124,16 +124,18 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       messages: messages.filter((message) => message.conversationId === query.conversationId).map((message) => sanitizeLegacyConversationError(message, settings.locale)),
       browserSessions: computerUse.sessions,
       computerUse,
-      events: system.events.history(),
+      events: system.events.history(clientId),
       models
     };
   });
 
-  app.get("/events", async (_request, reply) => {
+  app.get("/events", async (request, reply) => {
+    const query = z.object({ clientId: z.string().min(1) }).parse(request.query);
+    await system.workspace.readClient(query.clientId);
     reply.hijack();
     reply.raw.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
     reply.raw.write(`data: ${JSON.stringify({ type: "connected" })}\n\n`);
-    const unsubscribe = system.events.subscribe((event) => reply.raw.write(`data: ${JSON.stringify(event)}\n\n`));
+    const unsubscribe = system.events.subscribe((event) => reply.raw.write(`data: ${JSON.stringify(event)}\n\n`), query.clientId);
     reply.raw.on("close", unsubscribe);
   });
 
@@ -145,13 +147,13 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
 
   app.post("/api/tasks", async (request, reply) => {
     const body = z.object({ clientId: z.string(), goal: z.string().min(1) }).strict().parse(request.body);
-    system.events.publish({ type: "task", status: "running", message: body.goal });
+    system.events.publish({ type: "task", clientId: body.clientId, status: "running", message: body.goal });
     try {
       const result = await system.agent.runTask(body.clientId, body.goal);
-      system.events.publish({ type: "task", status: result.task.phase, taskId: result.task.id, message: result.result.summary });
+      system.events.publish({ type: "task", clientId: body.clientId, status: result.task.phase, taskId: result.task.id, message: result.result.summary });
       reply.code(201); return result;
     } catch (error) {
-      system.events.publish({ type: "error", message: error instanceof Error ? error.message : String(error), retryable: true });
+      system.events.publish({ type: "error", clientId: body.clientId, message: error instanceof Error ? error.message : String(error), retryable: true });
       throw error;
     }
   });
@@ -164,12 +166,12 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const existing = (await system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage)).filter((message) => message.conversationId === body.conversationId);
     const userMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "user", content: body.message, at: new Date().toISOString() });
     await system.workspace.appendJsonl(clientId, "conversation.jsonl", userMessage);
-    system.events.publish({ type: "task", status: "running", message: body.message });
+    system.events.publish({ type: "task", clientId, status: "running", message: body.message });
     try {
       const response = await system.agent.respond(clientId, body.message, { conversationId: body.conversationId, interfaceLocale: body.locale, recentConversation: existing.slice(-12).map((item) => sanitizeLegacyConversationError(item, body.locale)).map(({ role, content }) => ({ role, content })) });
       const assistantMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "assistant", content: response.reply, ...(response.task ? { taskId: response.task.id } : {}), at: new Date().toISOString() });
       await system.workspace.appendJsonl(clientId, "conversation.jsonl", assistantMessage);
-      system.events.publish({ type: "task", status: response.task?.phase ?? "completed", ...(response.task ? { taskId: response.task.id } : {}), message: response.reply });
+      system.events.publish({ type: "task", clientId, status: response.task?.phase ?? "completed", ...(response.task ? { taskId: response.task.id } : {}), message: response.reply });
       reply.code(201); return { message: assistantMessage, task: response.task };
     } catch (error) {
       const incidentId = crypto.randomUUID();
@@ -180,7 +182,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
         error: { name: error instanceof Error ? error.name : "Error", message: detail }
       });
       await system.workspace.appendJsonl(clientId, "conversation.jsonl", ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "system", content, status: "error", at: new Date().toISOString() }));
-      system.events.publish({ type: "error", message: content, retryable: true });
+      system.events.publish({ type: "error", clientId, message: content, retryable: true });
       return reply.code(502).send({ error: content, incidentId });
     }
   });
@@ -256,7 +258,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       }
     }).parse(request.body);
     const approval = await system.tools.createApproval({ clientId: body.clientId, taskId: body.taskId, actor: "adpilot_agent", permission: "OBSERVE" }, body.operation, body.executionPlan);
-    system.events.publish({ type: "approval", approvalId: approval.id, status: approval.status });
+    system.events.publish({ type: "approval", clientId: body.clientId, approvalId: approval.id, status: approval.status });
     reply.code(201); return approval;
   });
 
@@ -288,7 +290,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       },
       sharedFacts: []
     });
-    system.events.publish({ type: "approval", approvalId: params.id, status: (result as { approved: boolean }).approved ? "pending_user" : "rejected" });
+    system.events.publish({ type: "approval", clientId: body.clientId, approvalId: params.id, status: (result as { approved: boolean }).approved ? "pending_user" : "rejected" });
     return result;
   });
 
@@ -297,7 +299,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const body = z.object({ clientId: z.string(), approvedBy: z.string().min(1) }).parse(request.body);
     const { approval, token } = await system.approvals.approveByUser(body.clientId, params.id, body.approvedBy);
     system.approvalTokens.set(params.id, token);
-    system.events.publish({ type: "approval", approvalId: params.id, status: approval.status });
+    system.events.publish({ type: "approval", clientId: body.clientId, approvalId: params.id, status: approval.status });
     return { approval, tokenStored: true };
   });
 
@@ -313,7 +315,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const permission = approval.operation.riskLevel === "destructive" ? "DESTRUCTIVE" as const : "MUTATE" as const;
     const visualTask = visualTaskFromExecutionPlan(approval.executionPlan, client.kpi.currency, permission);
     const result = await system.tools.commitApprovedVisualAction({ clientId: body.clientId, taskId: approval.taskId, actor: "account_operator", permission: visualTask.permission }, params.id, token, approval.operation, visualTask);
-    system.events.publish({ type: "approval", approvalId: params.id, status: result.status === "done" ? "executed" : "failed" });
+    system.events.publish({ type: "approval", clientId: body.clientId, approvalId: params.id, status: result.status === "done" ? "executed" : "failed" });
     return result;
   });
 

@@ -15,6 +15,7 @@ const uiRoot = fileURLToPath(new URL("../desktop", import.meta.url));
 
 if (command === "serve") {
   const host = process.env.ADPILOT_HOST ?? "127.0.0.1";
+  if (!isLoopbackHost(host)) throw new Error("AdPilot has no remote authentication and only serves on loopback hosts");
   const port = Number(process.env.ADPILOT_PORT ?? 4317);
   const system = await createAdPilotSystem();
   const server = await createServer(system, { uiRoot });
@@ -65,6 +66,10 @@ if (command === "serve") {
 } else {
   console.error(`Unknown command: ${command}\n${usage()}`);
   process.exitCode = 1;
+}
+
+export function isLoopbackHost(host: string): boolean {
+  return ["127.0.0.1", "::1", "localhost"].includes(host.trim().toLowerCase());
 }
 
 function flag(name: string): string | undefined {

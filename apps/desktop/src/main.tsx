@@ -34,7 +34,7 @@ type Approval = { id: string; taskId: string; status: string; executionPlan: { t
 type Experiment = { id: string; hypothesis: string; variable: string; status: string; reviewAt: string };
 type Audit = { id: string; actor: string; action: string; status: string; at: string };
 type ConversationMessage = { id: string; clientId: string; conversationId: string; role: "user" | "assistant" | "system"; content: string; status: "complete" | "error"; taskId?: string; at: string };
-type ProductEvent = { type: string; status?: string; message?: string; approvalId?: string; event?: { type: string; phase?: string; attempt?: number; screenshot?: { base64: string; capturedAt: string }; action?: { action: string; target: string; reason: string }; reason?: string } };
+type ProductEvent = { type: string; status?: string; message?: string; approvalId?: string; event?: { type: string; phase?: string; attempt?: number; screenshot?: { width: number; height: number; capturedAt: string; sha256: string }; action?: { action: string; target: string; reason: string }; reason?: string } };
 type State = { clients: Client[]; selectedClientId?: string; tasks: Task[]; approvals: Approval[]; experiments: Experiment[]; audit: Audit[]; messages: ConversationMessage[]; events: ProductEvent[]; models: { fast: string; strong: string; gui: string; guiStrong: string; chatConfigured: boolean; guiConfigured: boolean; browserSession?: string; route?: string; privacyMode?: "standard" | "local-only"; permission?: "OBSERVE" | "INTERACT" | "MUTATE" | "DESTRUCTIVE" } };
 
 const emptyState: State = { clients: [], tasks: [], approvals: [], experiments: [], audit: [], messages: [], events: [], models: { fast: "", strong: "", gui: "", guiStrong: "", chatConfigured: false, guiConfigured: false } };
@@ -87,11 +87,12 @@ function App() {
   useEffect(() => { void loadState(); }, []);
   useEffect(() => { void loadSettings(); }, []);
   useEffect(() => {
-    const source = new EventSource("/events");
+    if (!clientId) return;
+    const source = new EventSource(`/events?clientId=${encodeURIComponent(clientId)}`);
     source.onmessage = () => void loadState();
     source.onerror = () => setError(getCopy(locale).connectionError);
     return () => source.close();
-  }, [loadState, locale]);
+  }, [clientId, loadState, locale]);
 
   const currentTask = state.tasks[0];
   const latestComputer = [...state.events].reverse().find((item) => item.type === "computer")?.event;
@@ -232,7 +233,7 @@ function App() {
             <div className="panel-heading"><div><Desktop24Regular /><h2>{copy.computer}</h2></div><span className={`mode-pill ${computerMode}`}>{computerMode === "running" ? copy.live : computerMode === "paused" ? copy.paused : copy.takeover}</span></div>
             <div className="screen-bezel">
               <div className="screen-frame">
-                {latestShot ? <img src={`data:image/png;base64,${latestShot.base64}`} alt={copy.screenshotAlt} /> : <div className="screen-idle"><span className="scanline" /><i>AP</i><strong>{copy.visualChannel}</strong><small>{state.models.guiConfigured ? copy.awaitingSignal : copy.modelNotConfigured}</small></div>}
+                <div className="screen-idle"><span className="scanline" /><i>AP</i><strong>{copy.visualChannel}</strong><small>{latestShot ? formatTime(latestShot.capturedAt, locale) : state.models.guiConfigured ? copy.awaitingSignal : copy.modelNotConfigured}</small></div>
                 {latestComputer?.type === "grounded" && latestComputer.action && <div className="action-overlay"><strong>{visualActionLabel(latestComputer.action.action, locale)}</strong><span>{latestComputer.action.target}</span></div>}
               </div>
             </div>

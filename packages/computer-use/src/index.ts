@@ -173,12 +173,13 @@ export interface NativeOperator {
   identifySurface?(): Promise<{ surface: NativeSurface; fingerprint: string }>;
 }
 
-export type VisualRuntimeEvent =
+type VisualRuntimeEventPayload =
   | { type: "screenshot"; phase: "before" | "after"; screenshot: Screenshot }
   | { type: "grounded"; attempt: number; tier: ModelTier; action: VisualAction }
   | { type: "executed"; attempt: number; action: VisualAction }
   | { type: "verified"; attempt: number; matched: boolean; confidence: number; reason: string }
   | { type: "blocked"; attempt: number; reason: string; code?: VisualBlockerCode };
+export type VisualRuntimeEvent = VisualRuntimeEventPayload & { clientId?: string; taskId?: string };
 
 export const VisualBlockerCode = z.enum([
   "SURFACE_CHANGED",
@@ -342,9 +343,9 @@ export class VisualComputerRuntime {
   async verifyVisible(expectedResult: string, task?: VisualMicroTask): Promise<{ matched: boolean; confidence: number; reason: string; screenshot: Screenshot }> {
     if (task && this.operator.bindTask) await this.operator.bindTask(task);
     const screenshot = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "verification preflight screenshot");
-    await this.onEvent({ type: "screenshot", phase: "before", screenshot });
+    await this.onEvent(scopeVisualRuntimeEvent({ type: "screenshot", phase: "before", screenshot }, task));
     const result = await withTimeout(this.verifier.verify(expectedResult, screenshot, screenshot, task), this.stepTimeoutMs, "verification preflight");
-    await this.onEvent({ type: "verified", attempt: 0, ...result });
+    await this.onEvent(scopeVisualRuntimeEvent({ type: "verified", attempt: 0, ...result }, task));
     return { ...result, screenshot };
   }
 
@@ -352,7 +353,7 @@ export class VisualComputerRuntime {
   async captureForTask(task: VisualMicroTask): Promise<Screenshot> {
     if (this.operator.bindTask) await this.operator.bindTask(task);
     const screenshot = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "task-bound screenshot capture");
-    await this.onEvent({ type: "screenshot", phase: "before", screenshot });
+    await this.onEvent(scopeVisualRuntimeEvent({ type: "screenshot", phase: "before", screenshot }, task));
     return screenshot;
   }
 
@@ -382,7 +383,7 @@ export class VisualComputerRuntime {
         const before = attempt === 1 && initialScreenshot
           ? Screenshot.parse(initialScreenshot)
           : await withTimeout(this.operator.capture(), this.stepTimeoutMs, "screenshot capture");
-        await this.onEvent({ type: "screenshot", phase: "before", screenshot: before });
+        await this.onEvent(scopeVisualRuntimeEvent({ type: "screenshot", phase: "before", screenshot: before }, boundTask));
         const expectedFingerprint = surfaceFingerprintFor(before);
         const grounded = await withTimeout(this.grounding.ground(boundTask, before, tier), this.stepTimeoutMs, "visual grounding");
         const action = bindActionContext(grounded, boundTask, before, expectedFingerprint);
@@ -395,7 +396,7 @@ export class VisualComputerRuntime {
           if (error instanceof VisualRuntimeBlocker) throw error;
           throw new VisualRuntimeBlocker("POLICY_BLOCKED", error instanceof Error ? error.message : String(error));
         }
-        await this.onEvent({ type: "grounded", attempt, tier, action });
+        await this.onEvent(scopeVisualRuntimeEvent({ type: "grounded", attempt, tier, action }, boundTask));
         if (action.action === "fail") return { status: "failed", attempts: attempt, blocker: action.reason, lastAction: action };
         if (action.action === "done") return { status: "done", attempts: attempt, action, before, after: before };
 
@@ -413,15 +414,15 @@ export class VisualComputerRuntime {
         if (coordinateKey) executedCoordinates.add(coordinateKey);
         await withTimeout(this.operator.execute(action, before), this.stepTimeoutMs, "native action");
         mutationExecuted = action.risk_level === "mutate" || action.risk_level === "destructive";
-        await this.onEvent({ type: "executed", attempt, action });
+        await this.onEvent(scopeVisualRuntimeEvent({ type: "executed", attempt, action }, boundTask));
         const after = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "verification screenshot");
-        await this.onEvent({ type: "screenshot", phase: "after", screenshot: after });
+        await this.onEvent(scopeVisualRuntimeEvent({ type: "screenshot", phase: "after", screenshot: after }, boundTask));
         const afterFingerprint = surfaceFingerprintFor(after);
         if (afterFingerprint !== expectedFingerprint && !(before.surface && after.surface && sameNativeWindow(before.surface, after.surface))) {
           throw new SurfaceChangedBlocker(expectedFingerprint, afterFingerprint);
         }
         const verified = await withTimeout(this.verifier.verify(action.expected_result, before, after, boundTask), this.stepTimeoutMs, "visual verification");
-        await this.onEvent({ type: "verified", attempt, ...verified });
+        await this.onEvent(scopeVisualRuntimeEvent({ type: "verified", attempt, ...verified }, boundTask));
         if (verified.matched) return { status: "done", attempts: attempt, action, before, after };
         if (mutationExecuted) {
           return failedResult(attempt, `mutation was executed but could not be visually verified: ${verified.reason}`, "MUTATION_RETRY_FORBIDDEN", action);
@@ -429,7 +430,7 @@ export class VisualComputerRuntime {
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         const code = blockerCode(error);
-        await this.onEvent({ type: "blocked", attempt, reason, ...(code ? { code } : {}) });
+        await this.onEvent(scopeVisualRuntimeEvent({ type: "blocked", attempt, reason, ...(code ? { code } : {}) }, boundTask));
         if (error instanceof SurfaceCaptureChangedError || error instanceof NativeSurfaceUnavailableError) {
           return failedResult(attempt, reason, "SURFACE_CHANGED", lastAction);
         }
@@ -458,6 +459,14 @@ export class VisualComputerRuntime {
 }
 
 class VisualTimeoutError extends Error {}
+
+function scopeVisualRuntimeEvent(event: VisualRuntimeEventPayload, task?: VisualMicroTask): VisualRuntimeEvent {
+  return {
+    ...event,
+    ...(task?.clientId ? { clientId: task.clientId } : {}),
+    ...(task?.taskId ? { taskId: task.taskId } : {})
+  };
+}
 
 function failedResult(attempts: number, blocker: string, blockerCode: VisualBlockerCode, lastAction?: VisualAction): VisualStepResult {
   return { status: "failed", attempts, blocker, blockerCode, ...(lastAction ? { lastAction } : {}) };

@@ -43,18 +43,37 @@ import type { Models } from "@earendil-works/pi-ai";
 import { SharedFactLedger } from "@adpilot/shared";
 import { PiVisualTableModel, PiVisualTableVerifier, VisualTableReader } from "@adpilot/visual-table-reader";
 
+export interface PublicVisualRuntimeEvent {
+  type: VisualRuntimeEvent["type"];
+  clientId?: string;
+  taskId?: string;
+  phase?: "before" | "after";
+  attempt?: number;
+  tier?: string;
+  screenshot?: Pick<Screenshot, "width" | "height" | "scaleFactor" | "capturedAt" | "sha256" | "surfaceFingerprint">;
+  action?: { action: string; target: string; reason: string; confidence: number; expectedResult: string; riskLevel: string };
+  matched?: boolean;
+  confidence?: number;
+  reason?: string;
+  code?: string;
+}
+
 export type ProductEvent =
-  | { type: "task"; status: string; taskId?: string; message: string }
-  | { type: "computer"; event: VisualRuntimeEvent }
-  | { type: "approval"; approvalId: string; status: string }
-  | { type: "error"; message: string; retryable: boolean };
+  | { type: "task"; clientId: string; status: string; taskId?: string; message: string }
+  | { type: "computer"; clientId: string; taskId?: string; event: PublicVisualRuntimeEvent }
+  | { type: "approval"; clientId: string; approvalId: string; status: string }
+  | { type: "error"; clientId?: string; message: string; retryable: boolean };
 
 export class ProductEventBus {
   private readonly emitter = new EventEmitter();
   private recent: ProductEvent[] = [];
   publish(event: ProductEvent): void { this.recent = [...this.recent.slice(-99), event]; this.emitter.emit("event", event); }
-  subscribe(listener: (event: ProductEvent) => void): () => void { this.emitter.on("event", listener); return () => this.emitter.off("event", listener); }
-  history(): ProductEvent[] { return this.recent.slice(); }
+  subscribe(listener: (event: ProductEvent) => void, clientId?: string): () => void {
+    const scoped = (event: ProductEvent) => { if (!clientId || event.clientId === clientId) listener(event); };
+    this.emitter.on("event", scoped);
+    return () => this.emitter.off("event", scoped);
+  }
+  history(clientId: string): ProductEvent[] { return this.recent.filter((event) => event.clientId === clientId); }
 }
 
 export interface AdPilotSystem {
@@ -238,7 +257,15 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
         grounding,
         verifier,
         undefined,
-        (event) => events.publish({ type: "computer", event }),
+        (event) => {
+          if (!event.clientId) return;
+          events.publish({
+            type: "computer",
+            clientId: event.clientId,
+            ...(event.taskId ? { taskId: event.taskId } : {}),
+            event: sanitizeVisualRuntimeEvent(event)
+          });
+        },
         positiveInteger(env.ADPILOT_GUI_TIMEOUT_MS, 20_000),
         Math.min(3, positiveInteger(env.ADPILOT_GUI_MAX_RETRIES, 2) + 1)
       )
@@ -276,7 +303,7 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     new RiskReviewer(runtime, tools)
   ]);
   const agent = new AdPilotAgent(runtime, specialists, workspace, tools, (task) => events.publish({
-    type: "task", status: task.phase, taskId: task.id,
+    type: "task", clientId: task.clientId, status: task.phase, taskId: task.id,
     message: task.owner ? `${task.owner} is working` : task.nextStep ?? task.goal
   }), sharedFacts);
   const connectedSessions = (await browserSessions.list()).filter((session) => session.sessionStatus === "connected");
@@ -297,6 +324,44 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
       permission: "OBSERVE"
     }
   };
+}
+
+/** Never expose complete screenshot bytes or native window titles through UI events. */
+export function sanitizeVisualRuntimeEvent(event: VisualRuntimeEvent): PublicVisualRuntimeEvent {
+  if (event.type === "screenshot") {
+    return {
+      type: event.type,
+      phase: event.phase,
+      ...(event.clientId ? { clientId: event.clientId } : {}),
+      ...(event.taskId ? { taskId: event.taskId } : {}),
+      screenshot: {
+        width: event.screenshot.width,
+        height: event.screenshot.height,
+        scaleFactor: event.screenshot.scaleFactor,
+        capturedAt: event.screenshot.capturedAt,
+        sha256: event.screenshot.sha256,
+        ...(event.screenshot.surfaceFingerprint ? { surfaceFingerprint: event.screenshot.surfaceFingerprint } : {})
+      }
+    };
+  }
+  if (event.type === "grounded" || event.type === "executed") {
+    return {
+      type: event.type,
+      attempt: event.attempt,
+      ...(event.type === "grounded" ? { tier: event.tier } : {}),
+      ...(event.clientId ? { clientId: event.clientId } : {}),
+      ...(event.taskId ? { taskId: event.taskId } : {}),
+      action: {
+        action: event.action.action,
+        target: event.action.target,
+        reason: event.action.reason,
+        confidence: event.action.confidence,
+        expectedResult: event.action.expected_result,
+        riskLevel: event.action.risk_level
+      }
+    };
+  }
+  return structuredClone(event) as PublicVisualRuntimeEvent;
 }
 
 function requireTaskClient(task: VisualMicroTask | undefined): string {
