@@ -239,6 +239,29 @@ describe("product server", () => {
     expect(fabricatedReview.json().approved).toBe(false);
     await expect(system.approvals.get("client-a", fabricated.id)).resolves.toMatchObject({ status: "rejected" });
 
+    const screenshotId = crypto.randomUUID();
+    const screenshotDisclosure: ScreenshotModelCallAudit = {
+      auditId: crypto.randomUUID(), clientId: "client-a", taskId, purpose: "table_read",
+      modelProvider: "test", modelId: "vision", screenshotId, screenshotSha256: "c".repeat(64),
+      sentRoi: { x: 20, y: 100, width: 900, height: 600 }, masks: [], transmittedWidth: 900, transmittedHeight: 600,
+      leftLocal: false, fullScreenshotLocalOnly: true, privacyMode: "minimized", dataRetentionPolicy: "test-only",
+      outcome: "prepared", createdAt: new Date().toISOString()
+    };
+    await system.screenshotAudits.append(screenshotDisclosure);
+    const evidenced = await system.approvals.create(
+      "client-a", taskId, { ...approvedOperation, evidence: [`screenshot:${screenshotId}`] }, approvedPlan
+    );
+    const dispatch = vi.spyOn(system.specialists, "dispatch").mockImplementation(async (_role, request) => {
+      const input = request.input as { approvalId: string; hasBeforeScreenshot: boolean };
+      expect(input).toMatchObject({ approvalId: evidenced.id, hasBeforeScreenshot: true });
+      await system.approvals.recordRiskReview("client-a", evidenced.id, true, "Verified local screenshot evidence");
+      return { approved: true, reason: "Verified local screenshot evidence", vetoes: [], requiredChecks: [] };
+    });
+    const evidencedReview = await server.inject({ method: "POST", url: `/api/approvals/${evidenced.id}/risk-review`, payload: { clientId: "client-a" } });
+    expect(evidencedReview.statusCode).toBe(200);
+    expect(evidencedReview.json().approved).toBe(true);
+    dispatch.mockRestore();
+
     const approval = await system.approvals.create("client-a", taskId, approvedOperation, approvedPlan);
     await system.approvals.recordRiskReview("client-a", approval.id, true, "Within policy");
     const response = await server.inject({ method: "POST", url: `/api/approvals/${approval.id}/approve`, payload: { clientId: "client-a", approvedBy: "owner" } });

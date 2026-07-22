@@ -264,11 +264,18 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
     const body = z.object({ clientId: z.string() }).parse(request.body);
     const approval = await system.approvals.get(body.clientId, params.id);
-    const audit = await system.audit.list(body.clientId);
+    const [audit, screenshotDisclosures] = await Promise.all([
+      system.audit.list(body.clientId),
+      system.screenshotAudits.list(body.clientId)
+    ]);
     const screenshotHashes = new Set(audit.flatMap((event) => {
       if (event.action !== "execute_visual_task" || event.status !== "succeeded") return [];
       return [event.details.beforeHash, event.details.afterHash].filter((value): value is string => typeof value === "string");
     }));
+    for (const disclosure of screenshotDisclosures) {
+      screenshotHashes.add(disclosure.screenshotId);
+      screenshotHashes.add(disclosure.screenshotSha256);
+    }
     const result = await system.specialists.dispatch("risk_reviewer", {
       context: { clientId: body.clientId, taskId: approval.taskId, actor: "adpilot_agent", permission: "OBSERVE" },
       input: {
