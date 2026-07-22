@@ -21,7 +21,19 @@ import { SkillRegistry } from "@adpilot/skills";
 import { AccountOperator, SpecialistCoordinator, specialistSchemas, type SpecialistAgent } from "@adpilot/specialist-agents";
 import { AdPilotTools } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
-import { AdPilotAgent } from "./index.js";
+import { AdPilotAgent, conversationSpecialistPermission } from "./index.js";
+
+describe("conversation specialist permissions", () => {
+  it("derives the minimum read or scroll permission and refuses mutations", () => {
+    expect(conversationSpecialistPermission("performance_analyst", {})).toBe("OBSERVE");
+    expect(conversationSpecialistPermission("account_operator", { visualTable: { scrollDirection: "none" } })).toBe("OBSERVE");
+    expect(conversationSpecialistPermission("account_operator", { visualTable: { scrollDirection: "down" } })).toBe("INTERACT");
+    expect(conversationSpecialistPermission("account_operator", { visualTask: { permission: "INTERACT" } })).toBe("INTERACT");
+    expect(() => conversationSpecialistPermission("account_operator", { visualTask: { permission: "MUTATE" } })).toThrow(
+      "cannot execute approved mutations"
+    );
+  });
+});
 
 describe("AdPilotAgent integration", () => {
   it("uses Pi as the main loop, dispatches an isolated specialist, and persists task state", async () => {

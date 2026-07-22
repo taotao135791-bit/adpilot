@@ -12,6 +12,7 @@ import {
   SharedFactLedger,
   SpecialistRole,
   TaskState,
+  type PermissionLevel,
   type SharedFact as SharedFactValue,
   type SharedFactRepository,
   type TaskState as Task
@@ -113,7 +114,7 @@ export class AdPilotAgent {
     const dispatchTool: AgentTool = {
       name: "dispatch_specialist",
       label: "Dispatch an isolated specialist",
-      description: "Run one specialist with an isolated context and structured input. Measurement should be reviewed before optimization changes.",
+      description: "Run one specialist with an isolated context and structured input. The account operator can observe the managed browser, read a visible advertising table, or prepare a field without submitting it. Measurement should be reviewed before optimization changes.",
       parameters: Type.Object({ role: Type.Union(SpecialistRole.options.map((role) => Type.Literal(role))), input: Type.Unknown() }),
       executionMode: "sequential",
       execute: async (_id, raw) => {
@@ -122,7 +123,12 @@ export class AdPilotAgent {
         await this.persistTask(task);
         taskFacts = await this.sharedFacts.usable(clientId, { taskId: task.id });
         const output = await this.specialists.dispatch(params.role, {
-          context: { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE" },
+          context: {
+            clientId,
+            taskId: task.id,
+            actor: "adpilot_agent",
+            permission: conversationSpecialistPermission(params.role, params.input)
+          },
           input: params.input,
           sharedFacts: taskFacts
         });
@@ -171,6 +177,8 @@ export class AdPilotAgent {
           "Use projectContext.conversation.interfaceLocale for every user-facing summary, hypothesis, conclusion, blocker, and next step. Use Simplified Chinese for zh-CN and English for en.",
           "Treat projectContext.verifiedFacts as the only production account facts. Never convert ordinary context objects, historical prose, hypotheses, observations, stale facts, or specialist assertions into definite account claims.",
           "Every numerical account claim sent to a specialist must be supported by a matching verified fact with screenshot evidence that has not expired.",
+          "When account evidence is missing, dispatch account_operator with visualTable. Supply platform and targetColumns (key, label, valueType, unit, critical), optional targetRows, and scrollDirection. Omit tableRoi unless the user has explicitly supplied exact screenshot-pixel coordinates; the product derives a safe live browser-content ROI. Use scrollDirection none for a visible page, or down/right only when reading additional rows or columns.",
+          "For non-table visual observation or safe preparation, dispatch account_operator with one visualTask. It must request only OBSERVE or INTERACT. This conversational run can never dispatch MUTATE or DESTRUCTIVE actions and can never Save, Apply, Publish, confirm, or press Enter to submit.",
           "Review measurement reliability before optimization. Never mutate an account from this conversational run.",
           "For an executable operation, use prepare_approval exactly once per single-variable change. Never invent an approval id and never execute from this run.",
           "The prepare_approval executionPlan is intent, not guessed native state. Supply schemaVersion 1, platform, exact visible accountName/accountId/campaignName/campaignId/pageType, operation/currentValue/proposedValue, a precise instruction/target/expectedResult, allowedRegion in screenshot_pixels, riskLevel, and experiment. The product binds browser Profile, native application/window, live surface hash, live dual-reviewed account hash, timestamps, and plan id from the managed browser."
@@ -278,6 +286,31 @@ function normalizeDecisionMode(value: string | undefined): "answer" | "investiga
 function fallbackDecisionMode(message: string): "answer" | "investigate" {
   const investigationIntent = /(?:帮我|请|替我|我的|这个|当前).{0,12}(?:检查|查看|诊断|审计|分析|优化|调整|修改|暂停|开启)|(?:检查|查看|诊断|审计|优化|调整|修改|暂停|开启).{0,12}(?:账户|广告|系列|投放|预算|出价|素材|归因)|\b(?:diagnose|audit|inspect|optimi[sz]e|change|adjust|pause|enable|increase|decrease)\b.{0,40}\b(?:my|this|account|campaign|ads?|budget|bid|creative|attribution)\b/i;
   return investigationIntent.test(message) ? "investigate" : "answer";
+}
+
+/**
+ * Derives the least privilege needed by a conversational specialist call.
+ * Mutations are deliberately unavailable here; they can only run through the
+ * independently approved execution path.
+ */
+export function conversationSpecialistPermission(role: z.infer<typeof SpecialistRole>, input: unknown): PermissionLevel {
+  if (role !== "account_operator" || !input || typeof input !== "object" || Array.isArray(input)) return "OBSERVE";
+  const record = input as Record<string, unknown>;
+  const visualTask = record.visualTask;
+  if (visualTask && typeof visualTask === "object" && !Array.isArray(visualTask)) {
+    const permission = (visualTask as Record<string, unknown>).permission;
+    if (permission === "INTERACT") return "INTERACT";
+    if (permission === "MUTATE" || permission === "DESTRUCTIVE") {
+      throw new Error("conversational account operator cannot execute approved mutations");
+    }
+    return "OBSERVE";
+  }
+  const visualTable = record.visualTable;
+  if (visualTable && typeof visualTable === "object" && !Array.isArray(visualTable)) {
+    const direction = (visualTable as Record<string, unknown>).scrollDirection;
+    return direction === "down" || direction === "right" ? "INTERACT" : "OBSERVE";
+  }
+  return "OBSERVE";
 }
 
 /** Disk-backed canonical fact repository; legacy rows are quarantined as migration facts. */
