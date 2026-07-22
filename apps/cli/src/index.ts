@@ -60,14 +60,66 @@ if (command === "serve") {
   const system = await createAdPilotSystem();
   await system.models.logout(providerId);
   console.log(`Disconnected ${providerId}.`);
+} else if (command === "browser") {
+  await runBrowserCommand();
 } else {
-  console.error(`Unknown command: ${command}\nUsage: adpilot [serve|doctor|providers|login <provider>|logout <provider>|init <client-id> --name <name> --kpi CPA --target 20]`);
+  console.error(`Unknown command: ${command}\n${usage()}`);
   process.exitCode = 1;
 }
 
 function flag(name: string): string | undefined {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : undefined;
+}
+
+async function runBrowserCommand(): Promise<void> {
+  const action = process.argv[3] ?? "status";
+  if (!["start", "status", "resume", "close"].includes(action)) throw new Error(`unknown browser command: ${action}\n${usage()}`);
+  const system = await createAdPilotSystem();
+  const explicitClientId = flag("--client") ?? process.argv[4];
+  const clients = await system.workspace.listClients();
+  const clientId = explicitClientId ?? (clients.length === 1 ? clients[0]?.id : undefined);
+  if (!clientId) throw new Error("client id is required when the workspace does not contain exactly one client: adpilot browser status --client <id>");
+  if (!clients.some((client) => client.id === clientId)) throw new Error(`client does not exist: ${clientId}`);
+  const client = await system.workspace.readClient(clientId);
+  const requestedPlatform = flag("--platform") ?? "google_ads";
+  const configuredAccount = client.accounts.accounts.find((account) => account.platform === requestedPlatform);
+  const browserProfile = flag("--profile") ?? configuredAccount?.browserProfile ?? `${clientId}-${requestedPlatform.replace(/_/g, "-")}`;
+
+  if (action === "start") {
+    const session = await system.browserSessions.start({
+      clientId,
+      browserProfile,
+      platform: requestedPlatform,
+      ...(flag("--url") ? { startUrl: flag("--url") } : {})
+    });
+    console.log(JSON.stringify({ status: "connected", session }, null, 2));
+    return;
+  }
+  if (action === "resume") {
+    const session = await system.browserSessions.resume(clientId, browserProfile);
+    console.log(JSON.stringify({ status: "connected", session }, null, 2));
+    return;
+  }
+  if (action === "close") {
+    const session = await system.browserSessions.close(clientId, browserProfile);
+    console.log(JSON.stringify({ status: "closed", session }, null, 2));
+    return;
+  }
+  const session = await system.browserSessions.get(clientId, flag("--profile"));
+  console.log(JSON.stringify({ status: session?.sessionStatus ?? "disconnected", session: session ?? null }, null, 2));
+}
+
+function usage(): string {
+  return [
+    "Usage:",
+    "  adpilot [serve|doctor|providers]",
+    "  adpilot login <provider>",
+    "  adpilot logout <provider>",
+    "  adpilot init <client-id> --name <name> --kpi CPA --target 20 [--currency USD]",
+    "  adpilot browser start --client <id> [--profile <profile>] [--platform google_ads] [--url <url>]",
+    "  adpilot browser status|resume|close --client <id> [--profile <profile>]"
+  ].join("\n");
 }
 
 function ask(readline: Interface, question: string): Promise<string> {
