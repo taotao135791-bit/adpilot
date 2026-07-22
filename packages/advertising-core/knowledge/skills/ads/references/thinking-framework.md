@@ -37,7 +37,7 @@ checking conversion volume. Critiquing a creative without seeing the safe
 zone overlay.
 
 **Example trigger.** First step of every `/ads audit`, `/ads competitor`,
-`/ads dna`. The Context Intake section in `ads/SKILL.md` enforces this gate.
+`/ads dna`. The Context Intake section in `../SKILL.md` enforces this gate.
 
 ---
 
@@ -100,7 +100,7 @@ and synthesize the raw data into a coherent strategy.
 **In ads work.**
 - Compute unit economics by hand. Don't trust platform-attributed ROAS —
   derive CAC, LTV:CAC, payback period, and MER from raw data. See
-  `references/budget-allocation.md` for the math.
+  `budget-allocation.md` for the math.
 - Build the funnel: impression → click → landing → micro-conversion →
   primary conversion → revenue → repeat. Where does the leak live?
 - Evaluate constraints: budget floor for Smart Bidding (15+ conv/30d),
@@ -125,7 +125,7 @@ moment of finding the hidden relationship between distinct variables.
 **In ads work.**
 - Andromeda creative similarity + Entity-ID retrieval + GEM embeddings =
   "creative is the new targeting" is mechanical, not slogan. See
-  `references/copy-frameworks.md` and `skills/ads-meta/SKILL.md`.
+  `copy-frameworks.md` and `../../ads-meta/SKILL.md`.
 - AI Max keywordless + Demand Gen + PMax = the post-keyword era; treat
   match-type strategy as legacy in 2026.
 - iOS AdAttributionKit + Consent Mode V2 + sGTM/CAPI Gateway = the privacy
@@ -174,13 +174,13 @@ intuition when the data is ambiguous.
 
 **In ads work.**
 - Read the ad copy emotionally. Does the headline make a user feel something
-  *they want to feel*? See `references/copy-frameworks.md` for the six
+  *they want to feel*? See `copy-frameworks.md` for the six
   proven emotional frameworks.
 - Look at the landing page as a first-time visitor would. Where is the
   curiosity? Where is the resolution? Is the CTA at the right moment?
 - Trust intuition when the data is ambiguous. Creative is half art —
   scoring an ad 100% compliant while it has zero emotional pull is a fail.
-- Brand voice mapping: `references/voice-to-style.md` translates emotional
+- Brand voice mapping: `voice-to-style.md` translates emotional
   attributes into concrete visual choices.
 
 **Anti-pattern.** A scoring rubric that rewards "spec compliance" and
@@ -200,7 +200,7 @@ market wants something different than what you built. Let go of sunk costs
 to pivot efficiently.
 
 **In ads work.**
-- The 3× Kill Rule (see `references/scoring-system.md`): if CPA is >3× target
+- The 3× Kill Rule (see `scoring-system.md`): if CPA is >3× target
   and has had 3+ optimization attempts, accept that this campaign is dead.
   Don't keep tweaking.
 - If an audit recommendation was implemented and didn't move the needle in
@@ -231,7 +231,7 @@ write the code, draft the content, ship the deliverable.
 - Generate the ad assets through `/ads generate` — don't stop at the
   conceptual stage.
 - Render the PDF: `scripts/generate_report.py --check` then `--output`.
-  Quality gate before delivery (see Quality Gates in `ads/SKILL.md`).
+  Quality gate before delivery (see Quality Gates in `../SKILL.md`).
 
 **Anti-pattern.** Endless "more analysis needed" loops. A campaign brief
 that hedges every concept and forces the next collaborator to make every

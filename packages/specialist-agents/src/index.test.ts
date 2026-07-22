@@ -9,6 +9,7 @@ import {
   MediaBuyer,
   MeasurementReviewer,
   PerformanceAnalyst,
+  ReportingAnalyst,
   SpecialistCoordinator,
   selectSharedFactsForSpecialist,
   specialistSchemas,
@@ -295,6 +296,81 @@ describe("specialist agents", () => {
       sharedFacts: []
     })).rejects.toThrow("unverified numerical specialist input: metrics.spend");
     expect(runtime.run).not.toHaveBeenCalled();
+  });
+
+  it("dispatches the reporting analyst with reporting skills, report routing, and verified fact binding", async () => {
+    const calls: RuntimeRequest[] = [];
+    const runtime: SpecialistRuntime = {
+      run: async (request): Promise<RuntimeResult> => {
+        calls.push(request);
+        const text = JSON.stringify({ reportType: "daily", markdown: "# Daily Ads Report\n\n## Observed Facts\n\n- ok", reliability: "reliable", findings: [], confidence: 0.9 });
+        return {
+          text,
+          model: { provider: "test", id: "fast", tier: "fast" },
+          messages: [...(request.priorMessages ?? []), fauxAssistantMessage(text)],
+          events: [],
+          recovered: false
+        };
+      }
+    };
+    const coordinator = new SpecialistCoordinator([new ReportingAnalyst(runtime)]);
+    const taskId = crypto.randomUUID();
+    const result = await coordinator.dispatch("reporting_analyst", {
+      context: { clientId: "client-a", taskId, actor: "main", permission: "OBSERVE" },
+      input: {
+        reportType: "daily",
+        metrics: { spend: 100, conversions: 10, days: 7 },
+        target: 10,
+        objective: "CPA",
+        periodStart: "2026-07-15",
+        periodEnd: "2026-07-21",
+        timezone: "UTC",
+        currency: "USD",
+        audience: "client",
+        factIds: { "metrics.spend": "spend", "metrics.conversions": "conversions", "metrics.days": "days", target: "target" }
+      },
+      sharedFacts: [
+        visualFact(taskId, "spend", 100, "spend"),
+        visualFact(taskId, "conversions", 10, "conversions"),
+        visualFact(taskId, "days", 7, "days"),
+        visualFact(taskId, "target_cpa", 10, "target")
+      ]
+    }) as { reportType: string; markdown: string };
+    expect(result.reportType).toBe("daily");
+    expect(result.markdown).toContain("# Daily Ads Report");
+    expect(calls[0]?.allowedSkills).toEqual(["daily-report", "weekly-report", "account-audit", "generate-client-report"]);
+    expect(calls[0]?.signals).toEqual({ task: "report" });
+  });
+
+  it("rejects reporting analyst numbers that are not bound to verified visual facts", async () => {
+    const runtime: SpecialistRuntime = { run: vi.fn() };
+    const taskId = crypto.randomUUID();
+    await expect(new ReportingAnalyst(runtime).execute({
+      context: { clientId: "client-a", taskId, actor: "root_agent", permission: "OBSERVE" },
+      input: {
+        reportType: "weekly",
+        metrics: { spend: 100, days: 7 },
+        priorMetrics: { spend: 80, days: 7 },
+        objective: "CPA",
+        periodStart: "2026-07-08",
+        periodEnd: "2026-07-14",
+        timezone: "UTC",
+        currency: "USD",
+        audience: "client",
+        factIds: { "metrics.spend": "spend", "metrics.days": "days", "priorMetrics.days": "prior-days" }
+      },
+      sharedFacts: [
+        visualFact(taskId, "spend", 100, "spend"),
+        visualFact(taskId, "days", 7, "days"),
+        visualFact(taskId, "days", 7, "prior-days")
+      ]
+    })).rejects.toThrow("unverified numerical specialist input: priorMetrics.spend");
+    expect(runtime.run).not.toHaveBeenCalled();
+  });
+
+  it("lets the media buyer assess campaign launches", () => {
+    const runtime: SpecialistRuntime = { run: vi.fn() };
+    expect(new MediaBuyer(runtime).allowedSkills).toContain("assess-campaign-launch");
   });
 });
 

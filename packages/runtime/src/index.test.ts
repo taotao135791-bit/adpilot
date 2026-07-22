@@ -10,7 +10,7 @@ import { ApprovalService } from "@adpilot/approvals";
 import { ExperimentStore } from "@adpilot/experiments";
 import { ModelRouter } from "@adpilot/model-router";
 import { SkillRegistry } from "@adpilot/skills";
-import { AdPilotTools } from "@adpilot/tools";
+import { AdPilotTools, type ToolContext } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
 import { AdPilotSessionStorage, PiAgentRuntime, StructuredOutputBlocker, resolvePiSessionId } from "./index.js";
 
@@ -38,6 +38,40 @@ describe("PiAgentRuntime", () => {
     const session = await AdPilotSessionStorage.openOrCreate(workspace, "client-a", inputSessionId);
     const messageEntries = (await session.getEntries()).filter((entry) => entry.type === "message");
     expect(messageEntries.map((entry) => entry.message.role)).toEqual(["user", "assistant", "toolResult", "assistant"]);
+  });
+
+  it("exposes skill input contracts in the execute_skill tool and system prompt without file references", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-runtime-contract-"));
+    const workspace = new WorkspaceStore(root);
+    await workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
+    let requestPayload = "";
+    const faux = fauxProvider({ provider: "test", models: [{ id: "fast" }, { id: "strong", reasoning: true }] });
+    const models = createModels(); models.setProvider(faux.provider);
+    faux.setResponses([(context) => {
+      requestPayload = JSON.stringify(context);
+      return fauxAssistantMessage("done");
+    }]);
+    const router = new ModelRouter({ fast: { provider: "test", model: "fast" }, strong: { provider: "test", model: "strong" }, gui: { provider: "test", model: "fast" } });
+    const tools = new AdPilotTools(workspace, new AuditLog(workspace), new ApprovalService(workspace, "0123456789abcdef0123456789abcdef"), new ExperimentStore(workspace));
+    const runtime = new PiAgentRuntime(models, router, workspace, new SkillRegistry(), tools);
+    const context: ToolContext = { clientId: "client-a", taskId: crypto.randomUUID(), actor: "creative_strategist", permission: "OBSERVE" };
+
+    const tool = runtime.createSkillTool(context, ["detect-creative-fatigue"]);
+    expect(tool.description).toContain("currentCtr: number >= 0 (required)");
+    expect(tool.description).toContain("priorCtr: number > 0 (required)");
+    expect(tool.description).toContain("Forbidden: Pausing solely from CTR");
+    const parameters = tool.parameters as { properties: { name: { enum: string[] }, input: { type?: string, description?: string } } };
+    expect(parameters.properties.name.enum).toEqual(["detect-creative-fatigue"]);
+    expect(parameters.properties.input.type).toBe("object");
+    expect(parameters.properties.input.description).toContain("contract");
+
+    await runtime.run({
+      context: { ...context, sessionId: crypto.randomUUID(), role: "creative_strategist" },
+      systemPrompt: "Analyze creative evidence.", prompt: "Review fatigue.", signals: { task: "classification" }, allowedSkills: ["detect-creative-fatigue"]
+    });
+    expect(requestPayload).toContain("<available_skills>");
+    expect(requestPayload).toContain("currentCtr: number >= 0 (required)");
+    expect(requestPayload).not.toContain("detect-creative-fatigue.md");
   });
 
   it("reopens the same disk session for a stable client and conversation mapping", async () => {

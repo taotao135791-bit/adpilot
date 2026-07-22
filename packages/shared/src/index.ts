@@ -50,7 +50,8 @@ export const SpecialistRole = z.enum([
   "media_buyer",
   "measurement_reviewer",
   "creative_strategist",
-  "risk_reviewer"
+  "risk_reviewer",
+  "reporting_analyst"
 ]);
 export type SpecialistRole = z.infer<typeof SpecialistRole>;
 

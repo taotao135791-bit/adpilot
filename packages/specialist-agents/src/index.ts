@@ -6,7 +6,7 @@ import {
   type SharedFact,
   type SpecialistRole as Role
 } from "@adpilot/shared";
-import { ChangeGuardrailInput } from "@adpilot/advertising-core";
+import { ChangeGuardrailInput, CreativeFatigueInput, ObservedCampaignMetrics } from "@adpilot/advertising-core";
 import { VisualTableReadToolInput, type AdPilotTools, type ToolContext } from "@adpilot/tools";
 import { VisualAction, type VisualMicroTask } from "@adpilot/computer-use";
 import { VisualTableReadResult } from "@adpilot/visual-table-reader";
@@ -140,6 +140,9 @@ abstract class PiSpecialist<I, O> implements SpecialistAgent<I, O> {
     protected readonly runtime: SpecialistRuntime,
     private readonly sessions: SpecialistSessionRepository = new InMemorySpecialistSessionRepository()
   ) {}
+  protected routingTask(): RuntimeRequest["signals"]["task"] {
+    return this.role === "risk_reviewer" ? "risk_review" : "causal_analysis";
+  }
   async execute(request: SpecialistRequest<I>): Promise<O> {
     const input = this.inputSchema.parse(request.input);
     const key = specialistSessionKey(request.context.taskId, this.role);
@@ -164,7 +167,7 @@ abstract class PiSpecialist<I, O> implements SpecialistAgent<I, O> {
         "Return the final answer as one JSON object matching the requested specialist output. Do not wrap it in markdown."
       ].join("\n"),
       prompt: JSON.stringify({ input, sharedFacts }),
-      signals: { task: this.role === "risk_reviewer" ? "risk_review" : "causal_analysis" },
+      signals: { task: this.routingTask() },
       allowedSkills: this.allowedSkills,
       ...(previous ? { priorMessages: previous.messages } : {})
     };
@@ -188,23 +191,9 @@ abstract class PiSpecialist<I, O> implements SpecialistAgent<I, O> {
 }
 
 const FactBindings = z.record(z.string().min(1)).default({});
-const SpecialistCampaignMetrics = z.object({
-  spend: z.number().nonnegative(),
-  impressions: z.number().int().nonnegative().optional(),
-  clicks: z.number().int().nonnegative().optional(),
-  installs: z.number().int().nonnegative().optional(),
-  conversions: z.number().nonnegative().optional(),
-  revenue: z.number().nonnegative().optional(),
-  days: z.number().int().positive(),
-  conversionDelayDays: z.number().nonnegative().optional(),
-  dailyConversions: z.array(z.number().nonnegative()).optional(),
-  currencyConsistency: z.number().min(0).max(1).optional(),
-  missingValueRate: z.number().min(0).max(1).optional(),
-  reconciliationDifference: z.number().min(0).max(1).optional()
-}).strict();
 
 const PerformanceInput = z.object({
-  metrics: SpecialistCampaignMetrics,
+  metrics: ObservedCampaignMetrics,
   target: z.number().positive(),
   objective: z.string().min(1),
   factIds: FactBindings
@@ -224,11 +213,11 @@ const MediaBuyerInput = z.object({
 const MediaBuyerOutput = z.object({ recommendation: z.enum(["increase", "decrease", "pause", "launch", "observe", "no_change"]), currentValue: z.number(), proposedValue: z.number(), stagedValue: z.number(), rationale: z.array(z.string()), requiresApproval: z.boolean(), observationWindow: z.string(), rollbackCondition: z.string() });
 export class MediaBuyer extends PiSpecialist<z.infer<typeof MediaBuyerInput>, z.infer<typeof MediaBuyerOutput>> {
   readonly role = "media_buyer" as const; readonly inputSchema = MediaBuyerInput; readonly outputSchema = MediaBuyerOutput;
-  readonly allowedSkills = ["evaluate-budget-change", "evaluate-bid-change", "create-single-variable-experiment"]; readonly mission = "Make explicit budget, bid, pause, launch, or observe recommendations while respecting deterministic caps and single-variable tests.";
+  readonly allowedSkills = ["evaluate-budget-change", "evaluate-bid-change", "create-single-variable-experiment", "assess-campaign-launch"]; readonly mission = "Make explicit budget, bid, pause, launch, or observe recommendations while respecting deterministic caps and single-variable tests.";
 }
 
 const MeasurementInput = z.object({
-  metrics: SpecialistCampaignMetrics,
+  metrics: ObservedCampaignMetrics,
   platformConversions: z.number().nonnegative(),
   sourceConversions: z.number().nonnegative(),
   duplicatedEvents: z.number().int().nonnegative(),
@@ -241,11 +230,41 @@ export class MeasurementReviewer extends PiSpecialist<z.infer<typeof Measurement
   readonly allowedSkills = ["check-conversion-reliability", "review-attribution-consistency"]; readonly mission = "Review conversion events, attribution, analytics, MMP, payment data, deduplication, and signal trustworthiness before optimization.";
 }
 
-const CreativeInput = z.object({ currentCtr: z.number().nonnegative(), priorCtr: z.number().positive(), frequency: z.number().nonnegative(), daysRunning: z.number().int().positive(), spendShare: z.number().min(0).max(1), message: z.string(), format: z.string() });
+const CreativeInput = CreativeFatigueInput.extend({ message: z.string(), format: z.string() });
 const CreativeOutput = z.object({ fatigued: z.boolean(), findings: z.array(EvidenceFinding), testDirections: z.array(z.object({ hypothesis: z.string(), variable: z.string(), concept: z.string() })), nextReviewDays: z.number().int().positive() });
 export class CreativeStrategist extends PiSpecialist<z.infer<typeof CreativeInput>, z.infer<typeof CreativeOutput>> {
   readonly role = "creative_strategist" as const; readonly inputSchema = CreativeInput; readonly outputSchema = CreativeOutput;
   readonly allowedSkills = ["detect-creative-fatigue"]; readonly mission = "Analyze creative angle, fatigue and performance, then propose single-variable creative tests.";
+}
+
+const ReportType = z.enum(["daily", "weekly", "account_audit", "client"]);
+const ReportingInput = z.object({
+  reportType: ReportType,
+  metrics: ObservedCampaignMetrics,
+  priorMetrics: ObservedCampaignMetrics.optional(),
+  target: z.number().positive().optional(),
+  objective: z.string().min(1),
+  periodStart: z.string().date(),
+  periodEnd: z.string().date(),
+  timezone: z.string().min(1),
+  currency: z.string().min(1),
+  audience: z.enum(["internal", "client"]).default("client"),
+  factIds: FactBindings
+}).strict();
+const ReportingOutput = z.object({
+  reportType: ReportType,
+  markdown: z.string().min(1),
+  reliability: z.enum(["reliable", "warning", "blocked"]),
+  findings: z.array(EvidenceFinding),
+  confidence: z.number().min(0).max(1)
+});
+export class ReportingAnalyst extends PiSpecialist<z.infer<typeof ReportingInput>, z.infer<typeof ReportingOutput>> {
+  readonly role = "reporting_analyst" as const; readonly inputSchema = ReportingInput; readonly outputSchema = ReportingOutput;
+  readonly allowedSkills = ["daily-report", "weekly-report", "account-audit", "generate-client-report"];
+  readonly mission = "Produce daily, weekly, account-audit, and client reports from verified facts and deterministic calculations. Observed facts, calculations, and inferences stay strictly separated; never fabricate a metric.";
+  protected override routingTask(): RuntimeRequest["signals"]["task"] {
+    return "report";
+  }
 }
 
 const RiskInput = z.object({ approvalId: z.string().uuid(), guardrailAllowed: z.boolean(), guardrailReasons: z.array(z.string()), evidenceCount: z.number().int().nonnegative(), hasBeforeScreenshot: z.boolean(), executionPlanPresent: z.boolean(), singleVariable: z.boolean(), rollbackDefined: z.boolean(), operationSummary: z.string().min(1) });
@@ -287,7 +306,7 @@ export class SpecialistCoordinator {
   }
 }
 
-export const specialistSchemas = { AccountOperatorInput, AccountOperatorOutput, PerformanceInput, PerformanceOutput, MediaBuyerInput, MediaBuyerOutput, MeasurementInput, MeasurementOutput, CreativeInput, CreativeOutput, RiskInput, RiskOutput };
+export const specialistSchemas = { AccountOperatorInput, AccountOperatorOutput, PerformanceInput, PerformanceOutput, MediaBuyerInput, MediaBuyerOutput, MeasurementInput, MeasurementOutput, CreativeInput, CreativeOutput, RiskInput, RiskOutput, ReportingInput, ReportingOutput };
 
 interface NumericFactClaim {
   path: string;
@@ -306,7 +325,7 @@ export function assertSpecialistNumericFacts(
   input: unknown,
   sharedFacts: readonly SharedFact[]
 ): void {
-  if (role !== "performance_analyst" && role !== "media_buyer" && role !== "measurement_reviewer") return;
+  if (role !== "performance_analyst" && role !== "media_buyer" && role !== "measurement_reviewer" && role !== "reporting_analyst") return;
   const record = asRecord(input);
   const bindings = asRecord(record.factIds);
   const claims = numericClaims(role, record);
@@ -347,7 +366,10 @@ function numericClaims(role: Role, input: Record<string, unknown>): NumericFactC
   }
 
   const claims = collectNumericClaims(input.metrics, "metrics");
-  if (role === "performance_analyst") {
+  if (role === "reporting_analyst" && input.priorMetrics !== undefined) {
+    claims.push(...collectNumericClaims(input.priorMetrics, "priorMetrics"));
+  }
+  if (role === "performance_analyst" || role === "reporting_analyst") {
     const target = input.target;
     if (typeof target === "number") {
       const objective = typeof input.objective === "string" ? normalizePredicate(input.objective) : "";

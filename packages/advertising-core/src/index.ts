@@ -1,20 +1,57 @@
 import { z } from "zod";
 
-export const CampaignMetrics = z.object({
+/** Single source of truth for campaign-metric field validators. */
+const campaignMetricsFields = {
   spend: z.number().nonnegative(),
-  impressions: z.number().int().nonnegative().default(0),
-  clicks: z.number().int().nonnegative().default(0),
-  installs: z.number().int().nonnegative().default(0),
-  conversions: z.number().nonnegative().default(0),
-  revenue: z.number().nonnegative().default(0),
+  impressions: z.number().int().nonnegative(),
+  clicks: z.number().int().nonnegative(),
+  installs: z.number().int().nonnegative(),
+  conversions: z.number().nonnegative(),
+  revenue: z.number().nonnegative(),
   days: z.number().int().positive(),
-  conversionDelayDays: z.number().nonnegative().default(0),
-  dailyConversions: z.array(z.number().nonnegative()).default([]),
-  currencyConsistency: z.number().min(0).max(1).default(1),
-  missingValueRate: z.number().min(0).max(1).default(0),
-  reconciliationDifference: z.number().min(0).max(1).default(0)
+  conversionDelayDays: z.number().nonnegative(),
+  dailyConversions: z.array(z.number().nonnegative()),
+  currencyConsistency: z.number().min(0).max(1),
+  missingValueRate: z.number().min(0).max(1),
+  reconciliationDifference: z.number().min(0).max(1)
+} as const;
+
+export const CampaignMetrics = z.object({
+  spend: campaignMetricsFields.spend,
+  impressions: campaignMetricsFields.impressions.default(0),
+  clicks: campaignMetricsFields.clicks.default(0),
+  installs: campaignMetricsFields.installs.default(0),
+  conversions: campaignMetricsFields.conversions.default(0),
+  revenue: campaignMetricsFields.revenue.default(0),
+  days: campaignMetricsFields.days,
+  conversionDelayDays: campaignMetricsFields.conversionDelayDays.default(0),
+  dailyConversions: campaignMetricsFields.dailyConversions.default([]),
+  currencyConsistency: campaignMetricsFields.currencyConsistency.default(1),
+  missingValueRate: campaignMetricsFields.missingValueRate.default(0),
+  reconciliationDifference: campaignMetricsFields.reconciliationDifference.default(0)
 });
 export type CampaignMetrics = z.infer<typeof CampaignMetrics>;
+
+/**
+ * Specialist-boundary variant of CampaignMetrics. No field carries a default,
+ * so every number a model supplies stays explicit and must resolve to a
+ * verified Shared Fact before it reaches deterministic tooling.
+ */
+export const ObservedCampaignMetrics = z.object({
+  spend: campaignMetricsFields.spend,
+  impressions: campaignMetricsFields.impressions.optional(),
+  clicks: campaignMetricsFields.clicks.optional(),
+  installs: campaignMetricsFields.installs.optional(),
+  conversions: campaignMetricsFields.conversions.optional(),
+  revenue: campaignMetricsFields.revenue.optional(),
+  days: campaignMetricsFields.days,
+  conversionDelayDays: campaignMetricsFields.conversionDelayDays.optional(),
+  dailyConversions: campaignMetricsFields.dailyConversions.optional(),
+  currencyConsistency: campaignMetricsFields.currencyConsistency.optional(),
+  missingValueRate: campaignMetricsFields.missingValueRate.optional(),
+  reconciliationDifference: campaignMetricsFields.reconciliationDifference.optional()
+}).strict();
+export type ObservedCampaignMetrics = z.infer<typeof ObservedCampaignMetrics>;
 
 export type CalculatedMetrics = {
   cpi: number | null;
@@ -143,11 +180,46 @@ export function evaluateChangeGuardrail(inputValue: ChangeGuardrailInput): Guard
   };
 }
 
-export type HealthCheck = {
-  category: string;
-  severity: "critical" | "high" | "medium" | "low";
-  result: "pass" | "warning" | "fail" | "na";
-};
+export const CreativeFatigueInput = z.object({
+  currentCtr: z.number().nonnegative(),
+  priorCtr: z.number().positive(),
+  frequency: z.number().nonnegative(),
+  daysRunning: z.number().int().positive(),
+  spendShare: z.number().min(0).max(1)
+});
+export type CreativeFatigueInput = z.infer<typeof CreativeFatigueInput>;
+
+export const CreativeFatigueOutput = z.object({
+  fatigued: z.boolean(),
+  ctrDeclinePercent: z.number(),
+  reasons: z.array(z.string()),
+  nextStep: z.string()
+});
+export type CreativeFatigueOutput = z.infer<typeof CreativeFatigueOutput>;
+
+/** Directional creative fatigue check; never conflates fatigue with tracking failures. */
+export function detectCreativeFatigue(inputValue: CreativeFatigueInput): CreativeFatigueOutput {
+  const input = CreativeFatigueInput.parse(inputValue);
+  const decline = ((input.priorCtr - input.currentCtr) / input.priorCtr) * 100;
+  const reasons = [
+    decline >= 25 ? "CTR declined at least 25%" : "CTR decline below 25%",
+    input.frequency >= 3 ? "frequency is elevated" : "frequency is not elevated"
+  ];
+  const fatigued = decline >= 25 && input.frequency >= 3 && input.daysRunning >= 7;
+  return CreativeFatigueOutput.parse({
+    fatigued,
+    ctrDeclinePercent: decline,
+    reasons,
+    nextStep: fatigued ? "Design a single-variable creative replacement test" : "Continue observation"
+  });
+}
+
+export const HealthCheck = z.object({
+  category: z.string().min(1),
+  severity: z.enum(["critical", "high", "medium", "low"]),
+  result: z.enum(["pass", "warning", "fail", "na"])
+});
+export type HealthCheck = z.infer<typeof HealthCheck>;
 
 const severityWeight = { critical: 5, high: 3, medium: 1.5, low: 0.5 } as const;
 const resultPoints = { pass: 1, warning: 0.5, fail: 0 } as const;
@@ -165,4 +237,15 @@ export function calculateHealthScore(checks: HealthCheck[], categoryWeights: Rec
   }
   return total === 0 ? 0 : Math.round((earned / total) * 10_000) / 100;
 }
+
+export {
+  formatKnowledgeCatalogForPrompt,
+  formatKnowledgeSkillContext,
+  getKnowledgeReference,
+  getKnowledgeSkill,
+  listKnowledgeSkills,
+  matchKnowledgeSkills,
+  type KnowledgeSkill,
+  type KnowledgeSkillSummary
+} from "./knowledge.js";
 

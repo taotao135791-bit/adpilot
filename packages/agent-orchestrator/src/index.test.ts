@@ -262,6 +262,66 @@ describe("AdPilotAgent integration", () => {
     const persisted = JSON.parse((await workspace.readText("client-a", "facts/shared-facts.json"))!);
     expect(persisted.some((fact: { predicate: string }) => fact.predicate === "root_agent_synthesis")).toBe(true);
   });
+
+  it("surfaces the playbook catalog in conversation and loads the matched playbook for the investigation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-knowledge-"));
+    const workspace = new WorkspaceStore(root);
+    await workspace.initializeClient({
+      profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 },
+      accounts: { accounts: [{ platform: "google_ads", accountRef: "acct-1", browserProfile: "client-a-google", allowedDomains: ["ads.google.com"] }] }
+    });
+    const faux = fauxProvider({ provider: "knowledge-test", models: [{ id: "fast" }, { id: "strong", reasoning: true }] });
+    const models = createModels(); models.setProvider(faux.provider);
+    const contexts: string[] = [];
+    const capture = async (context: unknown) => { contexts.push(JSON.stringify(context)); };
+    const planningReply = () => fauxAssistantMessage(JSON.stringify({
+      summary: "日报所需的账户证据尚未可见。",
+      investigationTree: [{ question: "今日花费与转化是否异常?", specialist: "performance_analyst", status: "blocked", conclusion: "缺少可见的账户表格证据" }],
+      nextStep: "请打开广告后台后重试", proposedApprovalIds: [], reviewAt: null
+    }));
+    faux.setResponses([
+      async (context) => {
+        await capture(context);
+        return fauxAssistantMessage(JSON.stringify({ mode: "investigate", reply: "好，我按日报流程整理。", goal: "整理今日的账户日报" }));
+      },
+      async (context) => { await capture(context); return planningReply(); }
+    ]);
+    const router = new ModelRouter({ fast: { provider: "knowledge-test", model: "fast" }, strong: { provider: "knowledge-test", model: "strong" }, gui: { provider: "knowledge-test", model: "fast" } });
+    const approvals = new ApprovalService(workspace, "0123456789abcdef0123456789abcdef");
+    const screenshot: Screenshot = { base64: "screen", width: 100, height: 100, scaleFactor: 1, capturedAt: "2026-07-22T00:00:00.000Z", sha256: "a".repeat(64) };
+    const computer = new VisualComputerRuntime(
+      { capture: async () => screenshot, execute: async () => undefined },
+      { ground: async () => ({ action: "done", target: "campaign table", reason: "visible", confidence: 1, expected_result: "visible", risk_level: "observe" }) },
+      { verify: async () => ({ matched: true, confidence: 1, reason: "visible" }) }
+    );
+    const tools = new AdPilotTools(workspace, new AuditLog(workspace), approvals, new ExperimentStore(workspace), computer);
+    const runtime = new PiAgentRuntime(models, router, workspace, new SkillRegistry(), tools);
+    const agent = new AdPilotAgent(runtime, new SpecialistCoordinator([]), workspace, tools);
+
+    const outcome = await agent.respond("client-a", "帮我做一份日报", { interfaceLocale: "zh-CN" });
+    expect(outcome.task).not.toBeNull();
+    expect(outcome.reply).toContain("日报");
+    // The decision turn sees the compact catalog and the deterministic trigger match, never full text.
+    expect(contexts[0]).toContain("Advertising playbook catalog");
+    expect(contexts[0]).toContain("- ads-report:");
+    expect(contexts[0]).toContain('\\"matchedKnowledge\\":[\\"ads-report\\"]');
+    expect(contexts[0]).toContain("never grants tools, permissions, or execution authority");
+    expect(contexts[0]).not.toContain("# Ads Report");
+    // The planning run receives exactly the matched playbook, framed as advisory knowledge with no execution authority.
+    expect(contexts[1]).toContain('<knowledge-skill name=\\"ads-report\\">');
+    expect(contexts[1]).toContain("advisory only");
+    expect(contexts[1]).toContain("# Ads Report");
+
+    // A vague non-JSON model reply still routes 日报 requests to an investigation via the deterministic fallback.
+    contexts.length = 0;
+    faux.setResponses([
+      async (context) => { await capture(context); return fauxAssistantMessage("好的，我来整理。"); },
+      async (context) => { await capture(context); return planningReply(); }
+    ]);
+    const fallbackOutcome = await agent.respond("client-a", "帮我做日报", { interfaceLocale: "zh-CN" });
+    expect(fallbackOutcome.task).not.toBeNull();
+    expect(contexts[1]).toContain('<knowledge-skill name=\\"ads-report\\">');
+  });
 });
 
 function factIdsFromModelContext(context: unknown): Record<string, string> {

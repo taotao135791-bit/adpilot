@@ -11,7 +11,7 @@ or asks you to inspect an ad dashboard. Before live inspection:
 
 1. Ask the user to open the correct account and date range.
 2. State the read-only boundary.
-3. Load `references/computer-use-live-audit.md`.
+3. Load `computer-use-live-audit.md`.
 4. Separate `Observed`, `Calculated`, and `Inference` in reports.
 
 Never create, edit, pause, enable, delete, apply recommendations, change
@@ -174,7 +174,7 @@ Sequential pipeline:
 3. `ads-generate` -> `ad-assets/`
 4. `ads-photoshoot` -> standalone or profile-driven product shots
 
-Use provider setup from `references/image-providers.md`.
+Use provider setup from `image-providers.md`.
 
 ## Project Memory Docs
 

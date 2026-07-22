@@ -61,9 +61,9 @@ Users do not need slash commands. Treat natural-language requests such as
 "prepare a client update" as valid Ads skill invocations.
 
 Route `/ads decide`, UAC daily-operation questions, and AC2.0/2.5/3.0 choices
-to `ads-google-app` Quick Decision and its `references/quick-ops.md`. Route UAC
+to `ads-google-app` Quick Decision and its `../ads-google-app/references/quick-ops.md`. Route UAC
 diagnosis, explicit experiments, reports, and lifecycle recording to the same
-sub-skill's `references/agent-workflow.md`. Do not ask ordinary operators to
+sub-skill's `../ads-google-app/references/agent-workflow.md`. Do not ask ordinary operators to
 translate these intents into YAML.
 
 ## Route Table

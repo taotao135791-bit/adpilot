@@ -89,7 +89,7 @@ S_total = Σ(C_pass × W_sev × W_cat) / Σ(C_total × W_sev × W_cat) × 100
 | Settings & Performance | 15% | CPC advantage tracking, conversion rate comparison (5 checks) |
 | Import Safety, Compliance & Video | N/A | v1.5: scheduled imports, Consent Mode, CTV, video (4 checks) |
 
-### Amazon Ads (v1.7 — inline in `skills/ads-amazon/SKILL.md`, not yet in catalog)
+### Amazon Ads (v1.7 — inline in `../../ads-amazon/SKILL.md`, not yet in catalog)
 | Category | Weight | Rationale |
 |----------|--------|-----------|
 | Search-Term Harvesting & Negatives | 25% | Auto→Manual harvest cadence is the single biggest TACOS lever |
@@ -100,7 +100,7 @@ S_total = Σ(C_pass × W_sev × W_cat) / Σ(C_total × W_sev × W_cat) × 100
 | Sponsored Display | 10% | Audience vs contextual separation, off-Amazon SD |
 | Brand Analytics & Reporting | 5% | Top Search Terms, Repeat Purchase, Amazon Attribution |
 
-### Apple Ads (v1.7 — inline in `skills/ads-apple/SKILL.md`, not yet in catalog)
+### Apple Ads (v1.7 — inline in `../../ads-apple/SKILL.md`, not yet in catalog)
 | Category | Weight | Rationale |
 |----------|--------|-----------|
 | MMP / AdAttributionKit Integration | 30% | Without proper dual attribution (SKAN + AAK), bid algorithms fly blind |
@@ -110,7 +110,7 @@ S_total = Σ(C_pass × W_sev × W_cat) / Σ(C_total × W_sev × W_cat) × 100
 | Budget Pacing | 10% | Daily caps appropriate to install volume + algorithm learning |
 | ATT Opt-in & Privacy Threshold | 10% | <30% opt-in shifts reliance to SKAN/AAK + privacy threshold |
 
-### Attribution + Server-side Tracking (v1.7 — inline in `skills/ads-attribution/SKILL.md` and `skills/ads-server-side-tracking/SKILL.md`)
+### Attribution + Server-side Tracking (v1.7 — inline in `../../ads-attribution/SKILL.md` and `../../ads-server-side-tracking/SKILL.md`)
 | Category | Weight | Rationale |
 |----------|--------|-----------|
 | Web Attribution (GA4 + Ads + CAPI) | 30% | Foundational signal for every web channel |
@@ -191,8 +191,8 @@ Cross-platform checks are scored at 100% weight in the aggregate score (not with
 Note: catalog-tracked checks are verified bidirectionally by the eval harness
 (`tests/audit/test_check_coverage.py`). Apple, Amazon, and Attribution +
 Server-side checks live inline in their respective SKILL.md files; their
-dedicated audit reference files (`apple-audit.md`, `amazon-audit.md`,
-`attribution-audit.md`) and catalog entries land in Wave 3.
+dedicated audit reference files (apple-audit.md, amazon-audit.md,
+attribution-audit.md — planned, not yet migrated) and catalog entries land in Wave 3.
 
 ---
 

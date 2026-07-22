@@ -38,7 +38,7 @@ import { ExperimentStore } from "@adpilot/experiments";
 import { createPiModels, modelRouterFromEnv, resolvePiModel } from "@adpilot/model-router";
 import { PiAgentRuntime } from "@adpilot/runtime";
 import { SkillRegistry } from "@adpilot/skills";
-import { AccountOperator, CreativeStrategist, MediaBuyer, MeasurementReviewer, PerformanceAnalyst, RiskReviewer, SpecialistCoordinator } from "@adpilot/specialist-agents";
+import { AccountOperator, CreativeStrategist, MediaBuyer, MeasurementReviewer, PerformanceAnalyst, ReportingAnalyst, RiskReviewer, SpecialistCoordinator } from "@adpilot/specialist-agents";
 import { AdPilotTools } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
 import { SettingsStore, WorkspaceCredentialStore } from "@adpilot/configuration";
@@ -315,7 +315,8 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     new MediaBuyer(runtime),
     new MeasurementReviewer(runtime),
     new CreativeStrategist(runtime),
-    new RiskReviewer(runtime, tools)
+    new RiskReviewer(runtime, tools),
+    new ReportingAnalyst(runtime)
   ]);
   const agent = new AdPilotAgent(runtime, specialists, workspace, tools, (task) => events.publish({
     type: "task", clientId: task.clientId, status: task.phase, taskId: task.id,

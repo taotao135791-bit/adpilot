@@ -1,8 +1,8 @@
-import { Agent, DEFAULT_COMPACTION_SETTINGS, Session, estimateContextTokens, formatSkillsForSystemPrompt, prepareCompaction, compact, shouldCompact, type AgentEvent, type AgentMessage, type AgentTool, type CompactionSettings, type Skill as PiSkill } from "@earendil-works/pi-agent-core";
+import { Agent, DEFAULT_COMPACTION_SETTINGS, Session, estimateContextTokens, prepareCompaction, compact, shouldCompact, type AgentEvent, type AgentMessage, type AgentTool, type CompactionSettings } from "@earendil-works/pi-agent-core";
 import type { Api, Model, Models } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import { ModelRouter, resolvePiModel, type RoutingSignals } from "@adpilot/model-router";
-import { SkillRegistry } from "@adpilot/skills";
+import { SkillRegistry, formatSkillContract } from "@adpilot/skills";
 import type { ToolContext, AdPilotTools } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
 import { AdPilotSessionStorage, resolvePiSessionId } from "./session-storage.js";
@@ -163,11 +163,20 @@ export class PiAgentRuntime {
   }
 
   createSkillTool(context: ToolContext, allowedSkills: string[]): AgentTool {
+    const contracts = allowedSkills.map((name) => formatSkillContract(this.skills.get(name))).join("\n\n");
     return {
       name: "execute_skill",
       label: "Execute an advertising skill",
-      description: `Run one validated advertising method. Allowed skills: ${allowedSkills.join(", ")}`,
-      parameters: { type: "object", properties: { name: { type: "string", enum: allowedSkills }, input: {} }, required: ["name", "input"], additionalProperties: false },
+      description: `Run one validated advertising method. The input object must match the selected skill's input contract below; invalid input is rejected and audited.\n\n${contracts}`,
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", enum: allowedSkills, description: "One allowed skill name" },
+          input: { type: "object", description: "Payload matching the selected skill's input contract in this tool's description" }
+        },
+        required: ["name", "input"],
+        additionalProperties: false
+      },
       executionMode: "sequential",
       execute: async (_toolCallId, raw) => {
         const params = z.object({ name: z.enum(allowedSkills as [string, ...string[]]), input: z.unknown() }).parse(raw);
@@ -178,8 +187,7 @@ export class PiAgentRuntime {
   }
 
   private async execute(request: ResolvedRuntimeRequest, model: Model<Api>, tier: string, recovered: boolean): Promise<RuntimeResult> {
-    const piSkills = this.buildPiSkills(request.allowedSkills ?? []);
-    const skillsPrompt = formatSkillsForSystemPrompt(piSkills);
+    const skillsPrompt = this.buildSkillsPrompt(request.allowedSkills ?? []);
     const storage = await AdPilotSessionStorage.openOrCreate(this.workspace, request.context.clientId, request.context.conversationId);
     const session = new Session(storage);
     if ((await session.getEntries()).length === 0 && request.priorMessages?.length) {
@@ -231,21 +239,27 @@ export class PiAgentRuntime {
     }
   }
 
-  private buildPiSkills(names: string[]): PiSkill[] {
-    return names.map((name) => {
-      const skill = this.skills.get(name);
-      return {
-        name: skill.name,
-        description: skill.description,
-        filePath: new URL(`../../skills/${skill.name}.md`, import.meta.url).pathname,
-        content: [
-          `Prerequisites: ${skill.prerequisites.join("; ")}`,
-          `Required tools: ${skill.requiredTools.join("; ") || "none"}`,
-          `Failure conditions: ${skill.failureConditions.join("; ")}`,
-          `Forbidden: ${skill.forbidden.join("; ")}`
-        ].join("\n")
-      };
-    });
+  /**
+   * Inline, model-readable skill contracts. Skills are validated code paths,
+   * not files, so the prompt must never point the model at a skill file path.
+   */
+  private buildSkillsPrompt(names: string[]): string {
+    if (names.length === 0) return "";
+    const lines = [
+      "The following validated advertising methods are available through the execute_skill tool.",
+      "Call execute_skill with the skill name and an input object that matches its contract below; every input is validated against the contract before execution and recorded in the audit trail.",
+      "",
+      "<available_skills>"
+    ];
+    for (const name of names) {
+      lines.push(
+        "  <skill>",
+        formatSkillContract(this.skills.get(name)).split("\n").map((line) => `    ${line}`).join("\n"),
+        "  </skill>"
+      );
+    }
+    lines.push("</available_skills>");
+    return lines.join("\n");
   }
 
   async compactSession(session: Session, model: Model<Api>, customInstructions: string): Promise<boolean> {

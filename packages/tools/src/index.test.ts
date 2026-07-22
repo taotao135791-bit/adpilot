@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Jimp } from "jimp";
 import { describe, expect, it, vi } from "vitest";
-import { ApprovalService } from "@adpilot/approvals";
+import { ApprovalExecutionPlan, ApprovalService, extractVisualExecutionPlan, type ApprovalGuardrailRequest } from "@adpilot/approvals";
 import { AuditLog } from "@adpilot/audit";
 import {
   DualVisualIdentityVerifier,
@@ -683,3 +683,124 @@ function tableRow(rowKey: string, rawLabel: string, budget: string, y = 12) {
     ]
   };
 }
+
+describe("writeExperiment approval enforcement", () => {
+  const guardrail: ApprovalGuardrailRequest = {
+    input: {
+      kind: "budget", currentValue: 100, proposedValue: 110, maxChangePercent: 20,
+      activeExperimentVariables: [], measurementStatus: "reliable", mature: true, learning: false
+    },
+    evidenceFactIds: ["fact-measurement", "fact-maturity", "fact-learning"],
+    singleVariable: true
+  };
+
+  async function experimentFixture() {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-tools-experiment-"));
+    const workspace = new WorkspaceStore(root);
+    await workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
+    const audit = new AuditLog(workspace);
+    const approvals = new ApprovalService(workspace, "0123456789abcdef0123456789abcdef");
+    const tools = new AdPilotTools(workspace, audit, approvals, new ExperimentStore(workspace));
+    const experimentTaskId = crypto.randomUUID();
+    const context = { clientId: "client-a", taskId: experimentTaskId, actor: "media_buyer", permission: "OBSERVE" as const };
+    return { audit, approvals, tools, experimentTaskId, context };
+  }
+
+  function experimentPlan(planTaskId: string): ApprovalExecutionPlan {
+    const now = Date.now();
+    return ApprovalExecutionPlan.parse({
+      schemaVersion: 1,
+      planId: crypto.randomUUID(),
+      taskId: planTaskId,
+      clientId: "client-a",
+      platform: "google_ads",
+      browserProfile: "client-a-profile",
+      applicationId: "com.google.Chrome",
+      applicationName: "Google Chrome",
+      windowId: "window-42",
+      domain: "ads.google.com",
+      allowedApplications: ["com.google.Chrome", "Google Chrome"],
+      allowedDomains: ["ads.google.com"],
+      accountName: "Example Ads",
+      accountId: operation.account,
+      campaignName: "Brand Search",
+      campaignId: operation.campaign,
+      pageType: "campaign_budget_editor",
+      operation: operation.operation,
+      currentValue: 100,
+      proposedValue: 110,
+      instruction: "Save the daily budget",
+      target: "Save",
+      expectedResult: "Budget is 110",
+      allowedRegion: { x: 100, y: 80, width: 900, height: 650, coordinateSpace: "screenshot_pixels" },
+      riskLevel: "mutate",
+      surfaceFingerprint: "f".repeat(64),
+      accountFingerprint: "a".repeat(64),
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 3_600_000).toISOString(),
+      experiment: {
+        hypothesis: "budget adds volume", variable: "daily_budget", baseline: { budget: 100 },
+        expected: "more conversions", successCriteria: "CPA holds", failureCriteria: "CPA rises 20%",
+        maturityWindowDays: 7, rollbackCondition: "CPA rises 20%", reviewAt: new Date(now + 7 * 86_400_000).toISOString()
+      }
+    });
+  }
+
+  async function executedApproval(approvals: ApprovalService, approvalTaskId: string): Promise<string> {
+    const plan = experimentPlan(approvalTaskId);
+    const created = await approvals.create("client-a", approvalTaskId, operation, plan, guardrail);
+    await approvals.recordRiskReview("client-a", created.id, true, "Within policy");
+    const { token } = await approvals.approveByUser("client-a", created.id, "owner");
+    await approvals.consume("client-a", created.id, token, operation, extractVisualExecutionPlan(plan));
+    await approvals.finish("client-a", created.id, true);
+    return created.id;
+  }
+
+  function experimentInput(approvalId: string, experimentTaskId: string) {
+    return {
+      clientId: "client-a",
+      taskId: experimentTaskId,
+      approvalId,
+      hypothesis: "budget adds volume",
+      variable: "daily_budget",
+      baseline: { budget: 100 },
+      expected: "more conversions",
+      successCriteria: "CPA holds",
+      failureCriteria: "CPA rises 20%",
+      maturityWindowDays: 7,
+      rollbackCondition: "CPA rises 20%",
+      reviewAt: new Date(Date.now() + 7 * 86_400_000).toISOString()
+    };
+  }
+
+  it("rejects a missing or non-executed approval and audits each denial", async () => {
+    const { audit, approvals, tools, experimentTaskId, context } = await experimentFixture();
+    await expect(tools.writeExperiment(context, experimentInput(crypto.randomUUID(), experimentTaskId))).rejects.toThrow("approval does not exist");
+
+    const created = await approvals.create("client-a", experimentTaskId, operation, experimentPlan(experimentTaskId), guardrail);
+    await expect(tools.writeExperiment(context, experimentInput(created.id, experimentTaskId))).rejects.toThrow("not executed");
+
+    const denials = (await audit.list("client-a")).filter((event) => event.action === "write_experiment" && event.status === "denied");
+    expect(denials).toHaveLength(2);
+    expect(denials[0]?.details.reason).toContain("approval does not exist");
+    expect(denials[1]?.details.reason).toContain("pending_risk_review");
+    expect(await audit.verify("client-a")).toBe(true);
+  });
+
+  it("rejects an executed approval that belongs to a different task", async () => {
+    const { approvals, tools, context } = await experimentFixture();
+    const approvalId = await executedApproval(approvals, crypto.randomUUID());
+    await expect(tools.writeExperiment(context, experimentInput(approvalId, context.taskId))).rejects.toThrow("different task");
+  });
+
+  it("creates the draft experiment when the bound approval was executed", async () => {
+    const { audit, approvals, tools, experimentTaskId, context } = await experimentFixture();
+    const approvalId = await executedApproval(approvals, experimentTaskId);
+    const experiment = await tools.writeExperiment(context, experimentInput(approvalId, experimentTaskId));
+    expect(experiment.status).toBe("draft");
+    expect(experiment.approvalId).toBe(approvalId);
+    const succeeded = (await audit.list("client-a")).filter((event) => event.action === "write_experiment" && event.status === "succeeded");
+    expect(succeeded).toHaveLength(1);
+    expect(succeeded[0]?.details).toMatchObject({ experimentId: experiment.id, variable: "daily_budget" });
+  });
+});

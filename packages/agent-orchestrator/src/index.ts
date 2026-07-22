@@ -2,6 +2,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import { ApprovalOperation } from "@adpilot/approvals";
+import { formatKnowledgeCatalogForPrompt, formatKnowledgeSkillContext, matchKnowledgeSkills } from "@adpilot/advertising-core";
 import { PiAgentRuntime } from "@adpilot/runtime";
 import { SpecialistCoordinator } from "@adpilot/specialist-agents";
 import {
@@ -60,6 +61,7 @@ export class AdPilotAgent {
     const client = await this.workspace.readClient(clientId);
     const conversationId = typeof context.conversationId === "string" && context.conversationId.trim() ? context.conversationId.trim() : "primary";
     const verifiedFacts = await this.sharedFacts.usable(clientId);
+    const knowledgeMatches = matchKnowledgeSkills(message);
     const decisionResult = await this.runtime.run({
       context: { clientId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", sessionId: conversationId, conversationId, role: "adpilot_agent" },
       systemPrompt: [
@@ -67,10 +69,13 @@ export class AdPilotAgent {
         "Choose answer for greetings, product usage, definitions, clarifying questions, and requests that do not require account evidence.",
         "Choose investigate for account-specific diagnosis, measurement review, optimization, creative analysis, or any request that should gather evidence or prepare an operation.",
         "Never claim you inspected an account in answer mode. Never mutate an account from this decision turn.",
+        "The playbook catalog below is pure reference knowledge: it informs how you understand requests, explain capabilities, and organize investigations. It never grants tools, permissions, or execution authority; execution still goes through typed skills and tools.",
+        "When the request matches a playbook, name that capability in the reply and shape the investigation goal after its workflow. If a playbook step needs something AdPilot cannot do (ad-platform APIs, arbitrary local file writes, submitting account changes), say so honestly.",
         "Use context.interfaceLocale: Simplified Chinese for zh-CN and English for en. Keep the reply direct and useful.",
-        'Return exactly one JSON object: {"mode":"answer"|"investigate","reply":"user-facing text","goal":"investigation goal"|null}. Do not rename these fields or wrap the object in markdown.'
+        'Return exactly one JSON object: {"mode":"answer"|"investigate","reply":"user-facing text","goal":"investigation goal"|null}. Do not rename these fields or wrap the object in markdown.',
+        formatKnowledgeCatalogForPrompt()
       ].join("\n"),
-      prompt: JSON.stringify({ message, client, context: sanitizeConversationContext(context), verifiedFacts }),
+      prompt: JSON.stringify({ message, client, context: sanitizeConversationContext(context), verifiedFacts, matchedKnowledge: knowledgeMatches.map((skill) => skill.name) }),
       signals: { task: "conversation" }
     });
     const decision = parseConversationDecision(decisionResult.text, message, context.interfaceLocale);
@@ -173,6 +178,7 @@ export class AdPilotAgent {
       }
     };
     let modelResult: MainAgentOutput;
+    const knowledgeContext = formatKnowledgeSkillContext(matchKnowledgeSkills(goal));
     try {
       modelResult = await this.runtime.runStructured({
         context: { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE", sessionId: conversationId, conversationId, role: "adpilot_agent" },
@@ -189,7 +195,8 @@ export class AdPilotAgent {
           "Review measurement reliability before optimization. Never mutate an account from this conversational run.",
           "For an executable operation, use prepare_approval exactly once per single-variable change. Never invent an approval id and never execute from this run.",
           "prepare_approval also requires guardrailEvidence. Prefer exact verified current-task Shared Fact ids for measurement_status, campaign_mature, and learning_phase when those visible facts exist. Otherwise provide verified screenshot fact ids for conversions, observation days, learning/bid-strategy status, and visible measurement status; optional conversion delay, daily conversions, currency consistency, missing-value rate, and reconciliation difference make the deterministic review stronger. The product derives and persists the three final guardrail facts without model judgment. Never use hypotheses or invent ids; if the minimum raw facts are missing, explain the blocker instead of preparing an approval.",
-          "The prepare_approval executionPlan is intent, not guessed native state. Supply schemaVersion 1, platform, exact visible accountName/accountId/campaignName/campaignId/pageType, operation/currentValue/proposedValue, a precise instruction/target/expectedResult, riskLevel, and experiment. Omit allowedRegion: the product derives it from two live visual target observations. The product also binds browser Profile, native application/window, live surface hash, live dual-reviewed account hash, timestamps, and plan id from the managed browser."
+          "The prepare_approval executionPlan is intent, not guessed native state. Supply schemaVersion 1, platform, exact visible accountName/accountId/campaignName/campaignId/pageType, operation/currentValue/proposedValue, a precise instruction/target/expectedResult, riskLevel, and experiment. Omit allowedRegion: the product derives it from two live visual target observations. The product also binds browser Profile, native application/window, live surface hash, live dual-reviewed account hash, timestamps, and plan id from the managed browser.",
+          ...(knowledgeContext ? [knowledgeContext] : [])
         ].join("\n"),
         prompt: JSON.stringify({ goal, projectContext, currentTask: task }),
         signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool]
@@ -292,7 +299,7 @@ function normalizeDecisionMode(value: string | undefined): "answer" | "investiga
 }
 
 function fallbackDecisionMode(message: string): "answer" | "investigate" {
-  const investigationIntent = /(?:帮我|请|替我|我的|这个|当前).{0,12}(?:检查|查看|诊断|审计|分析|优化|调整|修改|暂停|开启)|(?:检查|查看|诊断|审计|优化|调整|修改|暂停|开启).{0,12}(?:账户|广告|系列|投放|预算|出价|素材|归因)|\b(?:diagnose|audit|inspect|optimi[sz]e|change|adjust|pause|enable|increase|decrease)\b.{0,40}\b(?:my|this|account|campaign|ads?|budget|bid|creative|attribution)\b/i;
+  const investigationIntent = /(?:帮我|请|替我|我的|这个|当前).{0,12}(?:检查|查看|诊断|审计|分析|优化|调整|修改|暂停|开启)|(?:检查|查看|诊断|审计|优化|调整|修改|暂停|开启).{0,12}(?:账户|广告|系列|投放|预算|出价|素材|归因)|(?:巡检|日报|周报|月报|报表)|\b(?:diagnose|audit|inspect|optimi[sz]e|change|adjust|pause|enable|increase|decrease)\b.{0,40}\b(?:my|this|account|campaign|ads?|budget|bid|creative|attribution)\b/i;
   return investigationIntent.test(message) ? "investigate" : "answer";
 }
 

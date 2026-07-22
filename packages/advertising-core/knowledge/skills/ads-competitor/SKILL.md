@@ -106,7 +106,7 @@ Available from the user's own Google Ads account:
 - **Custom Product Page (CPP) competitive analysis**: competitors can run different product page variants per ad group. Analyze CPP strategies
 - **Maximize Conversions bidding**: AI auto-bidder (GA February 2026). Check if competitors have adopted automated bidding
 
-> **MCP Integration**: For live API access to competitor data sources, see `ads/references/mcp-integration.md`.
+> **Live data access**: AdPilot has no competitor-data API. Use user-provided exports, pasted tables, or public ad libraries (Meta Ad Library, Google Ads Transparency Center, TikTok Top Ads) instead.
 
 ## Competitive Analysis Framework
 

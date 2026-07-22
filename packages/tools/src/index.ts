@@ -428,7 +428,25 @@ export class AdPilotTools {
     });
   }
 
+  /**
+   * Creates the experiment ledger entry only when the bound approval exists in
+   * this client and task and has actually been executed; anything else is
+   * denied and audited, enforcing the declared single-variable contract.
+   */
   async writeExperiment(context: ToolContext, input: Omit<Experiment, "id" | "status" | "finalConclusion" | "startedAt" | "completedAt" | "createdAt" | "updatedAt">) {
+    const approval = await this.approvals.get(context.clientId, input.approvalId).catch(() => undefined);
+    const denial = !approval
+      ? "approval does not exist"
+      : approval.taskId !== context.taskId
+        ? "approval belongs to a different task"
+        : approval.status !== "executed"
+          ? `approval status is ${approval.status}, not executed`
+          : undefined;
+    if (denial) {
+      const reason = `create-single-variable-experiment requires an executed approval: ${denial}`;
+      await this.audit.append({ clientId: context.clientId, taskId: context.taskId, actor: context.actor, action: "write_experiment", status: "denied", details: { approvalId: input.approvalId, reason } });
+      throw new Error(reason);
+    }
     const experiment = await this.experiments.create(input);
     await this.audit.append({ clientId: context.clientId, taskId: context.taskId, actor: context.actor, action: "write_experiment", status: "succeeded", details: { experimentId: experiment.id, variable: experiment.variable } });
     return experiment;
