@@ -6,9 +6,18 @@ import Fastify from "fastify";
 import { z } from "zod";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import type { AdPilotSystem } from "@adpilot/application";
-import { ApprovalExecutionPlan, ApprovalOperation } from "@adpilot/approvals";
+import { ApprovalOperation } from "@adpilot/approvals";
+import { StartBrowserSessionInput, type BrowserSession } from "@adpilot/computer-use";
 import { SettingsUpdate } from "@adpilot/configuration";
-import { ConversationMessage } from "@adpilot/shared";
+import { ConversationMessage, Platform } from "@adpilot/shared";
+import { VisualApprovalPlanInput, visualTaskFromExecutionPlan } from "@adpilot/tools";
+
+const BrowserSessionStartRequest = z.object({
+  clientId: z.string().min(1),
+  browserProfile: z.string().min(1).optional(),
+  platform: Platform.default("google_ads")
+});
+const BrowserSessionLookup = z.object({ clientId: z.string().min(1), browserProfile: z.string().min(1).optional() });
 
 export async function createServer(system: AdPilotSystem, options: { uiRoot?: string; onRestartRequested?: () => void } = {}) {
   const app = Fastify({ logger: false });
@@ -23,7 +32,10 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     });
   }
 
-  app.get("/api/health", async () => ({ status: "ok", chatConfigured: system.modelStatus.chatConfigured, guiConfigured: system.modelStatus.guiConfigured }));
+  app.get("/api/health", async () => {
+    const runtime = await computerUseState(system);
+    return { status: "ok", chatConfigured: system.modelStatus.chatConfigured, guiConfigured: system.modelStatus.guiConfigured, computerUse: runtime };
+  });
   app.get("/api/about", async () => ({
     name: "AdPilot", version: "0.1.1",
     runtime: { name: "Pi", version: "0.80.10", license: "MIT" },
@@ -31,11 +43,19 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     advertisingCore: { upstream: "codex-ads", version: "1.9.2", license: "MIT" }
   }));
   app.get("/api/settings", async () => {
-    const view = await system.settings.publicView();
-    const credentialList = await system.credentials.list();
+    const [view, credentialList, computerUse] = await Promise.all([
+      system.settings.publicView(), system.credentials.list(), computerUseState(system)
+    ]);
     const stored = new Set(credentialList.map((item) => item.providerId));
     const providerConfigured = Object.fromEntries(view.catalog.providers.map((provider) => [provider.id, stored.has(provider.id) || provider.fields.some((field) => view.configured[field.env])]));
-    return { ...view, providerConfigured, providerCredentials: Object.fromEntries(credentialList.map((item) => [item.providerId, item.type])), runtimeModels: system.modelStatus, restartAvailable: Boolean(options.onRestartRequested) };
+    return {
+      ...view,
+      providerConfigured,
+      providerCredentials: Object.fromEntries(credentialList.map((item) => [item.providerId, item.type])),
+      runtimeModels: { ...system.modelStatus, browserSession: computerUse.browserStatus },
+      computerUse,
+      restartAvailable: Boolean(options.onRestartRequested)
+    };
   });
   app.put("/api/settings", async (request) => {
     const body = SettingsUpdate.parse(request.body);
@@ -86,12 +106,27 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const query = z.object({ clientId: z.string().optional(), conversationId: z.string().min(1).default("primary") }).parse(request.query);
     const clients = await system.workspace.listClients();
     const clientId = query.clientId ?? clients[0]?.id;
-    if (!clientId) return { clients, tasks: [], approvals: [], experiments: [], audit: [], messages: [], events: system.events.history(), models: system.modelStatus };
+    const computerUse = await computerUseState(system, clientId);
+    const models = { ...system.modelStatus, browserSession: computerUse.browserStatus };
+    if (!clientId) return { clients, tasks: [], approvals: [], experiments: [], audit: [], messages: [], browserSessions: computerUse.sessions, computerUse, events: system.events.history(), models };
     const [tasks, approvals, experiments, audit, messages, settings] = await Promise.all([
       system.workspace.listTasks(clientId), system.approvals.list(clientId), system.experiments.list(clientId), system.audit.list(clientId),
       system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage), system.settings.publicView()
     ]);
-    return { clients, selectedClientId: clientId, selectedConversationId: query.conversationId, tasks, approvals, experiments, audit, messages: messages.filter((message) => message.conversationId === query.conversationId).map((message) => sanitizeLegacyConversationError(message, settings.locale)), events: system.events.history(), models: system.modelStatus };
+    return {
+      clients,
+      selectedClientId: clientId,
+      selectedConversationId: query.conversationId,
+      tasks,
+      approvals,
+      experiments,
+      audit,
+      messages: messages.filter((message) => message.conversationId === query.conversationId).map((message) => sanitizeLegacyConversationError(message, settings.locale)),
+      browserSessions: computerUse.sessions,
+      computerUse,
+      events: system.events.history(),
+      models
+    };
   });
 
   app.get("/events", async (_request, reply) => {
@@ -154,8 +189,72 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
   app.post("/api/computer/takeover", async () => { system.computer?.pause(); return { status: "user_takeover" }; });
   app.post("/api/computer/resume", async () => { system.computer?.resume(); return { status: "running" }; });
 
+  const startManagedBrowser = async (bodyInput: unknown) => {
+    const requested = BrowserSessionStartRequest.parse(bodyInput);
+    const body = await resolveBrowserStartRequest(system, requested);
+    const session = await system.browserSessions.start(StartBrowserSessionInput.parse(body));
+    return { session: publicBrowserSession(session), computerUse: await computerUseState(system, body.clientId, false) };
+  };
+  const resumeManagedBrowser = async (bodyInput: unknown) => {
+    const body = BrowserSessionLookup.parse(bodyInput);
+    await system.workspace.readClient(body.clientId);
+    const session = await system.browserSessions.resume(body.clientId, body.browserProfile);
+    return { session: publicBrowserSession(session), computerUse: await computerUseState(system, body.clientId, false) };
+  };
+  const closeManagedBrowser = async (bodyInput: unknown) => {
+    const body = BrowserSessionLookup.parse(bodyInput);
+    await system.workspace.readClient(body.clientId);
+    const session = await system.browserSessions.close(body.clientId, body.browserProfile);
+    return { session: publicBrowserSession(session), computerUse: await computerUseState(system, body.clientId, false) };
+  };
+
+  app.get("/api/browser-session", async (request) => {
+    const query = BrowserSessionLookup.parse(request.query);
+    return browserSessionView(system, query.clientId, query.browserProfile);
+  });
+
+  app.post("/api/browser-session/start", async (request, reply) => {
+    const result = await startManagedBrowser(request.body);
+    reply.code(201);
+    return result;
+  });
+
+  app.post("/api/browser-session/resume", async (request) => resumeManagedBrowser(request.body));
+  app.post("/api/browser-session/close", async (request) => closeManagedBrowser(request.body));
+
+  app.post("/api/browser-sessions/start", async (request, reply) => {
+    const result = await startManagedBrowser(request.body);
+    reply.code(201);
+    return result;
+  });
+
+  app.get("/api/browser-sessions/status", async (request) => {
+    const query = BrowserSessionLookup.parse(request.query);
+    await system.workspace.readClient(query.clientId);
+    return computerUseState(system, query.clientId, true, query.browserProfile);
+  });
+
+  app.post("/api/browser-sessions/resume", async (request) => resumeManagedBrowser(request.body));
+  app.post("/api/browser-sessions/close", async (request) => closeManagedBrowser(request.body));
+
+  app.get("/api/privacy/screenshot-audits", async (request) => {
+    const query = z.object({ clientId: z.string().min(1), limit: z.coerce.number().int().min(1).max(500).default(100) }).parse(request.query);
+    await system.workspace.readClient(query.clientId);
+    const records = await system.screenshotAudits.list(query.clientId);
+    return { total: records.length, audits: records.slice(-query.limit) };
+  });
+
   app.post("/api/approvals", async (request, reply) => {
-    const body = z.object({ clientId: z.string(), taskId: z.string().uuid(), operation: ApprovalOperation, executionPlan: ApprovalExecutionPlan.optional() }).parse(request.body);
+    const body = z.object({
+      clientId: z.string().min(1),
+      taskId: z.string().uuid(),
+      operation: ApprovalOperation,
+      executionPlan: VisualApprovalPlanInput.optional()
+    }).superRefine((value, context) => {
+      if ((value.operation.riskLevel === "mutate" || value.operation.riskLevel === "destructive") && !value.executionPlan) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["executionPlan"], message: "a complete visual approval plan is required for mutations" });
+      }
+    }).parse(request.body);
     const approval = await system.tools.createApproval({ clientId: body.clientId, taskId: body.taskId, actor: "adpilot_agent", permission: "OBSERVE" }, body.operation, body.executionPlan);
     system.events.publish({ type: "approval", approvalId: approval.id, status: approval.status });
     reply.code(201); return approval;
@@ -203,25 +302,19 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     if (approval.operation.riskLevel !== "mutate" && approval.operation.riskLevel !== "destructive") throw new Error("commit endpoint only accepts mutations");
     const token = system.approvalTokens.get(params.id); if (!token) throw new Error("approval token is absent or already consumed");
     system.approvalTokens.delete(params.id);
-    const visualTask = {
-      instruction: approval.executionPlan.instruction, target: approval.executionPlan.target,
-      expectedResult: approval.executionPlan.expectedResult,
-      surface: {
-        app: approval.executionPlan.surface.app,
-        browserProfile: approval.executionPlan.surface.browserProfile,
-        allowedApps: approval.executionPlan.surface.allowedApps,
-        allowedDomains: approval.executionPlan.surface.allowedDomains,
-        ...(approval.executionPlan.surface.domain ? { domain: approval.executionPlan.surface.domain } : {})
-      },
-      riskLevel: approval.operation.riskLevel,
-      permission: approval.operation.riskLevel === "destructive" ? "DESTRUCTIVE" as const : "MUTATE" as const
-    };
+    const client = await system.workspace.readClient(body.clientId);
+    const permission = approval.operation.riskLevel === "destructive" ? "DESTRUCTIVE" as const : "MUTATE" as const;
+    const visualTask = visualTaskFromExecutionPlan(approval.executionPlan, client.kpi.currency, permission);
     const result = await system.tools.commitApprovedVisualAction({ clientId: body.clientId, taskId: approval.taskId, actor: "account_operator", permission: visualTask.permission }, params.id, token, approval.operation, visualTask);
     system.events.publish({ type: "approval", approvalId: params.id, status: result.status === "done" ? "executed" : "failed" });
     return result;
   });
 
-  app.setErrorHandler((error, _request, reply) => { reply.status(400).send({ error: error instanceof Error ? error.message : String(error) }); });
+  app.setErrorHandler((error, _request, reply) => {
+    const code = errorCode(error);
+    reply.status(code === "BROWSER_SESSION_LOST" ? 409 : code === "PRIVACY_MODE_REMOTE_PROVIDER_BLOCKED" ? 403 : 400)
+      .send({ error: error instanceof Error ? error.message : String(error), ...(code ? { code } : {}) });
+  });
 
   const uiRoot = options.uiRoot ?? resolve(process.cwd(), "dist", "desktop");
   if (existsSync(uiRoot)) {
@@ -229,6 +322,88 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     app.get("/*", async (_request, reply) => reply.sendFile("index.html"));
   }
   return app;
+}
+
+async function computerUseState(system: AdPilotSystem, clientId?: string, refresh = true, browserProfile?: string) {
+  if (refresh) await system.browserSessions.recover();
+  const sessions = (await system.browserSessions.list())
+    .filter((session) => (!clientId || session.clientId === clientId) && (!browserProfile || session.browserProfile === browserProfile));
+  const publicSessions = sessions.map(publicBrowserSession);
+  const currentBrowser = publicSessions.find((session) => session.sessionStatus === "connected") ?? publicSessions[0] ?? null;
+  const browserStatus = sessions.some((session) => session.sessionStatus === "connected")
+    ? "connected"
+    : sessions.some((session) => session.sessionStatus === "starting")
+      ? "starting"
+      : sessions.some((session) => session.sessionStatus === "lost")
+        ? "lost"
+        : sessions.some((session) => session.sessionStatus === "closed")
+          ? "closed"
+          : "not_connected";
+  return {
+    status: system.computer && system.modelStatus.guiConfigured ? "ready" : "not_ready",
+    visualExecution: "automatic",
+    failureEscalation: system.modelStatus.guiConfigured ? "enabled" : "unavailable",
+    currentVisualModel: system.modelStatus.gui,
+    route: system.modelStatus.route,
+    browserStatus,
+    currentBrowser,
+    sessions: publicSessions,
+    permission: system.modelStatus.permission,
+    privacyMode: system.modelStatus.privacyMode
+  } as const;
+}
+
+async function browserSessionView(system: AdPilotSystem, clientId: string, browserProfile?: string) {
+  const client = await system.workspace.readClient(clientId);
+  const computerUse = await computerUseState(system, clientId, true, browserProfile);
+  const profiles = (client.accounts?.accounts ?? []).flatMap((account) => {
+    const platform = Platform.safeParse(account.platform);
+    return platform.success ? [{ browserProfile: account.browserProfile, platform: platform.data, accountRef: account.accountRef }] : [];
+  });
+  return { session: computerUse.currentBrowser, profiles, ...computerUse };
+}
+
+async function resolveBrowserStartRequest(system: AdPilotSystem, requested: z.infer<typeof BrowserSessionStartRequest>) {
+  const client = await system.workspace.readClient(requested.clientId);
+  const accounts = client.accounts?.accounts ?? [];
+  const configured = requested.browserProfile
+    ? accounts.find((account) => account.browserProfile === requested.browserProfile)
+    : accounts.find((account) => account.platform === requested.platform);
+  if (accounts.length && !configured) {
+    throw new Error("browser Profile is not configured for this client and platform");
+  }
+  const platform = configured ? Platform.parse(configured.platform) : requested.platform;
+  return {
+    clientId: requested.clientId,
+    browserProfile: requested.browserProfile ?? configured?.browserProfile ?? `${requested.clientId}-${platform.replaceAll("_", "-")}`,
+    platform
+  };
+}
+
+function publicBrowserSession(session: BrowserSession) {
+  return {
+    sessionId: session.sessionId,
+    clientId: session.clientId,
+    browserProfile: session.browserProfile,
+    processId: session.processId ?? null,
+    windowId: session.windowId ?? null,
+    windowBounds: session.windowBounds ?? null,
+    platform: session.platform,
+    runtimePlatform: session.runtimePlatform,
+    browserApplicationId: session.browserApplicationId,
+    browserApp: session.browserApp,
+    sessionStatus: session.sessionStatus,
+    startedAt: session.startedAt,
+    updatedAt: session.updatedAt,
+    lastValidatedAt: session.lastValidatedAt ?? null,
+    lostAt: session.lostAt ?? null,
+    lostReason: session.lostReason ?? null
+  };
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object" || !("code" in error)) return undefined;
+  return typeof error.code === "string" ? error.code : undefined;
 }
 
 function conversationErrorMessage(locale: "zh-CN" | "en", detail: string, incidentId: string): string {

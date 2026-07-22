@@ -3,9 +3,97 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createAdPilotSystem } from "@adpilot/application";
+import type { ApprovalExecutionPlan, ApprovalOperation } from "@adpilot/approvals";
+import { BrowserSessionLostError, type BrowserSession, type ScreenshotModelCallAudit } from "@adpilot/computer-use";
+import { visualTaskFromExecutionPlan, type VisualApprovalPlanDraft } from "@adpilot/tools";
 import { createServer } from "./index.js";
+
+function operation(): ApprovalOperation {
+  return {
+    platform: "google_ads", account: "acct", campaign: "campaign", operation: "set_daily_budget",
+    currentValue: 100, proposedValue: 110, changePercentage: 10,
+    reason: "Mature efficient campaign", evidence: ["screen:before"], expectedImpact: "More volume",
+    observationWindow: "7 days", rollbackCondition: "CPA rises 20%", riskLevel: "mutate"
+  };
+}
+
+function executionPlan(clientId: string, taskId: string, approvedOperation = operation()): ApprovalExecutionPlan {
+  const now = Date.now();
+  return {
+    schemaVersion: 1,
+    planId: crypto.randomUUID(),
+    taskId,
+    clientId,
+    platform: approvedOperation.platform,
+    browserProfile: "client-a-google",
+    applicationId: "com.google.Chrome",
+    applicationName: "Google Chrome",
+    windowId: "window-77",
+    domain: "ads.google.com",
+    allowedApplications: ["com.google.Chrome", "Google Chrome"],
+    allowedDomains: ["ads.google.com"],
+    accountName: "Example account",
+    accountId: approvedOperation.account,
+    campaignName: "Campaign A",
+    campaignId: approvedOperation.campaign,
+    pageType: "campaign_budget_editor",
+    operation: approvedOperation.operation,
+    currentValue: approvedOperation.currentValue,
+    proposedValue: approvedOperation.proposedValue,
+    instruction: "Set the daily budget to 110 without changing other fields",
+    target: "Daily budget input and Save button",
+    expectedResult: "Daily budget visibly reads 110 after saving",
+    allowedRegion: { x: 600, y: 240, width: 320, height: 260, coordinateSpace: "screenshot_pixels" },
+    riskLevel: approvedOperation.riskLevel,
+    surfaceFingerprint: "f".repeat(64),
+    accountFingerprint: "a".repeat(64),
+    createdAt: new Date(now - 1_000).toISOString(),
+    expiresAt: new Date(now + 10 * 60_000).toISOString(),
+    experiment: {
+      hypothesis: "Budget adds volume", variable: "daily_budget", baseline: { budget: 100 }, expected: "More volume",
+      successCriteria: "CPA holds", failureCriteria: "CPA rises", maturityWindowDays: 7,
+      rollbackCondition: "CPA rises 20%", reviewAt: new Date(now + 7 * 24 * 60 * 60_000).toISOString()
+    }
+  };
+}
+
+function executionDraft(approvedOperation = operation()): VisualApprovalPlanDraft {
+  return {
+    schemaVersion: 1,
+    platform: approvedOperation.platform,
+    browserProfile: "client-a-google",
+    domain: "ads.google.com",
+    allowedDomains: ["ads.google.com"],
+    accountName: "Example account",
+    accountId: approvedOperation.account,
+    campaignName: "Campaign A",
+    campaignId: approvedOperation.campaign,
+    pageType: "campaign_budget_editor",
+    operation: approvedOperation.operation,
+    currentValue: approvedOperation.currentValue,
+    proposedValue: approvedOperation.proposedValue,
+    instruction: "Set the daily budget to 110 without changing other fields",
+    target: "Daily budget input and Save button",
+    expectedResult: "Daily budget visibly reads 110 after saving",
+    allowedRegion: { x: 600, y: 240, width: 320, height: 260, coordinateSpace: "screenshot_pixels" },
+    riskLevel: approvedOperation.riskLevel,
+    experiment: executionPlan("client-a", crypto.randomUUID(), approvedOperation).experiment
+  };
+}
+
+function browserSession(status: BrowserSession["sessionStatus"] = "connected"): BrowserSession {
+  const at = "2026-07-22T08:00:00.000Z";
+  return {
+    sessionId: "b".repeat(32), clientId: "client-a", browserProfile: "client-a-google",
+    profileDirectory: "/private/workspace/browser-profiles/redacted", nativeProfileFingerprint: "Default@1234567890abcdef",
+    processId: 501, windowId: "window-77", windowBounds: { x: 20, y: 40, width: 1280, height: 800 },
+    platform: "google_ads", runtimePlatform: process.platform === "darwin" || process.platform === "win32" || process.platform === "linux" ? process.platform : "linux",
+    browserApplicationId: "com.google.Chrome", browserApp: "Google Chrome", sessionStatus: status,
+    startedAt: at, updatedAt: at, lastValidatedAt: at
+  };
+}
 
 describe("product server", () => {
   it("creates a usable personal workspace on first launch", async () => {
@@ -136,34 +224,182 @@ describe("product server", () => {
     await restarted;
 
     const taskId = crypto.randomUUID();
-    const operation = {
-      platform: "google_ads" as const, account: "acct", campaign: "campaign", operation: "set_daily_budget",
-      currentValue: 100, proposedValue: 110, changePercentage: 10,
-      reason: "Mature efficient campaign", evidence: ["screen:before"], expectedImpact: "More volume",
-      observationWindow: "7 days", rollbackCondition: "CPA rises 20%", riskLevel: "mutate" as const
-    };
-    const executionPlan = {
-      instruction: "Save the budget", target: "Save", expectedResult: "Budget saved",
-      surface: { app: "Browser", domain: "ads.google.com", browserProfile: "client-a", allowedApps: ["Browser"], allowedDomains: ["ads.google.com"], surfaceFingerprint: "f".repeat(64) },
-      experiment: {
-        hypothesis: "Budget adds volume", variable: "daily_budget", baseline: { budget: 100 }, expected: "More volume",
-        successCriteria: "CPA holds", failureCriteria: "CPA rises", maturityWindowDays: 7,
-        rollbackCondition: "CPA rises 20%", reviewAt: "2026-01-08T00:00:00.000Z"
-      }
-    };
-    const fabricated = await system.approvals.create("client-a", taskId, { ...operation, evidence: [`screenshot:${"a".repeat(64)}`] }, executionPlan);
+    const approvedOperation = operation();
+    const approvedPlan = executionPlan("client-a", taskId, approvedOperation);
+    const fabricated = await system.approvals.create("client-a", taskId, { ...approvedOperation, evidence: [`screenshot:${"a".repeat(64)}`] }, approvedPlan);
     const fabricatedReview = await server.inject({ method: "POST", url: `/api/approvals/${fabricated.id}/risk-review`, payload: { clientId: "client-a" } });
     expect(fabricatedReview.statusCode).toBe(200);
     expect(fabricatedReview.json().approved).toBe(false);
     await expect(system.approvals.get("client-a", fabricated.id)).resolves.toMatchObject({ status: "rejected" });
 
-    const approval = await system.approvals.create("client-a", taskId, operation, executionPlan);
+    const approval = await system.approvals.create("client-a", taskId, approvedOperation, approvedPlan);
     await system.approvals.recordRiskReview("client-a", approval.id, true, "Within policy");
     const response = await server.inject({ method: "POST", url: `/api/approvals/${approval.id}/approve`, payload: { clientId: "client-a", approvedBy: "owner" } });
     expect(response.statusCode).toBe(200);
     expect(response.json().tokenStored).toBe(true);
     expect(JSON.stringify(response.json())).not.toContain("signature");
     expect(system.approvalTokens.has(approval.id)).toBe(true);
+    await server.close();
+  });
+
+  it("accepts both visual approval drafts and fully bound execution plans", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-approval-api-"));
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+    await system.workspace.initializeClient({ profile: { id: "client-a", name: "Example" }, kpi: { primary: "CPA", target: 10 } });
+    const create = vi.spyOn(system.tools, "createApproval").mockImplementation(async () => ({ id: crypto.randomUUID(), status: "pending_risk_review" }) as never);
+    const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
+    const approvedOperation = operation();
+    const firstTask = crypto.randomUUID();
+    const draft = executionDraft(approvedOperation);
+    const draftResponse = await server.inject({
+      method: "POST", url: "/api/approvals",
+      payload: { clientId: "client-a", taskId: firstTask, operation: approvedOperation, executionPlan: draft }
+    });
+    expect(draftResponse.statusCode).toBe(201);
+    expect(create).toHaveBeenNthCalledWith(1, { clientId: "client-a", taskId: firstTask, actor: "adpilot_agent", permission: "OBSERVE" }, approvedOperation, draft);
+
+    const secondTask = crypto.randomUUID();
+    const complete = executionPlan("client-a", secondTask, approvedOperation);
+    const completeResponse = await server.inject({
+      method: "POST", url: "/api/approvals",
+      payload: { clientId: "client-a", taskId: secondTask, operation: approvedOperation, executionPlan: complete }
+    });
+    expect(completeResponse.statusCode).toBe(201);
+    expect(create).toHaveBeenNthCalledWith(2, { clientId: "client-a", taskId: secondTask, actor: "adpilot_agent", permission: "OBSERVE" }, approvedOperation, complete);
+
+    const missingPlan = await server.inject({
+      method: "POST", url: "/api/approvals",
+      payload: { clientId: "client-a", taskId: crypto.randomUUID(), operation: approvedOperation }
+    });
+    expect(missingPlan.statusCode).toBe(400);
+    expect(missingPlan.json().error).toContain("complete visual approval plan");
+    expect(create).toHaveBeenCalledTimes(2);
+    await server.close();
+  });
+
+  it("commits only the canonical task projected from the approved execution plan", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-approval-commit-"));
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+    await system.workspace.initializeClient({ profile: { id: "client-a", name: "Example" }, kpi: { primary: "CPA", target: 10, currency: "USD" } });
+    const taskId = crypto.randomUUID();
+    const approvedOperation = operation();
+    const approvedPlan = executionPlan("client-a", taskId, approvedOperation);
+    const approval = await system.approvals.create("client-a", taskId, approvedOperation, approvedPlan);
+    await system.approvals.recordRiskReview("client-a", approval.id, true, "Within policy");
+    const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
+    const approved = await server.inject({ method: "POST", url: `/api/approvals/${approval.id}/approve`, payload: { clientId: "client-a", approvedBy: "owner" } });
+    expect(approved.statusCode).toBe(200);
+    const commit = vi.spyOn(system.tools, "commitApprovedVisualAction").mockResolvedValue({
+      status: "failed", attempts: 1, blocker: "verification stopped", blockerCode: "VERIFICATION_FAILED"
+    });
+    const response = await server.inject({ method: "POST", url: `/api/approvals/${approval.id}/commit`, payload: { clientId: "client-a" } });
+    expect(response.statusCode).toBe(200);
+    const canonicalTask = visualTaskFromExecutionPlan(approvedPlan, "USD", "MUTATE");
+    expect(commit).toHaveBeenCalledWith(
+      { clientId: "client-a", taskId, actor: "account_operator", permission: "MUTATE" },
+      approval.id,
+      expect.any(String),
+      approvedOperation,
+      canonicalTask
+    );
+    expect(canonicalTask).toMatchObject({
+      clientId: "client-a", taskId, planId: approvedPlan.planId, accountFingerprint: approvedPlan.accountFingerprint,
+      allowedRegion: approvedPlan.allowedRegion,
+      surface: { applicationId: approvedPlan.applicationId, windowId: approvedPlan.windowId, browserProfile: approvedPlan.browserProfile }
+    });
+    expect(system.approvalTokens.has(approval.id)).toBe(false);
+    await server.close();
+  });
+
+  it("exposes managed browser start, live status, explicit resume, close, and product status", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-browser-api-"));
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: { ADPILOT_PRIVACY_MODE: "local-only" } });
+    await system.workspace.initializeClient({
+      profile: { id: "client-a", name: "Example" }, kpi: { primary: "CPA", target: 10 },
+      accounts: { accounts: [{ platform: "google_ads", accountRef: "acct", browserProfile: "client-a-google", allowedDomains: ["ads.google.com"] }] }
+    });
+    let sessions: BrowserSession[] = [];
+    vi.spyOn(system.browserSessions, "recover").mockImplementation(async () => sessions);
+    vi.spyOn(system.browserSessions, "list").mockImplementation(async () => sessions);
+    const start = vi.spyOn(system.browserSessions, "start").mockImplementation(async () => {
+      sessions = [browserSession("connected")];
+      return sessions[0]!;
+    });
+    const resume = vi.spyOn(system.browserSessions, "resume").mockImplementation(async () => {
+      sessions = [browserSession("connected")];
+      return sessions[0]!;
+    });
+    const close = vi.spyOn(system.browserSessions, "close").mockImplementation(async () => {
+      sessions = [browserSession("closed")];
+      return sessions[0]!;
+    });
+    const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
+
+    const started = await server.inject({
+      method: "POST", url: "/api/browser-session/start",
+      payload: { clientId: "client-a", browserProfile: "client-a-google", platform: "google_ads" }
+    });
+    expect(started.statusCode).toBe(201);
+    expect(start).toHaveBeenCalledWith({ clientId: "client-a", browserProfile: "client-a-google", platform: "google_ads" });
+    expect(started.json()).toMatchObject({ session: { processId: 501, windowId: "window-77", sessionStatus: "connected" }, computerUse: { browserStatus: "connected", permission: "OBSERVE", privacyMode: "local-only" } });
+    expect(JSON.stringify(started.json())).not.toContain("profileDirectory");
+    expect(JSON.stringify(started.json())).not.toContain("nativeProfileFingerprint");
+
+    const status = await server.inject({ method: "GET", url: "/api/browser-session?clientId=client-a&browserProfile=client-a-google" });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      session: { browserProfile: "client-a-google" },
+      profiles: [{ browserProfile: "client-a-google", platform: "google_ads", accountRef: "acct" }],
+      browserStatus: "connected", currentBrowser: { browserProfile: "client-a-google" }, sessions: [{ sessionStatus: "connected" }]
+    });
+
+    const state = await server.inject({ method: "GET", url: "/api/state?clientId=client-a" });
+    expect(state.json()).toMatchObject({
+      models: { browserSession: "connected" },
+      computerUse: { browserStatus: "connected", permission: "OBSERVE", privacyMode: "local-only" },
+      browserSessions: [{ clientId: "client-a", sessionStatus: "connected" }]
+    });
+    const settings = await server.inject({ method: "GET", url: "/api/settings" });
+    expect(settings.json()).toMatchObject({ runtimeModels: { browserSession: "connected" }, computerUse: { permission: "OBSERVE", privacyMode: "local-only" } });
+
+    sessions = [{ ...browserSession("lost"), lostAt: "2026-07-22T08:10:00.000Z", lostReason: "foreground changed" }];
+    const resumed = await server.inject({ method: "POST", url: "/api/browser-session/resume", payload: { clientId: "client-a", browserProfile: "client-a-google" } });
+    expect(resumed.statusCode).toBe(200);
+    expect(resume).toHaveBeenCalledWith("client-a", "client-a-google");
+    expect(resumed.json().session.sessionStatus).toBe("connected");
+
+    const closed = await server.inject({ method: "POST", url: "/api/browser-session/close", payload: { clientId: "client-a", browserProfile: "client-a-google" } });
+    expect(closed.statusCode).toBe(200);
+    expect(close).toHaveBeenCalledWith("client-a", "client-a-google");
+    expect(closed.json()).toMatchObject({ session: { sessionStatus: "closed" }, computerUse: { browserStatus: "closed" } });
+
+    resume.mockRejectedValueOnce(new BrowserSessionLostError("original managed window is unavailable", browserSession("lost")));
+    const rejectedResume = await server.inject({ method: "POST", url: "/api/browser-session/resume", payload: { clientId: "client-a", browserProfile: "client-a-google" } });
+    expect(rejectedResume.statusCode).toBe(409);
+    expect(rejectedResume.json()).toEqual({ error: "original managed window is unavailable", code: "BROWSER_SESSION_LOST" });
+    await server.close();
+  });
+
+  it("returns bounded screenshot disclosure audits without image bytes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-privacy-audit-api-"));
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+    await system.workspace.initializeClient({ profile: { id: "client-a", name: "Example" }, kpi: { primary: "CPA", target: 10 } });
+    const audit: ScreenshotModelCallAudit = {
+      auditId: crypto.randomUUID(), clientId: "client-a", taskId: "task-a", purpose: "grounding",
+      modelProvider: "remote-vendor", modelId: "gui-model", screenshotId: crypto.randomUUID(), screenshotSha256: "a".repeat(64),
+      sentRoi: { x: 20, y: 30, width: 500, height: 300 },
+      masks: [{ category: "email", region: { x: 30, y: 40, width: 80, height: 20 }, reason: "private email" }],
+      transmittedWidth: 500, transmittedHeight: 300, leftLocal: true, fullScreenshotLocalOnly: true,
+      privacyMode: "minimized", dataRetentionPolicy: "provider-zero-retention", outcome: "prepared",
+      createdAt: "2026-07-22T08:30:00.000Z"
+    };
+    await system.screenshotAudits.append(audit);
+    const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
+    const response = await server.inject({ method: "GET", url: "/api/privacy/screenshot-audits?clientId=client-a&limit=1" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ total: 1, audits: [audit] });
+    expect(JSON.stringify(response.json())).not.toContain("base64");
+    expect(JSON.stringify(response.json())).not.toContain("localPath");
     await server.close();
   });
 });
