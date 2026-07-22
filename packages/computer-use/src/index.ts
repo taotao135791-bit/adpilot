@@ -111,6 +111,19 @@ export interface VisualMicroTask {
   platform?: string;
   accountFingerprint?: string;
   allowedRegion?: VisualTaskAllowedRegion;
+  planCreatedAt?: string;
+  planExpiresAt?: string;
+  identity?: {
+    accountName: string;
+    accountId: string;
+    campaignName: string;
+    campaignId: string;
+    pageType: string;
+    currency: string | null;
+    currentValue: string | number | boolean | null;
+    proposedValue: string | number | boolean | null;
+    operation: string;
+  };
   instruction: string;
   target: string;
   expectedResult: string;
@@ -310,7 +323,7 @@ export class VisualComputerRuntime {
     return screenshot;
   }
 
-  async runMicroTask(task: VisualMicroTask): Promise<VisualStepResult> {
+  async runMicroTask(task: VisualMicroTask, initialScreenshot?: Screenshot): Promise<VisualStepResult> {
     let lastAction: VisualAction | undefined;
     const executedCoordinates = new Set<string>();
     let mutationExecuted = false;
@@ -327,7 +340,9 @@ export class VisualComputerRuntime {
       }
       const tier: ModelTier = attempt >= this.maxAttempts ? "strong" : "gui";
       try {
-        const before = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "screenshot capture");
+        const before = attempt === 1 && initialScreenshot
+          ? Screenshot.parse(initialScreenshot)
+          : await withTimeout(this.operator.capture(), this.stepTimeoutMs, "screenshot capture");
         await this.onEvent({ type: "screenshot", phase: "before", screenshot: before });
         const expectedFingerprint = surfaceFingerprintFor(before);
         const grounded = await withTimeout(this.grounding.ground(boundTask, before, tier), this.stepTimeoutMs, "visual grounding");
@@ -347,6 +362,12 @@ export class VisualComputerRuntime {
           throw new VisualRuntimeBlocker("DUPLICATE_COORDINATE", `refusing to repeat coordinates for ${action.action}: ${coordinateKey}`);
         }
         await this.assertSurfaceUnchanged(expectedFingerprint);
+        if (action.risk_level === "mutate" || action.risk_level === "destructive") {
+          const immediate = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "mutation state recheck");
+          if (immediate.sha256 !== before.sha256) {
+            throw new VisualRuntimeBlocker("SURFACE_CHANGED", "visible pixels changed after identity review and grounding; a new approval plan is required");
+          }
+        }
         if (coordinateKey) executedCoordinates.add(coordinateKey);
         await withTimeout(this.operator.execute(action, before), this.stepTimeoutMs, "native action");
         mutationExecuted = action.risk_level === "mutate" || action.risk_level === "destructive";

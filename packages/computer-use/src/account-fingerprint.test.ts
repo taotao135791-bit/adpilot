@@ -111,6 +111,8 @@ describe("visual account fingerprint", () => {
     });
     expect(result.fingerprintHash).toMatch(/^[a-f0-9]{64}$/);
     expect(result.reviewers.map((item) => item.id)).toEqual(["gui-verifier", "deep-vision-reviewer"]);
+    const later = await gate().confirm(expected, { ...(await screenshot()), capturedAt: "2026-07-22T00:01:00.000Z", sha256: "b".repeat(64) });
+    expect(later.fingerprintHash).toBe(result.fingerprintHash);
   });
 
   it("rejects a different account", async () => {

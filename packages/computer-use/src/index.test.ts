@@ -52,7 +52,15 @@ describe("visual action protocol", () => {
     expect(result.status).toBe("done");
     expect(executed).toEqual(["click"]);
     expect(result.status === "done" && result.action).toMatchObject({
-      task_id: expect.stringMatching(/^task_/), step_id: expect.stringMatching(/^step_/), surface_fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/)
+      task_id: expect.stringMatching(/^task_/),
+      step_id: expect.stringMatching(/^step_/),
+      taskId: expect.stringMatching(/^task_/),
+      stepId: expect.stringMatching(/^step_/),
+      planId: expect.stringMatching(/^plan_/),
+      surface_fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      surfaceFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      accountFingerprint: before.sha256,
+      allowedRegion: { x: 0, y: 0, width: before.width, height: before.height, coordinateSpace: "screenshot_pixels" }
     });
   });
 
@@ -244,6 +252,50 @@ describe("visual action protocol", () => {
     );
     await expect(duplicateRuntime.runMicroTask(task)).resolves.toMatchObject({ status: "failed", attempts: 2, blockerCode: "DUPLICATE_COORDINATE" });
     expect(clickExecutions).toBe(1);
+  });
+
+  it("blocks a mutation outside its approved region before native input", async () => {
+    let executions = 0;
+    const runtime = new VisualComputerRuntime(
+      { capture: async () => before, execute: async () => { executions += 1; } },
+      { ground: async () => ({ action: "click", x: 80, y: 80, target: "Save", reason: "visible", confidence: 1, expected_result: "Saved", risk_level: "mutate" }) },
+      { verify: async () => ({ matched: true, confidence: 1, reason: "saved" }) }
+    );
+    await expect(runtime.runMicroTask({
+      ...task,
+      target: "Save",
+      expectedResult: "Saved",
+      riskLevel: "mutate",
+      permission: "MUTATE",
+      planId: "plan-1",
+      accountFingerprint: "c".repeat(64),
+      allowedRegion: { x: 0, y: 0, width: 40, height: 40, coordinateSpace: "screenshot_pixels" }
+    })).resolves.toMatchObject({ status: "failed", attempts: 1, blockerCode: "POLICY_BLOCKED" });
+    expect(executions).toBe(0);
+  });
+
+  it("recaptures and blocks if visible pixels change after mutation grounding", async () => {
+    let captures = 0;
+    let executions = 0;
+    const runtime = new VisualComputerRuntime(
+      {
+        capture: async () => captures++ === 0 ? before : after,
+        execute: async () => { executions += 1; }
+      },
+      { ground: async () => ({ action: "click", x: 20, y: 20, target: "Save", reason: "visible", confidence: 1, expected_result: "Saved", risk_level: "mutate" }) },
+      { verify: async () => ({ matched: true, confidence: 1, reason: "saved" }) }
+    );
+    await expect(runtime.runMicroTask({
+      ...task,
+      target: "Save",
+      expectedResult: "Saved",
+      riskLevel: "mutate",
+      permission: "MUTATE",
+      planId: "plan-1",
+      accountFingerprint: "c".repeat(64),
+      allowedRegion: { x: 0, y: 0, width: 100, height: 100, coordinateSpace: "screenshot_pixels" }
+    })).resolves.toMatchObject({ status: "failed", attempts: 1, blockerCode: "SURFACE_CHANGED" });
+    expect(executions).toBe(0);
   });
 
   it("routes dedicated UI-TARS first and PiVision only as fallback", async () => {

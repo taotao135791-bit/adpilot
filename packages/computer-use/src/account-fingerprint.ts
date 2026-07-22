@@ -129,9 +129,26 @@ export interface ConfirmedVisualIdentity {
   ];
 }
 
-/** SHA-256 over the complete, canonical visual account evidence record. */
+/**
+ * Stable identity binding used inside an execution plan. Volatile screenshot
+ * evidence remains in VisualAccountFingerprint and the audit log, while this
+ * hash changes only when an execution-critical identity fact changes.
+ */
 export function visualAccountFingerprintHash(input: VisualAccountFingerprint): string {
-  return createHash("sha256").update(stableJson(VisualAccountFingerprint.parse(input))).digest("hex");
+  const fingerprint = VisualAccountFingerprint.parse(input);
+  return createHash("sha256").update(stableJson({
+    platform: fingerprint.platform,
+    browserProfile: fingerprint.browserProfile,
+    applicationId: fingerprint.applicationId,
+    windowId: fingerprint.windowId,
+    pageType: fingerprint.pageType,
+    accountName: fingerprint.accountName,
+    accountId: fingerprint.accountId,
+    campaignName: fingerprint.campaignName,
+    campaignId: fingerprint.campaignId,
+    currency: fingerprint.currency,
+    currentValue: fingerprint.currentValue
+  })).digest("hex");
 }
 
 /**
