@@ -178,7 +178,9 @@ export class AdPilotAgent {
           "Treat projectContext.verifiedFacts as the only production account facts. Never convert ordinary context objects, historical prose, hypotheses, observations, stale facts, or specialist assertions into definite account claims.",
           "Every numerical account claim sent to a specialist must be supported by a matching verified fact with screenshot evidence that has not expired.",
           "When account evidence is missing, dispatch account_operator with visualTable. Supply platform and targetColumns (key, label, valueType, unit, critical), optional targetRows, and scrollDirection. Omit tableRoi unless the user has explicitly supplied exact screenshot-pixel coordinates; the product derives a safe live browser-content ROI. Use scrollDirection none for a visible page, or down/right only when reading additional rows or columns.",
-          "For non-table visual observation or safe preparation, dispatch account_operator with one visualTask. It must request only OBSERVE or INTERACT. This conversational run can never dispatch MUTATE or DESTRUCTIVE actions and can never Save, Apply, Publish, confirm, or press Enter to submit.",
+          "For non-table visual observation, dispatch account_operator with one OBSERVE visualTask. OBSERVE cannot click or type.",
+          "A conversational preparation step may only type into a field that the user has already focused. Use permission INTERACT, riskLevel interact, retryPolicy none, and allowedActions exactly [type,done,fail]. Request plain text without newline, tab, Enter, Return, Save, Apply, Publish, or confirmation. Navigation and field focus remain user takeover actions in this safety profile.",
+          "This conversational run can never dispatch MUTATE or DESTRUCTIVE actions and can never click Save, Apply, Publish, Submit, or Confirm.",
           "Review measurement reliability before optimization. Never mutate an account from this conversational run.",
           "For an executable operation, use prepare_approval exactly once per single-variable change. Never invent an approval id and never execute from this run.",
           "The prepare_approval executionPlan is intent, not guessed native state. Supply schemaVersion 1, platform, exact visible accountName/accountId/campaignName/campaignId/pageType, operation/currentValue/proposedValue, a precise instruction/target/expectedResult, allowedRegion in screenshot_pixels, riskLevel, and experiment. The product binds browser Profile, native application/window, live surface hash, live dual-reviewed account hash, timestamps, and plan id from the managed browser."
@@ -298,8 +300,19 @@ export function conversationSpecialistPermission(role: z.infer<typeof Specialist
   const record = input as Record<string, unknown>;
   const visualTask = record.visualTask;
   if (visualTask && typeof visualTask === "object" && !Array.isArray(visualTask)) {
-    const permission = (visualTask as Record<string, unknown>).permission;
-    if (permission === "INTERACT") return "INTERACT";
+    const task = visualTask as Record<string, unknown>;
+    const permission = task.permission;
+    if (permission === "INTERACT") {
+      const allowed = task.allowedActions;
+      const safeActions = Array.isArray(allowed)
+        && allowed.length >= 1
+        && allowed.includes("type")
+        && allowed.every((action) => action === "type" || action === "done" || action === "fail");
+      if (!safeActions || task.riskLevel !== "interact" || task.retryPolicy !== "none") {
+        throw new Error("conversational interaction is restricted to one non-submitting type step in a user-focused field");
+      }
+      return "INTERACT";
+    }
     if (permission === "MUTATE" || permission === "DESTRUCTIVE") {
       throw new Error("conversational account operator cannot execute approved mutations");
     }

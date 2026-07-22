@@ -28,7 +28,12 @@ describe("conversation specialist permissions", () => {
     expect(conversationSpecialistPermission("performance_analyst", {})).toBe("OBSERVE");
     expect(conversationSpecialistPermission("account_operator", { visualTable: { scrollDirection: "none" } })).toBe("OBSERVE");
     expect(conversationSpecialistPermission("account_operator", { visualTable: { scrollDirection: "down" } })).toBe("INTERACT");
-    expect(conversationSpecialistPermission("account_operator", { visualTask: { permission: "INTERACT" } })).toBe("INTERACT");
+    expect(conversationSpecialistPermission("account_operator", { visualTask: {
+      permission: "INTERACT", riskLevel: "interact", retryPolicy: "none", allowedActions: ["type", "done", "fail"]
+    } })).toBe("INTERACT");
+    expect(() => conversationSpecialistPermission("account_operator", { visualTask: { permission: "INTERACT", allowedActions: ["click"] } })).toThrow(
+      "restricted to one non-submitting type step"
+    );
     expect(() => conversationSpecialistPermission("account_operator", { visualTask: { permission: "MUTATE" } })).toThrow(
       "cannot execute approved mutations"
     );

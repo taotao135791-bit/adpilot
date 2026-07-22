@@ -101,6 +101,27 @@ describe("visual action protocol", () => {
     expect(() => new VisualPolicy().check({ ...action, risk_level: "interact" }, before, { ...task, surface: { ...task.surface, domain: "evil.example" } })).toThrow("not allowlisted");
   });
 
+  it("blocks submission controls and Enter-like typing without an approved mutation", () => {
+    const policy = new VisualPolicy();
+    const saveClick = VisualAction.parse({
+      action: "click", x: 10, y: 10, target: "Save budget", reason: "visible", confidence: 1,
+      expected_result: task.expectedResult, risk_level: "interact"
+    });
+    expect(() => policy.check(saveClick, before, { ...task, target: "Save budget" })).toThrow("approved mutation plan");
+    const newlineType = VisualAction.parse({
+      action: "type", text: "120\n", target: "budget input", reason: "focused", confidence: 1,
+      expected_result: "budget draft reads 120", risk_level: "interact"
+    });
+    expect(() => policy.check(newlineType, before, {
+      ...task, target: "budget input", expectedResult: "budget draft reads 120", allowedActions: ["type", "done", "fail"]
+    })).toThrow("cannot contain Enter");
+    const enter = VisualAction.parse({
+      action: "hotkey", keys: "ENTER", target: "budget input", reason: "submit", confidence: 1,
+      expected_result: "submitted", risk_level: "interact"
+    });
+    expect(() => policy.check(enter, before, { ...task, target: "budget input", expectedResult: "submitted" })).toThrow("approved mutation plan");
+  });
+
   it("enforces a one-attempt action allowlist for scroll-only micro-tasks", async () => {
     let executions = 0;
     let groundings = 0;

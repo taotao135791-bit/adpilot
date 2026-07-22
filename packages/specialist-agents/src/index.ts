@@ -116,6 +116,13 @@ export class AccountOperator implements SpecialistAgent<z.infer<typeof AccountOp
     if ("visualTable" in input) {
       return this.outputSchema.parse(await this.tools.readVisualTable(request.context, input.visualTable));
     }
+    if (request.context.actor === "adpilot_agent" && input.visualTask.permission === "INTERACT") {
+      const allowed = input.visualTask.allowedActions;
+      if (input.visualTask.riskLevel !== "interact" || input.visualTask.retryPolicy !== "none"
+        || !allowed?.includes("type") || allowed.some((action) => action !== "type" && action !== "done" && action !== "fail")) {
+        throw new Error("conversational account interaction must be a one-attempt, type-only preparation step");
+      }
+    }
     const result = await this.tools.executeVisualTask(request.context, input.visualTask);
     return this.outputSchema.parse(result.status === "done"
       ? { status: "done", attempts: result.attempts, action: result.action, evidence: [`screenshot:${result.before.sha256}`, `screenshot:${result.after.sha256}`] }

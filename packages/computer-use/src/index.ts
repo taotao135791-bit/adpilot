@@ -268,6 +268,16 @@ export class VisualPolicy {
     if (permissionRank[permission] < permissionRank[riskPermission[action.risk_level]]) {
       throw new Error(`${permission} does not allow ${action.risk_level} action`);
     }
+    if (permissionRank[permission] < permissionRank.MUTATE && action.action === "type" && /[\r\n\t]/.test(action.text)) {
+      throw new Error("non-mutation typing cannot contain Enter, Return, or Tab characters");
+    }
+    if (permissionRank[permission] < permissionRank.MUTATE && action.action === "hotkey" && /(?:enter|return)/i.test(action.keys)) {
+      throw new Error("Enter and Return require an approved mutation plan");
+    }
+    if (permissionRank[permission] < permissionRank.MUTATE && !["done", "fail", "screenshot", "wait", "move", "type", "hotkey", "scroll"].includes(action.action)
+      && mutationControlTarget(action.target)) {
+      throw new Error("mutation controls require an approved mutation plan");
+    }
     if ((action.risk_level === "mutate" || action.risk_level === "destructive")
       && (!task.planId || !task.accountFingerprint || !task.allowedRegion)) {
       throw new Error("mutating actions require plan, account fingerprint, and allowed-region bindings");
@@ -466,6 +476,10 @@ function scopeVisualRuntimeEvent(event: VisualRuntimeEventPayload, task?: Visual
     ...(task?.clientId ? { clientId: task.clientId } : {}),
     ...(task?.taskId ? { taskId: task.taskId } : {})
   };
+}
+
+function mutationControlTarget(target: string): boolean {
+  return /\b(?:save|apply|publish|submit|confirm|delete|remove|pause|enable|disable|launch)\b|保存|应用|发布|提交|确认|删除|移除|暂停|启用|停用|上线/i.test(target);
 }
 
 function failedResult(attempts: number, blocker: string, blockerCode: VisualBlockerCode, lastAction?: VisualAction): VisualStepResult {

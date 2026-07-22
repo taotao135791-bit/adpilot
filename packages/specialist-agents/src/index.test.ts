@@ -156,6 +156,23 @@ describe("specialist agents", () => {
     }));
   });
 
+  it("rejects a conversational click disguised as an interaction before Computer Use", async () => {
+    const executeVisualTask = vi.fn();
+    const operator = new AccountOperator({ executeVisualTask } as unknown as AdPilotTools);
+    await expect(operator.execute({
+      context: { clientId: "client-a", taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "INTERACT" },
+      input: {
+        visualTask: {
+          instruction: "Click Save", target: "Save budget", expectedResult: "saved", riskLevel: "interact", permission: "INTERACT",
+          allowedActions: ["click"], retryPolicy: "none",
+          surface: { app: "Browser", allowedApps: ["Browser"], allowedDomains: [] }
+        }
+      },
+      sharedFacts: []
+    })).rejects.toThrow("type-only preparation step");
+    expect(executeVisualTask).not.toHaveBeenCalled();
+  });
+
   it("prevents a media buyer from receiving stale facts", () => {
     const taskId = crypto.randomUUID();
     const selected = selectSharedFactsForSpecialist([{
