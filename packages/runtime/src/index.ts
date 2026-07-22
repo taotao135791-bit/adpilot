@@ -44,6 +44,21 @@ export interface RuntimeResult {
   compacted?: boolean;
 }
 
+export class StructuredOutputBlocker extends Error {
+  readonly code = "STRUCTURED_OUTPUT_INVALID";
+  constructor(readonly attempts: number, readonly issues: string[]) {
+    super(`structured output remained invalid after ${attempts} attempts`);
+    this.name = "StructuredOutputBlocker";
+  }
+}
+
+export interface StructuredRuntimeResult<S extends z.ZodTypeAny> {
+  output: z.output<S>;
+  runtime: RuntimeResult;
+  attempts: number;
+  repaired: boolean;
+}
+
 export interface PiAgentRuntimeOptions {
   compaction?: Partial<CompactionSettings>;
   compactionInstructions?: string;
@@ -115,11 +130,36 @@ export class PiAgentRuntime {
   }
 
   async runStructured<S extends z.ZodTypeAny>(request: RuntimeRequest, schema: S): Promise<z.output<S>> {
-    const result = await this.run({
+    return (await this.runStructuredDetailed(request, schema)).output;
+  }
+
+  async runStructuredDetailed<S extends z.ZodTypeAny>(request: RuntimeRequest, schema: S): Promise<StructuredRuntimeResult<S>> {
+    const first = await this.run({
       ...request,
       systemPrompt: `${request.systemPrompt}\nReturn the final answer as one JSON object matching the requested schema. Do not wrap it in markdown.`
     });
-    return schema.parse(parseJsonObject(result.text));
+    const firstParsed = parseStructured(first.text, schema);
+    if (firstParsed.success) return { output: firstParsed.data, runtime: first, attempts: 1, repaired: false };
+
+    const sameModelRepair = await this.run({
+      ...request,
+      systemPrompt: "You repair structured JSON. Return exactly one corrected JSON object and nothing else. Never call tools or add facts.",
+      prompt: structuredRepairPrompt(first.text, firstParsed.issues),
+      tools: [], allowedSkills: []
+    });
+    const secondParsed = parseStructured(sameModelRepair.text, schema);
+    if (secondParsed.success) return { output: secondParsed.data, runtime: sameModelRepair, attempts: 2, repaired: true };
+
+    const strongRepair = await this.run({
+      ...request,
+      systemPrompt: "You are the final high-assurance JSON repair pass. Return exactly one corrected JSON object and nothing else. Never call tools or add facts.",
+      prompt: structuredRepairPrompt(sameModelRepair.text, secondParsed.issues),
+      signals: { ...request.signals, reviewerEscalated: true },
+      tools: [], allowedSkills: []
+    });
+    const thirdParsed = parseStructured(strongRepair.text, schema);
+    if (thirdParsed.success) return { output: thirdParsed.data, runtime: strongRepair, attempts: 3, repaired: true };
+    throw new StructuredOutputBlocker(3, thirdParsed.issues);
   }
 
   createSkillTool(context: ToolContext, allowedSkills: string[]): AgentTool {
@@ -311,4 +351,24 @@ function parseJsonObject(text: string): unknown {
     if (start < 0 || end <= start) throw new Error("structured agent output is not JSON");
     return JSON.parse(trimmed.slice(start, end + 1));
   }
+}
+
+function parseStructured<S extends z.ZodTypeAny>(text: string, schema: S): { success: true; data: z.output<S> } | { success: false; issues: string[] } {
+  let value: unknown;
+  try { value = parseJsonObject(text); }
+  catch (error) { return { success: false, issues: [error instanceof Error ? error.message : String(error)] }; }
+  const parsed = schema.safeParse(value);
+  if (parsed.success) return { success: true, data: parsed.data };
+  return {
+    success: false,
+    issues: parsed.error.issues.slice(0, 20).map((issue) => `${issue.path.length ? issue.path.join(".") : "root"}: ${issue.message}`)
+  };
+}
+
+function structuredRepairPrompt(invalidOutput: string, issues: string[]): string {
+  return JSON.stringify({
+    instruction: "Repair only the JSON shape and types. Preserve supported facts. Do not explain the repair.",
+    validationErrors: issues,
+    invalidOutput: invalidOutput.slice(0, 20_000)
+  });
 }

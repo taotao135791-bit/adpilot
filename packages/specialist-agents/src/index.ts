@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { RuntimeRequest, RuntimeResult } from "@adpilot/runtime";
+import type { RuntimeRequest, RuntimeResult, StructuredRuntimeResult } from "@adpilot/runtime";
 import {
   SharedFact as SharedFactSchema,
   SpecialistRole,
@@ -27,6 +27,7 @@ export interface SpecialistAgent<I = unknown, O = unknown> {
 
 export interface SpecialistRuntime {
   run(request: RuntimeRequest): Promise<RuntimeResult>;
+  runStructuredDetailed?<S extends z.ZodTypeAny>(request: RuntimeRequest, schema: S): Promise<StructuredRuntimeResult<S>>;
 }
 
 export interface SpecialistSessionState {
@@ -166,7 +167,7 @@ abstract class PiSpecialist<I, O> implements SpecialistAgent<I, O> {
       role: this.role,
       ...(request.requiredObservedFactIds ? { requiredObservedFactIds: request.requiredObservedFactIds } : {})
     });
-    const result = await this.runtime.run({
+    const runtimeRequest: RuntimeRequest = {
       context: { ...request.context, actor: this.role, sessionId: previous?.sessionId ?? key, role: this.role },
       systemPrompt: [
         `You are the isolated ${this.role} specialist inside AdPilot.`,
@@ -179,8 +180,12 @@ abstract class PiSpecialist<I, O> implements SpecialistAgent<I, O> {
       signals: { task: this.role === "risk_reviewer" ? "risk_review" : "causal_analysis" },
       allowedSkills: this.allowedSkills,
       ...(previous ? { priorMessages: previous.messages } : {})
-    });
-    const output = this.outputSchema.parse(parseJsonObject(result.text));
+    };
+    const structured = this.runtime.runStructuredDetailed
+      ? await this.runtime.runStructuredDetailed(runtimeRequest, this.outputSchema)
+      : undefined;
+    const result = structured?.runtime ?? await this.runtime.run(runtimeRequest);
+    const output = structured?.output ?? this.outputSchema.parse(parseJsonObject(result.text));
     const now = new Date().toISOString();
     await this.sessions.save({
       key,

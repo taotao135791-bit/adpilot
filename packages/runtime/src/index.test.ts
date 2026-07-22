@@ -12,7 +12,7 @@ import { ModelRouter } from "@adpilot/model-router";
 import { SkillRegistry } from "@adpilot/skills";
 import { AdPilotTools } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
-import { AdPilotSessionStorage, PiAgentRuntime, resolvePiSessionId } from "./index.js";
+import { AdPilotSessionStorage, PiAgentRuntime, StructuredOutputBlocker, resolvePiSessionId } from "./index.js";
 
 describe("PiAgentRuntime", () => {
   it("starts a Pi session, calls a skill through a tool, streams events, and returns structured output", async () => {
@@ -106,5 +106,49 @@ describe("PiAgentRuntime", () => {
       phase: z.literal("idle"), sessionId: z.string(), leafId: z.string(), entryCount: z.number(), compactionEntryId: z.string()
     }));
     expect(checkpoint.compactionEntryId).toBe(compactions[0]?.id);
+  });
+
+  it("repairs invalid structured output with the same model before escalating", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-structured-repair-"));
+    const workspace = new WorkspaceStore(root);
+    await workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
+    const faux = fauxProvider({ provider: "test", models: [{ id: "fast" }, { id: "strong", reasoning: true }] });
+    const models = createModels(); models.setProvider(faux.provider);
+    faux.setResponses([
+      fauxAssistantMessage('{"recommendation":"increase"}'),
+      (context) => {
+        expect(JSON.stringify(context.messages)).toContain("validationErrors");
+        return fauxAssistantMessage('{"recommendation":"increase","confidence":0.84}');
+      }
+    ]);
+    const router = new ModelRouter({ fast: { provider: "test", model: "fast" }, strong: { provider: "test", model: "strong" }, gui: { provider: "test", model: "fast" } });
+    const tools = new AdPilotTools(workspace, new AuditLog(workspace), new ApprovalService(workspace, "0123456789abcdef0123456789abcdef"), new ExperimentStore(workspace));
+    const runtime = new PiAgentRuntime(models, router, workspace, new SkillRegistry(), tools);
+    const result = await runtime.runStructuredDetailed({
+      context: { clientId: "client-a", conversationId: "repair", taskId: crypto.randomUUID(), actor: "media_buyer", permission: "OBSERVE", sessionId: "repair", role: "media_buyer" },
+      systemPrompt: "Return a recommendation.", prompt: "Review the budget.", signals: { task: "classification" }
+    }, z.object({ recommendation: z.enum(["increase", "hold"]), confidence: z.number().min(0).max(1) }));
+    expect(result).toMatchObject({ output: { recommendation: "increase", confidence: 0.84 }, attempts: 2, repaired: true, runtime: { model: { tier: "fast" } } });
+  });
+
+  it("uses the strong model for final repair and returns a typed blocker after three failures", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-structured-blocker-"));
+    const workspace = new WorkspaceStore(root);
+    await workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
+    const faux = fauxProvider({ provider: "test", models: [{ id: "fast" }, { id: "strong", reasoning: true }] });
+    const models = createModels(); models.setProvider(faux.provider);
+    const router = new ModelRouter({ fast: { provider: "test", model: "fast" }, strong: { provider: "test", model: "strong" }, gui: { provider: "test", model: "fast" } });
+    const tools = new AdPilotTools(workspace, new AuditLog(workspace), new ApprovalService(workspace, "0123456789abcdef0123456789abcdef"), new ExperimentStore(workspace));
+    const runtime = new PiAgentRuntime(models, router, workspace, new SkillRegistry(), tools);
+    const request = {
+      context: { clientId: "client-a", conversationId: "strong-repair", taskId: crypto.randomUUID(), actor: "reviewer", permission: "OBSERVE" as const, sessionId: "strong-repair", role: "reviewer" },
+      systemPrompt: "Return a verdict.", prompt: "Review.", signals: { task: "classification" as const }
+    };
+    const schema = z.object({ approved: z.boolean(), reason: z.string().min(1) });
+    faux.setResponses([fauxAssistantMessage("{}"), fauxAssistantMessage("{}"), fauxAssistantMessage('{"approved":false,"reason":"insufficient evidence"}')]);
+    await expect(runtime.runStructuredDetailed(request, schema)).resolves.toMatchObject({ attempts: 3, repaired: true, output: { approved: false }, runtime: { model: { tier: "strong" } } });
+
+    faux.setResponses([fauxAssistantMessage("{}"), fauxAssistantMessage("{}"), fauxAssistantMessage("{}")]);
+    await expect(runtime.runStructuredDetailed({ ...request, context: { ...request.context, conversationId: "blocked-repair", sessionId: "blocked-repair" } }, schema)).rejects.toBeInstanceOf(StructuredOutputBlocker);
   });
 });
