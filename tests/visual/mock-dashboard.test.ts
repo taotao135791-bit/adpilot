@@ -7,8 +7,10 @@ import { describe, expect, it } from "vitest";
 import { AuditLog } from "@adpilot/audit";
 import { ApprovalService } from "@adpilot/approvals";
 import {
+  fingerprintSurface,
   ImageChangeVerifier,
   VisualComputerRuntime,
+  type DualVisualIdentityVerifier,
   type GroundingModel,
   type NativeOperator,
   type Screenshot,
@@ -16,7 +18,7 @@ import {
   type VisualMicroTask
 } from "@adpilot/computer-use";
 import { ExperimentStore } from "@adpilot/experiments";
-import { AdPilotTools } from "@adpilot/tools";
+import { AdPilotTools, visualTaskFromExecutionPlan } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
 
 type DashboardState = {
@@ -28,14 +30,37 @@ type DashboardState = {
   toast: boolean;
 };
 
-const surface = { app: "Local Ad Console", domain: "127.0.0.1", browserProfile: "local-test-profile", allowedApps: ["Local Ad Console"], allowedDomains: ["127.0.0.1"], surfaceFingerprint: "f".repeat(64) };
+const nativeSurface = {
+  platform: "darwin" as const,
+  app: "Local Ad Console",
+  bundleId: "dev.adpilot.mock-console",
+  browserProfile: "local-test-profile",
+  pid: 42,
+  title: "Android Growth — Visual test",
+  windowId: "mock-window-1",
+  bounds: { x: 0, y: 0, width: 1280, height: 800 },
+  screenId: "screen-1",
+  screenBounds: { x: 0, y: 0, width: 1280, height: 800 },
+  scaleFactor: 1
+};
+const surface = {
+  app: nativeSurface.app,
+  applicationId: nativeSurface.bundleId,
+  processId: nativeSurface.pid,
+  windowId: nativeSurface.windowId,
+  domain: "127.0.0.1",
+  browserProfile: "local-test-profile",
+  allowedApps: [nativeSurface.bundleId, nativeSurface.app],
+  allowedDomains: ["127.0.0.1"]
+};
 
 function screenshot(state: DashboardState): Screenshot {
   const content = JSON.stringify(state);
   return {
     base64: Buffer.from(content).toString("base64"), width: 1280, height: 800, scaleFactor: 1,
     capturedAt: new Date().toISOString(), sha256: createHash("sha256").update(content).digest("hex"),
-    surfaceFingerprint: surface.surfaceFingerprint
+    surface: nativeSurface,
+    surfaceFingerprint: fingerprintSurface(nativeSurface)
   };
 }
 
@@ -86,9 +111,9 @@ describe("local mock advertising console", () => {
     await expect(runtime.runMicroTask(task("Last 7 days", "date range is Last 7 days", "interact", "INTERACT"))).resolves.toMatchObject({ status: "done" });
     await expect(runtime.runMicroTask(task("Read campaign table", "campaign metrics are available", "observe", "OBSERVE"))).resolves.toMatchObject({ status: "done" });
     await expect(runtime.runMicroTask(task("Edit daily budget", "budget dialog is open", "interact", "INTERACT"))).resolves.toMatchObject({ status: "done" });
-    await expect(runtime.runMicroTask(task("Budget input", "draft budget is 120", "mutate", "MUTATE"))).resolves.toMatchObject({ status: "done" });
+    await expect(runtime.runMicroTask(task("Budget input", "draft budget is 120", "mutate", "MUTATE"))).resolves.toMatchObject({ status: "failed", blockerCode: "POLICY_BLOCKED" });
 
-    expect(operator.state).toMatchObject({ dateRange: "Last 7 days", draftBudget: "120", savedBudget: 100, dialog: true });
+    expect(operator.state).toMatchObject({ dateRange: "Last 7 days", draftBudget: "100", savedBudget: 100, dialog: true });
 
     await expect(runtime.runMicroTask(task("Save budget", "budget is saved as 120", "mutate", "OBSERVE"))).resolves.toMatchObject({ status: "failed" });
     expect(operator.state.savedBudget).toBe(100);
@@ -96,32 +121,70 @@ describe("local mock advertising console", () => {
     const workspace = new WorkspaceStore(await mkdtemp(join(tmpdir(), "adpilot-visual-")));
     await workspace.initializeClient({
       profile: { id: "visual-client", name: "Visual test" }, kpi: { primary: "CPA", target: 18 },
-      accounts: { accounts: [{ platform: "local", accountRef: "mock-account", browserProfile: "local-test-profile", allowedDomains: ["127.0.0.1"] }] }
+      accounts: { accounts: [{ platform: "other", accountRef: "local-account", browserProfile: "local-test-profile", allowedDomains: ["127.0.0.1"] }] }
     });
     const approvals = new ApprovalService(workspace, "0123456789abcdef0123456789abcdef");
-    const tools = new AdPilotTools(workspace, new AuditLog(workspace), approvals, new ExperimentStore(workspace), runtime);
+    const visualIdentity = {
+      confirm: async () => ({
+        fingerprintHash: "d".repeat(64),
+        fingerprint: { confidence: 0.99, screenshotHash: screenshot(operator.state).sha256, criticalRegionHashes: {} },
+        reviewers: [{ id: "mock-gui", confidence: 0.99, reason: "fixture" }, { id: "mock-deep", confidence: 0.99, reason: "fixture" }]
+      })
+    } as unknown as DualVisualIdentityVerifier;
+    const tools = new AdPilotTools(workspace, new AuditLog(workspace), approvals, new ExperimentStore(workspace), runtime, visualIdentity);
     const taskId = crypto.randomUUID();
     const operation = {
-      platform: "google_ads" as const, account: "local-account", campaign: "Android Growth", operation: "set_daily_budget",
+      platform: "other" as const, account: "local-account", campaign: "Android Growth", operation: "set_daily_budget",
       currentValue: 100, proposedValue: 120, changePercentage: 20,
       reason: "Mature campaign within the staged budget cap", evidence: ["local-console:before"],
       expectedImpact: "Increase conversion volume", observationWindow: "7 days",
       rollbackCondition: "CPA rises more than 20%", riskLevel: "mutate" as const
     };
-    const approval = await approvals.create("visual-client", taskId, operation, {
-      instruction: "Save the drafted daily budget", target: "Save budget", expectedResult: "budget is saved as 120", surface,
+    operator.state.draftBudget = "120"; // Simulates a draft entered manually by the user, outside AdPilot.
+    const createdAt = new Date().toISOString();
+    const executionPlan = {
+      schemaVersion: 1 as const,
+      planId: crypto.randomUUID(),
+      taskId,
+      clientId: "visual-client",
+      platform: "other" as const,
+      browserProfile: "local-test-profile",
+      applicationId: nativeSurface.bundleId,
+      applicationName: nativeSurface.app,
+      windowId: nativeSurface.windowId,
+      domain: "127.0.0.1",
+      allowedApplications: [nativeSurface.bundleId, nativeSurface.app],
+      allowedDomains: ["127.0.0.1"],
+      accountName: "Visual test",
+      accountId: "local-account",
+      campaignName: "Android Growth",
+      campaignId: "Android Growth",
+      pageType: "campaign_budget_editor",
+      operation: "set_daily_budget",
+      currentValue: 100,
+      proposedValue: 120,
+      instruction: "Save the drafted daily budget",
+      target: "Save budget",
+      expectedResult: "budget is saved as 120",
+      allowedRegion: { x: 900, y: 560, width: 220, height: 120, coordinateSpace: "screenshot_pixels" as const },
+      riskLevel: "mutate" as const,
+      surfaceFingerprint: fingerprintSurface(nativeSurface),
+      accountFingerprint: "d".repeat(64),
+      createdAt,
+      expiresAt: new Date(Date.parse(createdAt) + 10 * 60_000).toISOString(),
       experiment: {
         hypothesis: "A 20% budget increase adds volume without breaking CPA", variable: "daily_budget",
         baseline: { dailyBudget: 100, cpa: 15.24 }, expected: "More conversions at stable CPA",
         successCriteria: "CPA stays below 18", failureCriteria: "CPA exceeds 18",
         maturityWindowDays: 7, rollbackCondition: "CPA rises more than 20%", reviewAt: "2026-08-01T00:00:00.000Z"
       }
-    });
+    };
+    const approval = await approvals.create("visual-client", taskId, operation, executionPlan);
     await approvals.recordRiskReview("visual-client", approval.id, true, "Within policy and single-variable guardrail");
     const { token } = await approvals.approveByUser("visual-client", approval.id, "test-owner");
     await expect(tools.commitApprovedVisualAction(
       { clientId: "visual-client", taskId, actor: "account_operator", permission: "MUTATE" },
-      approval.id, token, operation, task("Save budget", "budget is saved as 120", "mutate", "MUTATE")
+      approval.id, token, operation, visualTaskFromExecutionPlan(executionPlan, "USD")
     )).resolves.toMatchObject({ status: "done" });
     expect(operator.state).toMatchObject({ savedBudget: 120, dialog: false, toast: true });
     await expect(approvals.get("visual-client", approval.id)).resolves.toMatchObject({ status: "executed" });
@@ -138,7 +201,11 @@ describe("local mock advertising console", () => {
         return { action: "fail", target: "popup", reason: "unexpected popup requires user takeover", confidence: 1, expected_result: "popup closed", risk_level: "observe" };
       }
     }, new ImageChangeVerifier());
-    await expect(runtime.runMicroTask(task("popup", "popup closed", "interact", "INTERACT"))).resolves.toMatchObject({ status: "failed", blocker: "unexpected popup requires user takeover" });
-    expect(attempts).toBe(2);
+    await expect(runtime.runMicroTask(task("popup", "popup closed", "interact", "INTERACT"))).resolves.toMatchObject({
+      status: "failed",
+      blocker: "action coordinates are outside the screenshot",
+      blockerCode: "POLICY_BLOCKED"
+    });
+    expect(attempts).toBe(1);
   });
 });
