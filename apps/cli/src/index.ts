@@ -83,7 +83,7 @@ async function runBrowserCommand(): Promise<void> {
   if (!clients.some((client) => client.id === clientId)) throw new Error(`client does not exist: ${clientId}`);
   const client = await system.workspace.readClient(clientId);
   const requestedPlatform = flag("--platform") ?? "google_ads";
-  const configuredAccount = client.accounts.accounts.find((account) => account.platform === requestedPlatform);
+  const configuredAccount = client.accounts?.accounts.find((account) => account.platform === requestedPlatform);
   const browserProfile = flag("--profile") ?? configuredAccount?.browserProfile ?? `${clientId}-${requestedPlatform.replace(/_/g, "-")}`;
 
   if (action === "start") {
