@@ -76,7 +76,7 @@ const draft: VisualApprovalPlanDraft = {
 const session: BrowserSession = {
   sessionId: "a".repeat(32),
   clientId: "client-a",
-  browserProfile: "Default@managed-profile",
+  browserProfile: "google-primary",
   profileDirectory: "/tmp/adpilot-profile",
   nativeProfileFingerprint: "Default@managed-profile",
   processId: 42,
@@ -198,7 +198,7 @@ describe("production visual approval tools", () => {
     expect(fixture.approval.executionPlan).toMatchObject({
       applicationId: "com.google.Chrome",
       windowId: "window-7",
-      browserProfile: "Default@managed-profile",
+      browserProfile: "google-primary",
       accountFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
       surfaceFingerprint: "f".repeat(64)
     });
@@ -459,7 +459,7 @@ async function tableScreenshot(color: number, capturedAt: string): Promise<Scree
       platform: "darwin",
       app: "Google Chrome",
       bundleId: "com.google.Chrome",
-      browserProfile: session.browserProfile,
+      browserProfile: session.nativeProfileFingerprint,
       pid: 42,
       title: "Campaigns - Google Ads",
       windowId: "window-7",

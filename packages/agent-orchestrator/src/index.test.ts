@@ -96,7 +96,7 @@ describe("AdPilotAgent integration", () => {
       platform: "darwin" as const,
       app: "Google Chrome",
       bundleId: "com.google.Chrome",
-      browserProfile: "client-a-google",
+      browserProfile: "test-profile",
       pid: 42,
       title: "Android Growth - Google Ads",
       windowId: "window-7",

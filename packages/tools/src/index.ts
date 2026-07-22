@@ -530,6 +530,7 @@ export class AdPilotTools {
         ...(session?.processId ? { processId: session.processId } : {}),
         windowId,
         browserProfile,
+        ...(session?.nativeProfileFingerprint ? { nativeProfileFingerprint: session.nativeProfileFingerprint } : {}),
         ...(domain ? { domain } : {}),
         allowedApps: [...new Set([applicationId, applicationName])],
         allowedDomains
@@ -619,6 +620,9 @@ export class AdPilotTools {
     if (task.surface.processId && task.surface.processId !== session.processId) throw new Error("visual task process differs from managed browser session");
     if (task.surface.windowId && task.surface.windowId !== session.windowId) throw new Error("visual task window differs from managed browser session");
     if (task.surface.browserProfile && task.surface.browserProfile !== session.browserProfile) throw new Error("visual task Profile differs from managed browser session");
+    if (task.surface.nativeProfileFingerprint && task.surface.nativeProfileFingerprint !== session.nativeProfileFingerprint) {
+      throw new Error("visual task native Profile proof differs from managed browser session");
+    }
     const allowedApps = [...new Set([session.browserApplicationId, session.browserApp])];
     if ((task.riskLevel === "mutate" || task.riskLevel === "destructive")
       && !allowedApps.every((candidate) => task.surface.allowedApps.includes(candidate))) {
@@ -636,6 +640,7 @@ export class AdPilotTools {
         processId: session.processId,
         windowId: session.windowId,
         browserProfile: session.browserProfile,
+        nativeProfileFingerprint: session.nativeProfileFingerprint,
         allowedApps
       }
     };
@@ -731,8 +736,8 @@ function textResult(details: unknown) {
 function expectedIdentityFromTask(context: ToolContext, task: VisualMicroTask, screenshot: Screenshot): ExpectedVisualIdentity {
   if (!task.identity) throw new Error("visual task is missing account and Campaign identity fields");
   if (!task.platform) throw new Error("visual task is missing platform binding");
-  if (!task.surface.browserProfile || !task.surface.applicationId || !task.surface.windowId) {
-    throw new Error("visual task is missing native Profile, application, or window binding");
+  if (!task.surface.browserProfile || !task.surface.nativeProfileFingerprint || !task.surface.applicationId || !task.surface.windowId) {
+    throw new Error("visual task is missing Profile alias, native Profile proof, application, or window binding");
   }
   if (!screenshot.surface) throw new Error("visual identity screenshot has no native surface");
   assertTaskSurfaceExact(task, screenshot);
@@ -741,6 +746,7 @@ function expectedIdentityFromTask(context: ToolContext, task: VisualMicroTask, s
     taskId: context.taskId,
     platform: Platform.parse(task.platform),
     browserProfile: task.surface.browserProfile,
+    nativeProfileFingerprint: task.surface.nativeProfileFingerprint,
     applicationId: task.surface.applicationId,
     windowId: task.surface.windowId,
     pageType: task.identity.pageType,
@@ -811,7 +817,8 @@ function assertTaskSurfaceExact(task: VisualMicroTask, screenshot: Screenshot): 
   if (task.surface.applicationId !== actualApplicationId) mismatches.push("applicationId");
   if (task.surface.processId && task.surface.processId !== surface.pid) mismatches.push("processId");
   if (task.surface.windowId !== surface.windowId) mismatches.push("windowId");
-  if (task.surface.browserProfile !== surface.browserProfile) mismatches.push("browserProfile");
+  const expectedNativeProfile = task.surface.nativeProfileFingerprint ?? task.surface.browserProfile;
+  if (expectedNativeProfile !== surface.browserProfile) mismatches.push("nativeProfileFingerprint");
   if (mismatches.length) throw new Error(`native screenshot differs from visual task: ${mismatches.join(", ")}`);
 }
 

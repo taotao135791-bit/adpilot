@@ -57,6 +57,7 @@ export const ExpectedVisualIdentity = z.object({
   taskId: z.string().min(1),
   platform: Platform,
   browserProfile: z.string().min(1),
+  nativeProfileFingerprint: z.string().min(1).optional(),
   applicationId: z.string().min(1),
   windowId: z.string().min(1),
   pageType: z.string().min(1),
@@ -75,6 +76,7 @@ export type ExpectedVisualIdentity = z.infer<typeof ExpectedVisualIdentity>;
 export const VisualAccountFingerprint = z.object({
   platform: Platform,
   browserProfile: z.string().min(1),
+  nativeProfileFingerprint: z.string().min(1).optional(),
   applicationId: z.string().min(1),
   windowId: z.string().min(1),
   windowTitle: z.string().min(1),
@@ -139,6 +141,7 @@ export function visualAccountFingerprintHash(input: VisualAccountFingerprint): s
   return createHash("sha256").update(stableJson({
     platform: fingerprint.platform,
     browserProfile: fingerprint.browserProfile,
+    nativeProfileFingerprint: fingerprint.nativeProfileFingerprint ?? fingerprint.browserProfile,
     applicationId: fingerprint.applicationId,
     windowId: fingerprint.windowId,
     pageType: fingerprint.pageType,
@@ -174,7 +177,8 @@ export class DualVisualIdentityVerifier {
     if (applicationId !== expected.applicationId || surface.windowId !== expected.windowId) {
       throw new VisualIdentityError("SURFACE_CHANGED", "native application or window no longer matches the approved visual plan");
     }
-    if (!surface.browserProfile || surface.browserProfile !== expected.browserProfile) {
+    const expectedNativeProfile = expected.nativeProfileFingerprint ?? expected.browserProfile;
+    if (!surface.browserProfile || surface.browserProfile !== expectedNativeProfile) {
       throw new VisualIdentityError("PROFILE_CHANGED", "native browser Profile no longer matches the approved visual plan");
     }
     if (!surface.title.trim()) throw new VisualIdentityError("SURFACE_CHANGED", "native browser window title is unavailable");
@@ -203,6 +207,7 @@ export class DualVisualIdentityVerifier {
     const fingerprint = VisualAccountFingerprint.parse({
       platform: expected.platform,
       browserProfile: expected.browserProfile,
+      ...(expected.nativeProfileFingerprint ? { nativeProfileFingerprint: expected.nativeProfileFingerprint } : {}),
       applicationId: expected.applicationId,
       windowId: expected.windowId,
       windowTitle: surface.title,

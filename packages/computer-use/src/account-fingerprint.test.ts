@@ -13,7 +13,8 @@ const expected: ExpectedVisualIdentity = {
   clientId: "client-a",
   taskId: "task-1",
   platform: "google_ads",
-  browserProfile: "Default@managed-profile",
+  browserProfile: "google-primary",
+  nativeProfileFingerprint: "Default@managed-profile",
   applicationId: "com.google.Chrome",
   windowId: "window-7",
   pageType: "campaign_budget_editor",
@@ -100,6 +101,8 @@ describe("visual account fingerprint", () => {
       accountName: "Example Ads",
       accountId: "123-456-7890",
       campaignName: "Brand Search",
+      browserProfile: "google-primary",
+      nativeProfileFingerprint: "Default@managed-profile",
       screenshotHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       criticalRegionHashes: {
         account: expect.stringMatching(/^[a-f0-9]{64}$/),

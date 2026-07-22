@@ -110,7 +110,10 @@ export interface SurfaceContext {
   processId?: number;
   windowId?: string;
   domain?: string;
+  /** User-facing Profile binding used to locate the managed session. */
   browserProfile?: string;
+  /** Non-reversible proof read from the native browser process command line. */
+  nativeProfileFingerprint?: string;
   allowedApps: string[];
   allowedDomains: string[];
 }
@@ -253,7 +256,8 @@ export class VisualPolicy {
       if (task.surface.windowId && task.surface.windowId !== screenshot.surface.windowId) {
         throw new Error(`active window does not match requested surface: ${screenshot.surface.windowId}`);
       }
-      if (task.surface.browserProfile && screenshot.surface.browserProfile && task.surface.browserProfile !== screenshot.surface.browserProfile) {
+      const expectedNativeProfile = task.surface.nativeProfileFingerprint ?? task.surface.browserProfile;
+      if (expectedNativeProfile && screenshot.surface.browserProfile && expectedNativeProfile !== screenshot.surface.browserProfile) {
         throw new Error(`active browser profile does not match requested surface: ${screenshot.surface.browserProfile}`);
       }
     }
