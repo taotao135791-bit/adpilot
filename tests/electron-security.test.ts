@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { isExternalWebUrl, isTrustedDesktopUrl } from "../apps/electron/src/security.js";
 
@@ -18,5 +19,13 @@ describe("Electron navigation security", () => {
     expect(isExternalWebUrl("file:///etc/passwd")).toBe(false);
     expect(isExternalWebUrl("mailto:hello@example.com")).toBe(false);
     expect(isExternalWebUrl("not a url")).toBe(false);
+  });
+
+  it("uses certificate-free ad-hoc app integrity signing", async () => {
+    const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
+      build: { forceCodeSigning: boolean; mac: { identity: string; hardenedRuntime: boolean } };
+    };
+    expect(packageJson.build.forceCodeSigning).toBe(false);
+    expect(packageJson.build.mac).toMatchObject({ identity: "-", hardenedRuntime: false });
   });
 });

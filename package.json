@@ -107,7 +107,8 @@
     },
     "mac": {
       "category": "public.app-category.business",
-      "identity": null,
+      "identity": "-",
+      "hardenedRuntime": false,
       "icon": "build/icon.icns",
       "target": [
         "dmg"
