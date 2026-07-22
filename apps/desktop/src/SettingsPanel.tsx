@@ -14,7 +14,7 @@ export type SettingsData = {
   catalog: { providers: CatalogProvider[]; computerFields: SettingsField[] };
   providerConfigured: Record<string, boolean>;
   providerCredentials: Record<string, "api_key" | "oauth">;
-  runtimeModels: { fast: string; strong: string; gui: string; guiStrong: string; chatConfigured: boolean; guiConfigured: boolean };
+  runtimeModels: { fast: string; strong: string; gui: string; guiStrong: string; chatConfigured: boolean; guiConfigured: boolean; browserSession?: string; route?: string };
   restartAvailable: boolean;
 };
 
@@ -42,6 +42,7 @@ export function SettingsPanel({ open, data, initialTab = "general", onClose, onS
   const [message, setMessage] = useState("");
   const [authSession, setAuthSession] = useState<AuthSession>();
   const [authInput, setAuthInput] = useState("");
+  const [advancedComputer, setAdvancedComputer] = useState(false);
   const text = settingsCopy(locale);
 
   useEffect(() => {
@@ -185,8 +186,12 @@ export function SettingsPanel({ open, data, initialTab = "general", onClose, onS
 
           {data && tab === "computer" && <SettingsSection eyebrow="03" title={text.computerTitle} body={text.computerBody}>
             <div className="settings-note important"><i />{text.computerNote}</div>
-            <div className="settings-fields">{data.catalog.computerFields.map((field) => <CredentialField key={field.env} field={field} locale={locale} configured={Boolean(data.configured[field.env])} value={envDraft[field.env] ?? ""} cleared={cleared.has(field.env)} onChange={(value) => { setEnvDraft({ ...envDraft, [field.env]: value }); setCleared((items) => { const next = new Set(items); next.delete(field.env); return next; }); }} onClear={() => setCleared((items) => new Set(items).add(field.env))} />)}</div>
-            <dl className="system-manifest"><div><dt>{text.visualPrimary}</dt><dd>{data.runtimeModels.gui}</dd></div><div><dt>{text.visualReview}</dt><dd>{data.runtimeModels.guiStrong}</dd></div><div><dt>{text.chatStatus}</dt><dd>{data.runtimeModels.chatConfigured ? text.ready : text.needsCredential}</dd></div><div><dt>{text.visionStatus}</dt><dd>{data.runtimeModels.guiConfigured ? text.ready : text.needsVision}</dd></div></dl>
+            <dl className="system-manifest"><div><dt>{locale === "zh-CN" ? "Computer Use" : "Computer use"}</dt><dd>{data.runtimeModels.guiConfigured ? text.ready : text.needsVision}</dd></div><div><dt>{locale === "zh-CN" ? "自动路由" : "Automatic route"}</dt><dd>{data.runtimeModels.route ?? data.runtimeModels.gui}</dd></div><div><dt>{locale === "zh-CN" ? "当前视觉模型" : "Current visual model"}</dt><dd>{data.runtimeModels.gui}</dd></div><div><dt>{locale === "zh-CN" ? "失败升级" : "Failure escalation"}</dt><dd>{locale === "zh-CN" ? "已开启" : "Enabled"}</dd></div><div><dt>{locale === "zh-CN" ? "当前浏览器" : "Current browser"}</dt><dd>{data.runtimeModels.browserSession ?? (locale === "zh-CN" ? "未连接" : "Not connected")}</dd></div><div><dt>{text.visualReview}</dt><dd>{data.runtimeModels.guiStrong}</dd></div></dl>
+            <SettingBlock label={locale === "zh-CN" ? "隐私模式" : "Privacy mode"} hint={locale === "zh-CN" ? "本地模式禁止向远程模型发送截图" : "Local-only blocks screenshots from remote models"}>
+              <Segmented value={envDraft.ADPILOT_PRIVACY_MODE || "standard"} options={[{ value: "standard", label: locale === "zh-CN" ? "自动遮挡" : "Masked" }, { value: "local-only", label: locale === "zh-CN" ? "仅本地" : "Local only" }]} onChange={(value) => setEnvDraft({ ...envDraft, ADPILOT_PRIVACY_MODE: value })} />
+            </SettingBlock>
+            <button type="button" className="advanced-settings-toggle" onClick={() => setAdvancedComputer((value) => !value)}>{advancedComputer ? (locale === "zh-CN" ? "收起高级开发者设置" : "Hide advanced developer settings") : (locale === "zh-CN" ? "高级开发者设置" : "Advanced developer settings")}</button>
+            {advancedComputer && <div className="settings-fields">{data.catalog.computerFields.filter((field) => field.env !== "ADPILOT_PRIVACY_MODE").map((field) => <CredentialField key={field.env} field={field} locale={locale} configured={Boolean(data.configured[field.env])} value={envDraft[field.env] ?? ""} cleared={cleared.has(field.env)} onChange={(value) => { setEnvDraft({ ...envDraft, [field.env]: value }); setCleared((items) => { const next = new Set(items); next.delete(field.env); return next; }); }} onClear={() => setCleared((items) => new Set(items).add(field.env))} />)}</div>}
           </SettingsSection>}
 
           {data && tab === "about" && <SettingsSection eyebrow="04" title={text.aboutTitle} body={text.aboutBody}>

@@ -87,6 +87,7 @@ const specialFields: Record<string, SettingsField[]> = {
 
 // Dedicated GUI roles are optional. When absent, image-capable Pi code models remain the fallback.
 const computerFields: SettingsField[] = [
+  field("ADPILOT_PRIVACY_MODE", "隐私模式", "Privacy mode", false, false, "standard"),
   field("ADPILOT_GUI_BASE_URL", "GUI 定位服务地址", "GUI grounding endpoint", false, false, "http://127.0.0.1:8000/v1"),
   field("ADPILOT_GUI_API_KEY", "GUI 定位密钥", "GUI grounding API key", true),
   field("ADPILOT_GUI_MODEL", "GUI 定位模型", "GUI grounding model", false, false, "ui-tars-1.5"),
@@ -246,7 +247,8 @@ function validateComputerSettings(env: Record<string, string>): void {
     ADPILOT_GUI_IMAGE_INPUT: ["true", "false"],
     ADPILOT_GUI_COORDINATE_FORMAT: ["pixels", "normalized", "ui-tars-1000"],
     ADPILOT_GUI_NORMALIZATION: ["screenshot", "window"],
-    ADPILOT_VERIFY_MODE: ["auto", "independent", "gui", "strong"]
+    ADPILOT_VERIFY_MODE: ["auto", "independent", "gui", "strong"],
+    ADPILOT_PRIVACY_MODE: ["standard", "local-only"]
   };
   for (const [name, values] of Object.entries(enums)) {
     if (env[name] && !values.includes(env[name])) throw new Error(`${name} must be one of: ${values.join(", ")}`);
