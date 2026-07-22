@@ -9,13 +9,13 @@ type Mode = "readonly" | "prepare";
 const mode = (process.argv[2] ?? "") as Mode;
 if (!(["readonly", "prepare"] as string[]).includes(mode) || process.argv.includes("--help")) {
   console.log([
-    "Google Ads native visual validation (never uses DOM/Playwright).",
+    "Google Ads logged-in-browser pure-vision validation (never uses DOM/Playwright).",
     "",
     "Usage:",
-    "  pnpm validate:google-ads:readonly -- --client <id> --browser-profile <name> --campaign <name>",
-    "  pnpm validate:google-ads:prepare -- --client <id> --browser-profile <name> --campaign <name> --draft-budget <value>",
+    "  pnpm validate:visual:google-ads:observe -- --client <id> --browser-profile <name> --campaign <name>",
+    "  pnpm validate:visual:google-ads:prepare -- --client <id> --browser-profile <name> --campaign <name> --draft-budget <value>",
     "",
-    "Open the authorized Google Ads account in the foreground before starting.",
+    "Open the manually logged-in Google Ads browser window in the foreground before starting.",
     "prepare fills a draft budget field and stops before Save/Apply; it never submits."
   ].join("\n"));
   process.exit(mode ? 0 : 1);
@@ -41,7 +41,7 @@ if (!/chrome|safari|edge|arc|brave|firefox/i.test(`${live.surface.app} ${live.su
 }
 
 const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${mode}`;
-const artifactRoot = resolve(process.cwd(), "artifacts", "validation", runId);
+const artifactRoot = resolve(process.cwd(), "artifacts", "visual-validation", runId);
 await mkdir(artifactRoot, { recursive: true });
 const records: Array<Record<string, unknown>> = [];
 let screenshotIndex = 0;
@@ -101,9 +101,13 @@ for (let index = 0; index < steps.length; index += 1) {
       safeEvents.push({ type: event.type, phase: event.phase, file: filename, sha256: event.screenshot.sha256, surfaceFingerprint: event.screenshot.surfaceFingerprint });
     } else safeEvents.push(event);
   }
-  const executedTargets = events.flatMap(({ event }) => event.type === "executed" ? [event.action.target] : []);
+  const executedActions = events.flatMap(({ event }) => event.type === "executed" ? [event.action] : []);
+  const executedTargets = executedActions.map((action) => action.target);
   if (executedTargets.some((target) => /save|apply|publish|remove|delete|提交|保存|应用|发布|删除/i.test(target))) {
     throw new Error(`submission guard tripped on forbidden target: ${executedTargets.join(", ")}`);
+  }
+  if (executedActions.some((action) => (action.action === "hotkey" && /enter|return/i.test(action.keys)) || (action.action === "type" && /[\r\n]/.test(action.text)))) {
+    throw new Error("submission guard tripped on Enter/Return input");
   }
   records.push({ index: index + 1, task, result, latencyMs: Date.now() - startedAt, events: safeEvents });
   if (result.status !== "done") break;

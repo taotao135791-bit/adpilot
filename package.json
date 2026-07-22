@@ -25,6 +25,8 @@
     "eval:gui": "node scripts/evaluate-visual-replay.mjs",
     "validate:google-ads:readonly": "tsx scripts/validate-google-ads.ts readonly",
     "validate:google-ads:prepare": "tsx scripts/validate-google-ads.ts prepare",
+    "validate:visual:google-ads:observe": "tsx scripts/validate-google-ads.ts readonly",
+    "validate:visual:google-ads:prepare": "tsx scripts/validate-google-ads.ts prepare",
     "icon:mac": "bash scripts/build-macos-icon.sh",
     "dev": "tsx watch apps/cli/src/index.ts serve",
     "build": "pnpm typecheck && pnpm build:cli && pnpm build:desktop && pnpm build:electron && node scripts/postbuild.mjs",
