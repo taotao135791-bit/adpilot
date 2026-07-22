@@ -93,4 +93,55 @@ describe("AdPilotAgent integration", () => {
     faux.setResponses([fauxAssistantMessage("Hello — tell me what you would like to work on.")]);
     await expect(agent.respond("client-a", "Hello", { interfaceLocale: "en" })).resolves.toMatchObject({ reply: "Hello — tell me what you would like to work on.", task: null });
   });
+
+  it("loads verified screenshot facts into the main prompt, quarantines ordinary objects, and writes synthesis facts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-facts-"));
+    const workspace = new WorkspaceStore(root);
+    await workspace.initializeClient({
+      profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 },
+      accounts: { accounts: [{ platform: "google_ads", accountRef: "acct-1", browserProfile: "client-a-google", allowedDomains: ["ads.google.com"] }] }
+    });
+    const faux = fauxProvider({ provider: "facts-test", models: [{ id: "fast" }, { id: "strong", reasoning: true }] });
+    const models = createModels(); models.setProvider(faux.provider);
+    let promptIncludedVerifiedFact = false;
+    let promptIncludedLegacyObject = false;
+    faux.setResponses([async (context) => {
+      const serialized = JSON.stringify(context);
+      promptIncludedVerifiedFact = serialized.includes("daily_budget") && serialized.includes("screenshot:screen-1");
+      promptIncludedLegacyObject = serialized.includes("legacyTargetCpa");
+      return fauxAssistantMessage(JSON.stringify({
+        summary: "Verified budget evidence is available.",
+        investigationTree: [{ question: "Is verified evidence available?", specialist: "performance_analyst", status: "complete", conclusion: "Yes" }],
+        nextStep: "Keep observing", proposedApprovalIds: [], reviewAt: null
+      }));
+    }]);
+    const router = new ModelRouter({ fast: { provider: "facts-test", model: "fast" }, strong: { provider: "facts-test", model: "strong" }, gui: { provider: "facts-test", model: "fast" } });
+    const approvals = new ApprovalService(workspace, "0123456789abcdef0123456789abcdef");
+    const screenshot: Screenshot = { base64: "screen", width: 100, height: 100, scaleFactor: 1, capturedAt: "2026-07-22T00:00:00.000Z", sha256: "a".repeat(64) };
+    const computer = new VisualComputerRuntime(
+      { capture: async () => screenshot, execute: async () => undefined },
+      { ground: async () => ({ action: "done", target: "campaign table", reason: "visible", confidence: 1, expected_result: "visible", risk_level: "observe" }) },
+      { verify: async () => ({ matched: true, confidence: 1, reason: "visible" }) }
+    );
+    const tools = new AdPilotTools(workspace, new AuditLog(workspace), approvals, new ExperimentStore(workspace), computer);
+    const runtime = new PiAgentRuntime(models, router, workspace, new SkillRegistry(), tools);
+    const agent = new AdPilotAgent(runtime, new SpecialistCoordinator([]), workspace, tools);
+    const oldTaskId = crypto.randomUUID();
+    const observed = await agent.sharedFacts.observe({
+      clientId: "client-a", taskId: oldTaskId, subject: "campaign-a", predicate: "daily_budget", value: 100, unit: "USD",
+      sourceType: "visual_table", sourceScreenshotId: "screen-1", sourceBoundingBox: [10, 20, 30, 40],
+      evidenceIds: ["screenshot:screen-1"], confidence: 0.96, createdBy: "visual_table_reader", expiresAt: "2027-07-22T00:00:00.000Z"
+    });
+    await agent.sharedFacts.verify("client-a", observed.factId, { verifier: "independent_visual_verifier", confidence: 0.95 });
+
+    const result = await agent.runTask("client-a", "Review the verified budget", { interfaceLocale: "en", legacyTargetCpa: 999 });
+    expect(promptIncludedVerifiedFact).toBe(true);
+    expect(promptIncludedLegacyObject).toBe(false);
+    expect(result.sharedFacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ predicate: "daily_budget", status: "verified", derivedFromFactId: observed.factId }),
+      expect.objectContaining({ predicate: "root_agent_synthesis", status: "hypothesis", createdBy: "adpilot_agent" })
+    ]));
+    const persisted = JSON.parse((await workspace.readText("client-a", "facts/shared-facts.json"))!);
+    expect(persisted.some((fact: { predicate: string }) => fact.predicate === "root_agent_synthesis")).toBe(true);
+  });
 });

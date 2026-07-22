@@ -4,7 +4,18 @@ import { z } from "zod";
 import { ApprovalExecutionPlan, ApprovalOperation } from "@adpilot/approvals";
 import { PiAgentRuntime } from "@adpilot/runtime";
 import { SpecialistCoordinator } from "@adpilot/specialist-agents";
-import { Evidence, SpecialistRole, TaskState, type TaskState as Task } from "@adpilot/shared";
+import {
+  Evidence,
+  migrateLegacyFactDispatch,
+  SharedFact,
+  SharedFactPayload,
+  SharedFactLedger,
+  SpecialistRole,
+  TaskState,
+  type SharedFact as SharedFactValue,
+  type SharedFactRepository,
+  type TaskState as Task
+} from "@adpilot/shared";
 import { WorkspaceStore } from "@adpilot/workspace";
 import { AdPilotTools } from "@adpilot/tools";
 
@@ -20,6 +31,10 @@ const LongTermMemory = z.object({
   nextStep: z.string().min(1), reviewAt: z.string().datetime().nullable(), proposedApprovalIds: z.array(z.string().uuid())
 });
 export type MainAgentOutput = z.infer<typeof MainAgentOutput>;
+export interface AgentConversationContext extends Record<string, unknown> {
+  conversationId?: string;
+  interfaceLocale?: string;
+}
 const ConversationDecision = z.object({
   mode: z.enum(["answer", "investigate"]),
   reply: z.string().min(1),
@@ -27,17 +42,23 @@ const ConversationDecision = z.object({
 });
 
 export class AdPilotAgent {
+  readonly sharedFacts: SharedFactLedger;
+
   constructor(
     private readonly runtime: PiAgentRuntime,
     private readonly specialists: SpecialistCoordinator,
     private readonly workspace: WorkspaceStore,
     private readonly tools: AdPilotTools,
-    private readonly onTaskState: (task: Task) => void | Promise<void> = () => undefined
-  ) {}
+    private readonly onTaskState: (task: Task) => void | Promise<void> = () => undefined,
+    sharedFacts?: SharedFactLedger
+  ) {
+    this.sharedFacts = sharedFacts ?? new SharedFactLedger(new WorkspaceSharedFactRepository(workspace));
+  }
 
-  async respond(clientId: string, message: string, sharedFacts: Record<string, unknown> = {}): Promise<{ reply: string; task: Task | null; result?: MainAgentOutput }> {
+  async respond(clientId: string, message: string, context: AgentConversationContext = {}): Promise<{ reply: string; task: Task | null; result?: MainAgentOutput }> {
     const client = await this.workspace.readClient(clientId);
-    const conversationId = typeof sharedFacts.conversationId === "string" && sharedFacts.conversationId.trim() ? sharedFacts.conversationId.trim() : "primary";
+    const conversationId = typeof context.conversationId === "string" && context.conversationId.trim() ? context.conversationId.trim() : "primary";
+    const verifiedFacts = await this.sharedFacts.usable(clientId);
     const decisionResult = await this.runtime.run({
       context: { clientId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", sessionId: conversationId, conversationId, role: "adpilot_agent" },
       systemPrompt: [
@@ -45,15 +66,15 @@ export class AdPilotAgent {
         "Choose answer for greetings, product usage, definitions, clarifying questions, and requests that do not require account evidence.",
         "Choose investigate for account-specific diagnosis, measurement review, optimization, creative analysis, or any request that should gather evidence or prepare an operation.",
         "Never claim you inspected an account in answer mode. Never mutate an account from this decision turn.",
-        "Use sharedFacts.interfaceLocale: Simplified Chinese for zh-CN and English for en. Keep the reply direct and useful.",
+        "Use context.interfaceLocale: Simplified Chinese for zh-CN and English for en. Keep the reply direct and useful.",
         'Return exactly one JSON object: {"mode":"answer"|"investigate","reply":"user-facing text","goal":"investigation goal"|null}. Do not rename these fields or wrap the object in markdown.'
       ].join("\n"),
-      prompt: JSON.stringify({ message, client, sharedFacts }),
+      prompt: JSON.stringify({ message, client, context: sanitizeConversationContext(context), verifiedFacts }),
       signals: { task: "conversation" }
     });
-    const decision = parseConversationDecision(decisionResult.text, message, sharedFacts.interfaceLocale);
+    const decision = parseConversationDecision(decisionResult.text, message, context.interfaceLocale);
     if (decision.mode === "answer") return { reply: decision.reply, task: null };
-    const investigation = await this.runTask(clientId, decision.goal ?? message, sharedFacts);
+    const investigation = await this.runTask(clientId, decision.goal ?? message, context);
     return { reply: investigation.result.summary, task: investigation.task, result: investigation.result };
   }
 
@@ -64,14 +85,27 @@ export class AdPilotAgent {
     return task;
   }
 
-  async runTask(clientId: string, goal: string, sharedFacts: Record<string, unknown> = {}): Promise<{ task: Task; result: MainAgentOutput; specialistResults: Record<string, unknown> }> {
+  async runTask(clientId: string, goal: string, context: AgentConversationContext = {}): Promise<{
+    task: Task;
+    result: MainAgentOutput;
+    specialistResults: Record<string, unknown>;
+    sharedFacts: SharedFactValue[];
+  }> {
     const [clientContext, memory] = await Promise.all([
       this.workspace.readClient(clientId),
       this.workspace.readJsonl(clientId, "memory/agent.jsonl", LongTermMemory)
     ]);
-    const projectFacts = { client: clientContext, supplied: sharedFacts, recentMemory: memory.slice(-20) };
     let task = await this.startTask(clientId, goal);
-    const conversationId = typeof sharedFacts.conversationId === "string" && sharedFacts.conversationId.trim() ? sharedFacts.conversationId.trim() : `task-${task.id}`;
+    const inherited = await this.sharedFacts.usable(clientId);
+    await this.sharedFacts.deriveForTask(clientId, task.id, inherited);
+    let taskFacts = await this.sharedFacts.usable(clientId, { taskId: task.id });
+    const projectContext = {
+      client: clientContext,
+      verifiedFacts: taskFacts,
+      conversation: sanitizeConversationContext(context),
+      recentDecisionMemory: memory.slice(-20)
+    };
+    const conversationId = typeof context.conversationId === "string" && context.conversationId.trim() ? context.conversationId.trim() : `task-${task.id}`;
     task = TaskState.parse({ ...task, phase: "investigating", owner: null, nextStep: "Dispatch specialists and collect evidence", updatedAt: new Date().toISOString() });
     await this.persistTask(task);
     const specialistResults: Record<string, unknown> = {};
@@ -86,8 +120,29 @@ export class AdPilotAgent {
         const params = z.object({ role: SpecialistRole, input: z.unknown() }).parse(raw);
         task = TaskState.parse({ ...task, owner: params.role, updatedAt: new Date().toISOString() });
         await this.persistTask(task);
-        const output = await this.specialists.dispatch(params.role, { context: { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE" }, input: params.input, sharedFacts: projectFacts });
+        taskFacts = await this.sharedFacts.usable(clientId, { taskId: task.id });
+        const output = await this.specialists.dispatch(params.role, {
+          context: { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE" },
+          input: params.input,
+          sharedFacts: taskFacts
+        });
         specialistResults[params.role] = output;
+        await this.sharedFacts.create({
+          clientId,
+          taskId: task.id,
+          subject: `specialist:${params.role}`,
+          predicate: "conclusion",
+          value: factPayloadFromUnknown(output),
+          unit: "",
+          sourceType: "specialist_output",
+          sourceScreenshotId: null,
+          sourceBoundingBox: null,
+          evidenceIds: evidenceIdsFromUnknown(output),
+          confidence: confidenceFromUnknown(output),
+          createdBy: params.role,
+          expiresAt: null,
+          status: "hypothesis"
+        });
         task = TaskState.parse({ ...task, owner: null, updatedAt: new Date().toISOString() });
         await this.persistTask(task);
         return { content: [{ type: "text", text: JSON.stringify(output) }], details: output };
@@ -113,11 +168,13 @@ export class AdPilotAgent {
         systemPrompt: [
           "You are AdPilot Agent, the single user-facing owner of an advertising account.",
           "Maintain the goal and investigation tree, proactively gather evidence, use specialists as bounded experts, and make the final synthesis yourself.",
-          "Use projectFacts.supplied.interfaceLocale for every user-facing summary, hypothesis, conclusion, blocker, and next step. Use Simplified Chinese for zh-CN and English for en.",
+          "Use projectContext.conversation.interfaceLocale for every user-facing summary, hypothesis, conclusion, blocker, and next step. Use Simplified Chinese for zh-CN and English for en.",
+          "Treat projectContext.verifiedFacts as the only production account facts. Never convert ordinary context objects, historical prose, hypotheses, observations, stale facts, or specialist assertions into definite account claims.",
+          "Every numerical account claim sent to a specialist must be supported by a matching verified fact with screenshot evidence that has not expired.",
           "Review measurement reliability before optimization. Never mutate an account from this conversational run.",
           "For an executable operation, use prepare_approval exactly once per single-variable change. Never invent an approval id and never execute from this run."
         ].join("\n"),
-        prompt: JSON.stringify({ goal, projectFacts, currentTask: task }),
+        prompt: JSON.stringify({ goal, projectContext, currentTask: task }),
         signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool]
       }, MainAgentOutput);
     } catch (error) {
@@ -142,7 +199,28 @@ export class AdPilotAgent {
       taskId: task.id, at: new Date().toISOString(), goal, summary: result.summary,
       nextStep: result.nextStep, reviewAt: result.reviewAt, proposedApprovalIds: result.proposedApprovalIds
     }));
-    return { task, result, specialistResults };
+    await this.sharedFacts.create({
+      clientId,
+      taskId: task.id,
+      subject: `task:${task.id}`,
+      predicate: "root_agent_synthesis",
+      value: { summary: result.summary, nextStep: result.nextStep },
+      unit: "",
+      sourceType: "specialist_output",
+      sourceScreenshotId: null,
+      sourceBoundingBox: null,
+      evidenceIds: result.evidence.map((item) => item.id),
+      confidence: result.evidence.length ? Math.min(...result.evidence.map((item) => confidenceFromUnknown(item.facts))) : 0.5,
+      createdBy: "adpilot_agent",
+      expiresAt: result.reviewAt,
+      status: "hypothesis"
+    });
+    return {
+      task,
+      result,
+      specialistResults,
+      sharedFacts: await this.sharedFacts.list(clientId, { taskId: task.id, includeTerminal: true })
+    };
   }
 
   private async persistTask(task: Task): Promise<void> {
@@ -199,6 +277,77 @@ function normalizeDecisionMode(value: string | undefined): "answer" | "investiga
 function fallbackDecisionMode(message: string): "answer" | "investigate" {
   const investigationIntent = /(?:帮我|请|替我|我的|这个|当前).{0,12}(?:检查|查看|诊断|审计|分析|优化|调整|修改|暂停|开启)|(?:检查|查看|诊断|审计|优化|调整|修改|暂停|开启).{0,12}(?:账户|广告|系列|投放|预算|出价|素材|归因)|\b(?:diagnose|audit|inspect|optimi[sz]e|change|adjust|pause|enable|increase|decrease)\b.{0,40}\b(?:my|this|account|campaign|ads?|budget|bid|creative|attribution)\b/i;
   return investigationIntent.test(message) ? "investigate" : "answer";
+}
+
+/** Disk-backed canonical fact repository; legacy rows are quarantined as migration facts. */
+export class WorkspaceSharedFactRepository implements SharedFactRepository {
+  private readonly relativePath = "facts/shared-facts.json";
+
+  constructor(private readonly workspace: WorkspaceStore) {}
+
+  async load(clientId: string): Promise<SharedFactValue[]> {
+    const content = await this.workspace.readText(clientId, this.relativePath);
+    if (!content) return [];
+    const raw: unknown = JSON.parse(content);
+    const canonical = z.array(SharedFact).safeParse(raw);
+    if (canonical.success) return canonical.data;
+    if (!Array.isArray(raw)) throw new Error("shared fact repository is not an array");
+    const migrated: SharedFactValue[] = [];
+    for (const item of raw) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const taskId = (item as Record<string, unknown>).task_id;
+      if (typeof taskId !== "string" || !z.string().uuid().safeParse(taskId).success) continue;
+      try {
+        migrated.push(...migrateLegacyFactDispatch([item], { clientId, taskId }));
+      } catch {
+        // Invalid legacy rows remain quarantined and never enter production.
+      }
+    }
+    return migrated;
+  }
+
+  async save(clientId: string, facts: readonly SharedFactValue[]): Promise<void> {
+    await this.workspace.writeJson(clientId, this.relativePath, z.array(SharedFact).parse(facts));
+  }
+}
+
+function sanitizeConversationContext(context: AgentConversationContext): Record<string, string> {
+  const sanitized: Record<string, string> = {};
+  if (typeof context.conversationId === "string" && context.conversationId.trim()) sanitized.conversationId = context.conversationId.trim();
+  if (typeof context.interfaceLocale === "string" && context.interfaceLocale.trim()) sanitized.interfaceLocale = context.interfaceLocale.trim();
+  return sanitized;
+}
+
+function evidenceIdsFromUnknown(value: unknown): string[] {
+  const ids = new Set<string>();
+  const visit = (item: unknown, depth: number): void => {
+    if (depth > 6 || item === null || item === undefined) return;
+    if (typeof item === "string") {
+      if (/^(?:screenshot|evidence|export|workspace|calculation):/.test(item)) ids.add(item);
+      return;
+    }
+    if (Array.isArray(item)) {
+      for (const entry of item) visit(entry, depth + 1);
+      return;
+    }
+    if (typeof item === "object") for (const entry of Object.values(item as Record<string, unknown>)) visit(entry, depth + 1);
+  };
+  visit(value, 0);
+  return [...ids];
+}
+
+function confidenceFromUnknown(value: unknown): number {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const confidence = (value as Record<string, unknown>).confidence;
+    if (typeof confidence === "number" && Number.isFinite(confidence)) return Math.max(0, Math.min(1, confidence));
+  }
+  return 0.5;
+}
+
+function factPayloadFromUnknown(value: unknown): z.infer<typeof SharedFactPayload> {
+  const parsed = SharedFactPayload.safeParse(value);
+  if (parsed.success) return structuredClone(parsed.data);
+  return JSON.stringify(value ?? null);
 }
 
 export { MainAgentOutput };

@@ -25,11 +25,11 @@ describe("specialist agents", () => {
     const coordinator = new SpecialistCoordinator([agent]);
     const result = await coordinator.dispatch("performance_analyst", {
       context: { clientId: "client-a", taskId: crypto.randomUUID(), actor: "main", permission: "OBSERVE" },
-      input: { metrics: { spend: 10, days: 7 }, target: 2, objective: "CPA" }, sharedFacts: { target: 2 }
+      input: { metrics: { spend: 10, days: 7 }, target: 2, objective: "CPA" }, sharedFacts: []
     }) as { confidence: number };
     expect(result.confidence).toBe(1);
-    expect(seen).toEqual([{ target: 2 }]);
-    await expect(coordinator.dispatch("media_buyer", { context: { clientId: "x", taskId: crypto.randomUUID(), actor: "x", permission: "OBSERVE" }, input: {}, sharedFacts: {} })).rejects.toThrow("unavailable");
+    expect(seen).toEqual([[]]);
+    await expect(coordinator.dispatch("media_buyer", { context: { clientId: "x", taskId: crypto.randomUUID(), actor: "x", permission: "OBSERVE" }, input: {}, sharedFacts: [] })).rejects.toThrow("unavailable");
   });
 
   it("uses a stable task-and-role session and isolates another task", async () => {
@@ -54,7 +54,7 @@ describe("specialist agents", () => {
     const request = (taskId: string) => ({
       context: { clientId: "client-a", taskId, actor: "main", permission: "OBSERVE" as const },
       input: { metrics: { spend: 10, days: 7 }, target: 2, objective: "CPA" },
-      sharedFacts: {}
+      sharedFacts: []
     });
 
     await coordinator.dispatch("performance_analyst", request(taskA));
@@ -69,42 +69,68 @@ describe("specialist agents", () => {
     expect(calls[2]?.priorMessages).toBeUndefined();
   });
 
-  it("forwards only verified or explicitly required observed facts from the same task", () => {
+  it("forwards only verified, unexpired facts from the same client and task", () => {
     const taskId = crypto.randomUUID();
     const otherTaskId = crypto.randomUUID();
     const base = {
-      source: "test",
-      evidence: ["fixture:evidence"],
+      clientId: "client-a",
+      taskId,
+      subject: "campaign-a",
+      predicate: "daily_budget",
+      unit: "USD",
+      sourceType: "visual_table" as const,
+      sourceScreenshotId: "screen-1",
+      sourceBoundingBox: [1, 2, 3, 4] as [number, number, number, number],
+      evidenceIds: ["screenshot:screen-1"],
       confidence: 0.9,
-      created_by: "root_agent",
-      verified_by: ["measurement_reviewer"],
-      task_id: taskId,
-      expires_at: null,
+      createdBy: "visual_table_reader",
+      verifiedBy: ["visual_verifier"],
+      createdAt: "2026-07-22T00:00:00.000Z",
+      updatedAt: "2026-07-22T00:00:01.000Z",
+      verifiedAt: "2026-07-22T00:00:01.000Z",
+      expiresAt: null,
+      statusReason: null,
+      supersededByFactId: null,
+      derivedFromFactId: null,
       value: 1
-    } satisfies Omit<SharedFact, "fact_id" | "status">;
+    } satisfies Omit<SharedFact, "factId" | "status">;
     const facts: SharedFact[] = [
-      { ...base, fact_id: "verified", status: "verified" },
-      { ...base, fact_id: "required-observation", status: "observed", verified_by: [] },
-      { ...base, fact_id: "unselected-observation", status: "observed", verified_by: [] },
-      { ...base, fact_id: "disputed", status: "disputed" },
-      { ...base, fact_id: "expired", status: "verified", expires_at: "2026-01-01T00:00:00.000Z" },
-      { ...base, fact_id: "other-task", status: "verified", task_id: otherTaskId }
+      { ...base, factId: "verified", status: "verified" },
+      { ...base, factId: "observation", status: "observed", verifiedBy: [], verifiedAt: null },
+      { ...base, factId: "stale", status: "stale", verifiedAt: null, statusReason: "surface changed" },
+      { ...base, factId: "expired", status: "verified", expiresAt: "2026-01-01T00:00:00.000Z" },
+      { ...base, factId: "other-task", status: "verified", taskId: otherTaskId },
+      { ...base, factId: "other-client", status: "verified", clientId: "client-b" },
+      { ...base, factId: "migration", status: "verified", sourceType: "migration", sourceScreenshotId: null, sourceBoundingBox: null }
     ];
     const selected = selectSharedFactsForSpecialist(facts, {
+      clientId: "client-a",
       taskId,
       role: "performance_analyst",
-      requiredObservedFactIds: ["required-observation"],
       now: new Date("2026-07-22T00:00:00.000Z")
     });
-    expect(selected.map((fact) => fact.fact_id)).toEqual(["verified", "required-observation"]);
+    expect(selected.map((fact) => fact.factId)).toEqual(["verified"]);
   });
 
-  it("adapts legacy fact records but removes transcript-like payloads", () => {
-    const selected = selectSharedFactsForSpecialist({ targetCpa: 10, recentMemory: [{ summary: "private history" }], messages: ["full conversation"] }, {
+  it("rejects legacy ordinary-object dispatch from the production selector", () => {
+    expect(() => selectSharedFactsForSpecialist({ targetCpa: 10 } as never, {
+      clientId: "client-a",
       taskId: crypto.randomUUID(),
       role: "media_buyer"
-    });
-    expect(selected).toHaveLength(1);
-    expect(selected[0]).toMatchObject({ fact_id: "legacy.targetCpa", status: "observed", value: 10 });
+    })).toThrow();
+  });
+
+  it("prevents a media buyer from receiving stale facts", () => {
+    const taskId = crypto.randomUUID();
+    const selected = selectSharedFactsForSpecialist([{
+      factId: "stale-budget", clientId: "client-a", taskId, subject: "campaign-a", predicate: "daily_budget",
+      value: 100, unit: "USD", sourceType: "visual_table", sourceScreenshotId: "screen-1",
+      sourceBoundingBox: [1, 2, 3, 4], evidenceIds: ["screenshot:screen-1"], confidence: 0.95,
+      status: "stale", createdBy: "visual_table_reader", verifiedBy: ["visual_verifier"],
+      createdAt: "2026-07-22T00:00:00.000Z", updatedAt: "2026-07-22T00:10:00.000Z",
+      verifiedAt: "2026-07-22T00:00:01.000Z", expiresAt: null, statusReason: "surface changed",
+      supersededByFactId: null, derivedFromFactId: null
+    }], { clientId: "client-a", taskId, role: "media_buyer", now: new Date("2026-07-22T00:11:00.000Z") });
+    expect(selected).toEqual([]);
   });
 });

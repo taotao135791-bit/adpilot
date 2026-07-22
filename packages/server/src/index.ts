@@ -180,7 +180,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
         singleVariable: true, rollbackDefined: Boolean(approval.operation.rollbackCondition),
         operationSummary: `${approval.operation.operation} ${approval.operation.campaign}`
       },
-      sharedFacts: {}
+      sharedFacts: []
     });
     system.events.publish({ type: "approval", approvalId: params.id, status: (result as { approved: boolean }).approved ? "pending_user" : "rejected" });
     return result;

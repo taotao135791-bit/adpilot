@@ -13,9 +13,8 @@ import { VisualAction, type VisualMicroTask } from "@adpilot/computer-use";
 export interface SpecialistRequest<I = unknown> {
   context: ToolContext;
   input: I;
-  sharedFacts: SharedFact[] | Record<string, unknown>;
-  /** Observed facts are withheld unless the root explicitly selects them. */
-  requiredObservedFactIds?: readonly string[];
+  /** Canonical facts only. Legacy objects must go through the migration API. */
+  sharedFacts: readonly SharedFact[];
 }
 
 export interface SpecialistAgent<I = unknown, O = unknown> {
@@ -65,64 +64,35 @@ export function specialistSessionKey(taskId: string, roleInput: Role): string {
   return `specialist-${normalizedTaskId}-${role}`;
 }
 
-const LEGACY_TRANSCRIPT_KEYS = new Set([
-  "conversation",
-  "conversations",
-  "messages",
-  "recentMemory",
-  "transcript",
-  "transcripts"
-]);
-
 export interface SharedFactSelection {
+  clientId: string;
   taskId: string;
   role: Role;
-  requiredObservedFactIds?: readonly string[];
   now?: Date;
 }
 
 /**
- * Produces the bounded fact packet visible to one specialist. Terminal,
- * cross-task and expired facts are never forwarded. Legacy records are kept
- * compatible as explicitly supplied observed facts, with transcript-like
- * fields removed.
+ * Produces the bounded production packet visible to one specialist. Only
+ * independently verified, unexpired, same-client and same-task facts pass.
  */
 export function selectSharedFactsForSpecialist(
-  input: SharedFact[] | Record<string, unknown>,
+  input: readonly SharedFact[],
   selection: SharedFactSelection
 ): SharedFact[] {
+  const clientId = z.string().min(1).parse(selection.clientId);
   const taskId = z.string().uuid().parse(selection.taskId);
-  const role = SpecialistRole.parse(selection.role);
+  SpecialistRole.parse(selection.role);
   const now = selection.now ?? new Date();
-  if (!Array.isArray(input)) {
-    return Object.entries(input)
-      .filter(([key]) => !LEGACY_TRANSCRIPT_KEYS.has(key))
-      .map(([key, value]) => SharedFactSchema.parse({
-        fact_id: `legacy.${key}`,
-        source: "legacy_dispatch",
-        evidence: [`legacy-dispatch:${key}`],
-        confidence: 0.5,
-        status: "observed",
-        created_by: "root_agent_compatibility_adapter",
-        verified_by: [],
-        task_id: taskId,
-        expires_at: null,
-        value
-      }));
-  }
-
-  const requiredObserved = new Set(selection.requiredObservedFactIds ?? []);
   const seen = new Set<string>();
   const selected: SharedFact[] = [];
-  for (const rawFact of input) {
+  for (const rawFact of z.array(SharedFactSchema).parse(input)) {
     const fact = SharedFactSchema.parse(rawFact);
-    if (seen.has(fact.fact_id)) throw new Error(`duplicate shared fact: ${fact.fact_id}`);
-    seen.add(fact.fact_id);
-    if (fact.task_id !== taskId) continue;
-    if (fact.expires_at && Date.parse(fact.expires_at) <= now.getTime()) continue;
-    if (fact.status === "verified" || (fact.status === "observed" && requiredObserved.has(fact.fact_id))) {
-      selected.push(fact);
-    }
+    if (seen.has(fact.factId)) throw new Error(`duplicate shared fact: ${fact.factId}`);
+    seen.add(fact.factId);
+    if (fact.clientId !== clientId || fact.taskId !== taskId) continue;
+    if (fact.expiresAt && Date.parse(fact.expiresAt) <= now.getTime()) continue;
+    if (fact.status !== "verified" || fact.sourceType === "migration") continue;
+    selected.push(fact);
   }
   return selected.map((fact) => ({ ...fact, value: structuredClone(fact.value) }));
 }
@@ -163,16 +133,17 @@ abstract class PiSpecialist<I, O> implements SpecialistAgent<I, O> {
       throw new Error(`specialist session identity mismatch: ${key}`);
     }
     const sharedFacts = selectSharedFactsForSpecialist(request.sharedFacts, {
+      clientId: request.context.clientId,
       taskId: request.context.taskId,
-      role: this.role,
-      ...(request.requiredObservedFactIds ? { requiredObservedFactIds: request.requiredObservedFactIds } : {})
+      role: this.role
     });
     const runtimeRequest: RuntimeRequest = {
       context: { ...request.context, actor: this.role, sessionId: previous?.sessionId ?? key, role: this.role },
       systemPrompt: [
         `You are the isolated ${this.role} specialist inside AdPilot.`,
         this.mission,
-        "Use only the supplied shared facts and tool results. Do not assume access to other specialists' transcripts.",
+        "Use only the supplied verified shared facts and tool results. Do not assume access to other specialists' transcripts.",
+        "Never use hypothesis, observed, stale, rejected, superseded, expired, or migration facts for a definite recommendation.",
         "Separate observed facts, deterministic calculations, and inference.",
         "Return the final answer as one JSON object matching the requested specialist output. Do not wrap it in markdown."
       ].join("\n"),

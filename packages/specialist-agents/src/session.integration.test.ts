@@ -42,7 +42,7 @@ describe("task-scoped specialist session integration", () => {
     const dispatch = (coordinator: SpecialistCoordinator) => coordinator.dispatch("performance_analyst", {
       context: { clientId: "client-a", taskId, actor: "root_agent", permission: "OBSERVE" },
       input: { metrics: { spend: 50, conversions: 10, days: 7 }, target: 5, objective: "CPA" },
-      sharedFacts: {}
+      sharedFacts: []
     });
 
     await dispatch(new SpecialistCoordinator([new PerformanceAnalyst(runtime, repository)]));
@@ -72,7 +72,7 @@ describe("task-scoped specialist session integration", () => {
         spend: 50, conversions: 10, impressions: 0, clicks: 0, installs: 0, revenue: 0, days: 7,
         conversionDelayDays: 0, dailyConversions: [], currencyConsistency: 1, missingValueRate: 0, reconciliationDifference: 0
       }, target: 5, objective: "CPA" },
-      sharedFacts: {}
+      sharedFacts: []
     };
     faux.setResponses([fauxAssistantMessage('{"calculated":{"cpi":null,"cpa":5,"roas":null},"findings":[],"maturity":"mature","confidence":0.9}')]);
     await new PerformanceAnalyst(makeRuntime()).execute(request);
