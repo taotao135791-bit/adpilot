@@ -7,7 +7,8 @@ const productionRoots = [
   "packages/tools",
   "packages/application",
   "packages/agent-orchestrator",
-  "packages/specialist-agents"
+  "packages/specialist-agents",
+  "packages/visual-table-reader"
 ];
 
 const forbiddenDependencies = [
