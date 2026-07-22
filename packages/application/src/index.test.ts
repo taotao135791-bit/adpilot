@@ -4,9 +4,16 @@ import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { describe, expect, it } from "vitest";
-import { createAdPilotSystem } from "./index.js";
+import { createAdPilotSystem, identitySafeRoi, identitySensitiveMasks } from "./index.js";
 
 describe("application visual table assembly", () => {
+  it("keeps advertising identity headers visible while masking browser and personal chrome", () => {
+    expect(identitySafeRoi(1200, 800)).toEqual({ x: 0, y: 56, width: 1200, height: 744 });
+    const masks = identitySensitiveMasks(1200, 800);
+    expect(masks.map((mask) => mask.category)).toEqual(["browser_tabs", "system_menu_bar", "top_personal_info"]);
+    expect(masks[2]!.region).toEqual({ x: 1032, y: 80, width: 168, height: 56 });
+  });
+
   it("keeps table reading available when Fast and Deep use the same vision-capable code model", async () => {
     const root = await mkdtemp(join(tmpdir(), "adpilot-application-table-"));
     const faux = fauxProvider({

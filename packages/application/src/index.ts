@@ -206,10 +206,26 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     : undefined;
   const guiIdentityPrivacy = canUseDedicatedVerifier ? dedicatedVerifierPrivacy : strongVisionPrivacy;
   const guiIdentity = rawGuiIdentity && guiIdentityPrivacy
-    ? new PrivacyAwareVisualIdentityReviewer(rawGuiIdentity, screenshotPrivacy, (_expected, screenshot) => taskSafeRoi(screenshot.width, screenshot.height), guiIdentityPrivacy, () => privacyMode)
+    ? new PrivacyAwareVisualIdentityReviewer(
+        rawGuiIdentity,
+        screenshotPrivacy,
+        (_expected, screenshot) => identitySafeRoi(screenshot.width, screenshot.height),
+        guiIdentityPrivacy,
+        () => privacyMode,
+        (_expected, screenshot) => identitySensitiveMasks(screenshot.width, screenshot.height),
+        false
+      )
     : undefined;
   const deepIdentity = rawDeepIdentity && strongVisionPrivacy
-    ? new PrivacyAwareVisualIdentityReviewer(rawDeepIdentity, screenshotPrivacy, (_expected, screenshot) => taskSafeRoi(screenshot.width, screenshot.height), strongVisionPrivacy, () => privacyMode)
+    ? new PrivacyAwareVisualIdentityReviewer(
+        rawDeepIdentity,
+        screenshotPrivacy,
+        (_expected, screenshot) => identitySafeRoi(screenshot.width, screenshot.height),
+        strongVisionPrivacy,
+        () => privacyMode,
+        (_expected, screenshot) => identitySensitiveMasks(screenshot.width, screenshot.height),
+        false
+      )
     : undefined;
   const visualIdentity = guiIdentity && deepIdentity
     && (privacyMode !== "local-only" || (guiIdentityPrivacy?.location === "local" && strongVisionPrivacy?.location === "local"))
@@ -295,6 +311,27 @@ function requireTaskId(task: VisualMicroTask | undefined): string {
 
 function taskSafeRoi(width: number, height: number) {
   return defaultBrowserContentRoi(width, height);
+}
+
+/** Keeps the advertising header visible for identity review while excluding native browser chrome. */
+export function identitySafeRoi(width: number, height: number) {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2) throw new Error("valid screenshot dimensions are required");
+  const top = Math.min(height - 1, Math.max(1, Math.round(height * 0.07)));
+  return { x: 0, y: top, width, height: height - top };
+}
+
+/** Identity review needs account labels, so only chrome and the personal avatar/email corner are redacted. */
+export function identitySensitiveMasks(width: number, height: number) {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2) throw new Error("valid screenshot dimensions are required");
+  const browserChromeHeight = Math.max(1, Math.round(height * 0.1));
+  const personalWidth = Math.max(1, Math.round(width * 0.14));
+  const personalTop = Math.max(1, Math.round(height * 0.1));
+  const personalHeight = Math.max(1, Math.round(height * 0.07));
+  return [
+    { category: "browser_tabs" as const, region: { x: 0, y: 0, width, height: browserChromeHeight }, reason: "hide browser tabs and address chrome" },
+    { category: "system_menu_bar" as const, region: { x: 0, y: 0, width, height: Math.max(1, Math.round(height * 0.025)) }, reason: "hide system menu and status details" },
+    { category: "top_personal_info" as const, region: { x: width - personalWidth, y: personalTop, width: personalWidth, height: Math.min(personalHeight, height - personalTop) }, reason: "hide personal avatar and email without obscuring account identity labels" }
+  ];
 }
 
 function taskModelRoi(task: VisualMicroTask, screenshot: Screenshot) {

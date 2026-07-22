@@ -383,7 +383,8 @@ export class PrivacyAwareVisualIdentityReviewer implements VisualIdentityReviewe
     private readonly roi: (expected: ExpectedVisualIdentity, screenshot: Screenshot) => ScreenshotRegion | Promise<ScreenshotRegion>,
     private readonly model: ModelPrivacyDescriptor,
     private readonly privacyMode: () => ScreenshotPrivacyMode = () => "minimized",
-    private readonly masks: (expected: ExpectedVisualIdentity, screenshot: Screenshot) => ScreenshotMask[] | Promise<ScreenshotMask[]> = () => []
+    private readonly masks: (expected: ExpectedVisualIdentity, screenshot: Screenshot) => ScreenshotMask[] | Promise<ScreenshotMask[]> = () => [],
+    private readonly includeDefaultMasks = true
   ) {
     this.id = underlying.id;
   }
@@ -396,6 +397,7 @@ export class PrivacyAwareVisualIdentityReviewer implements VisualIdentityReviewe
       screenshot,
       roi: await this.roi(expected, screenshot),
       sensitiveRegions: await this.masks(expected, screenshot),
+      includeDefaultMasks: this.includeDefaultMasks,
       model: this.model,
       privacyMode: this.privacyMode()
     });
