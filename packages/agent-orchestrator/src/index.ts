@@ -37,8 +37,9 @@ export class AdPilotAgent {
 
   async respond(clientId: string, message: string, sharedFacts: Record<string, unknown> = {}): Promise<{ reply: string; task: Task | null; result?: MainAgentOutput }> {
     const client = await this.workspace.readClient(clientId);
+    const conversationId = typeof sharedFacts.conversationId === "string" && sharedFacts.conversationId.trim() ? sharedFacts.conversationId.trim() : "primary";
     const decisionResult = await this.runtime.run({
-      context: { clientId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", sessionId: crypto.randomUUID(), role: "adpilot_agent" },
+      context: { clientId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", sessionId: conversationId, conversationId, role: "adpilot_agent" },
       systemPrompt: [
         "You are AdPilot, the user's persistent advertising operator. Natural conversation is the primary interface.",
         "Choose answer for greetings, product usage, definitions, clarifying questions, and requests that do not require account evidence.",
@@ -70,6 +71,7 @@ export class AdPilotAgent {
     ]);
     const projectFacts = { client: clientContext, supplied: sharedFacts, recentMemory: memory.slice(-20) };
     let task = await this.startTask(clientId, goal);
+    const conversationId = typeof sharedFacts.conversationId === "string" && sharedFacts.conversationId.trim() ? sharedFacts.conversationId.trim() : `task-${task.id}`;
     task = TaskState.parse({ ...task, phase: "investigating", owner: null, nextStep: "Dispatch specialists and collect evidence", updatedAt: new Date().toISOString() });
     await this.persistTask(task);
     const specialistResults: Record<string, unknown> = {};
@@ -107,7 +109,7 @@ export class AdPilotAgent {
     let modelResult: MainAgentOutput;
     try {
       modelResult = await this.runtime.runStructured({
-        context: { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE", sessionId: crypto.randomUUID(), role: "adpilot_agent" },
+        context: { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE", sessionId: conversationId, conversationId, role: "adpilot_agent" },
         systemPrompt: [
           "You are AdPilot Agent, the single user-facing owner of an advertising account.",
           "Maintain the goal and investigation tree, proactively gather evidence, use specialists as bounded experts, and make the final synthesis yourself.",

@@ -83,7 +83,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     return { disconnected: true };
   });
   app.get("/api/state", async (request) => {
-    const query = z.object({ clientId: z.string().optional() }).parse(request.query);
+    const query = z.object({ clientId: z.string().optional(), conversationId: z.string().min(1).default("primary") }).parse(request.query);
     const clients = await system.workspace.listClients();
     const clientId = query.clientId ?? clients[0]?.id;
     if (!clientId) return { clients, tasks: [], approvals: [], experiments: [], audit: [], messages: [], events: system.events.history(), models: system.modelStatus };
@@ -91,7 +91,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       system.workspace.listTasks(clientId), system.approvals.list(clientId), system.experiments.list(clientId), system.audit.list(clientId),
       system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage), system.settings.publicView()
     ]);
-    return { clients, selectedClientId: clientId, tasks, approvals, experiments, audit, messages: messages.map((message) => sanitizeLegacyConversationError(message, settings.locale)), events: system.events.history(), models: system.modelStatus };
+    return { clients, selectedClientId: clientId, selectedConversationId: query.conversationId, tasks, approvals, experiments, audit, messages: messages.filter((message) => message.conversationId === query.conversationId).map((message) => sanitizeLegacyConversationError(message, settings.locale)), events: system.events.history(), models: system.modelStatus };
   });
 
   app.get("/events", async (_request, reply) => {
@@ -122,17 +122,17 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
   });
 
   app.post("/api/messages", async (request, reply) => {
-    const body = z.object({ clientId: z.string().optional(), message: z.string().trim().min(1).max(20_000), locale: z.enum(["zh-CN", "en"]).default("zh-CN") }).parse(request.body);
+    const body = z.object({ clientId: z.string().optional(), conversationId: z.string().trim().min(1).max(120).default("primary"), message: z.string().trim().min(1).max(20_000), locale: z.enum(["zh-CN", "en"]).default("zh-CN") }).parse(request.body);
     const clients = await system.workspace.listClients();
     const clientId = body.clientId ?? clients[0]?.id;
     if (!clientId) return reply.code(409).send({ error: "workspace is not available" });
-    const existing = await system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage);
-    const userMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, role: "user", content: body.message, at: new Date().toISOString() });
+    const existing = (await system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage)).filter((message) => message.conversationId === body.conversationId);
+    const userMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "user", content: body.message, at: new Date().toISOString() });
     await system.workspace.appendJsonl(clientId, "conversation.jsonl", userMessage);
     system.events.publish({ type: "task", status: "running", message: body.message });
     try {
-      const response = await system.agent.respond(clientId, body.message, { interfaceLocale: body.locale, recentConversation: existing.slice(-12).map((item) => sanitizeLegacyConversationError(item, body.locale)).map(({ role, content }) => ({ role, content })) });
-      const assistantMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, role: "assistant", content: response.reply, ...(response.task ? { taskId: response.task.id } : {}), at: new Date().toISOString() });
+      const response = await system.agent.respond(clientId, body.message, { conversationId: body.conversationId, interfaceLocale: body.locale, recentConversation: existing.slice(-12).map((item) => sanitizeLegacyConversationError(item, body.locale)).map(({ role, content }) => ({ role, content })) });
+      const assistantMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "assistant", content: response.reply, ...(response.task ? { taskId: response.task.id } : {}), at: new Date().toISOString() });
       await system.workspace.appendJsonl(clientId, "conversation.jsonl", assistantMessage);
       system.events.publish({ type: "task", status: response.task?.phase ?? "completed", ...(response.task ? { taskId: response.task.id } : {}), message: response.reply });
       reply.code(201); return { message: assistantMessage, task: response.task };
@@ -144,7 +144,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
         id: incidentId, at: new Date().toISOString(), route: "/api/messages",
         error: { name: error instanceof Error ? error.name : "Error", message: detail }
       });
-      await system.workspace.appendJsonl(clientId, "conversation.jsonl", ConversationMessage.parse({ id: crypto.randomUUID(), clientId, role: "system", content, status: "error", at: new Date().toISOString() }));
+      await system.workspace.appendJsonl(clientId, "conversation.jsonl", ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "system", content, status: "error", at: new Date().toISOString() }));
       system.events.publish({ type: "error", message: content, retryable: true });
       return reply.code(502).send({ error: content, incidentId });
     }

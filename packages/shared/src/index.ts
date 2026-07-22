@@ -60,12 +60,14 @@ export type SpecialistRole = z.infer<typeof SpecialistRole>;
  * explicit per-dispatch selection by the root agent.
  */
 export const SharedFactStatus = z.enum([
+  "hypothesis",
   "observed",
   "verified",
   "disputed",
   "rejected",
   "superseded",
-  "expired"
+  "expired",
+  "stale"
 ]);
 export type SharedFactStatus = z.infer<typeof SharedFactStatus>;
 
@@ -111,6 +113,7 @@ export type TaskState = z.infer<typeof TaskState>;
 export const ConversationMessage = z.object({
   id: z.string().uuid(),
   clientId: z.string().min(1),
+  conversationId: z.string().min(1).default("primary"),
   role: z.enum(["user", "assistant", "system"]),
   content: z.string().min(1),
   status: z.enum(["complete", "error"]).default("complete"),

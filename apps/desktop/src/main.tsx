@@ -33,7 +33,7 @@ type Task = { id: string; goal: string; phase: string; completedSteps: string[];
 type Approval = { id: string; taskId: string; status: string; executionPlan: { target: string } | null; operation: { account: string; campaign: string; operation: string; currentValue: unknown; proposedValue: unknown; changePercentage: number | null; reason: string; evidence: string[]; expectedImpact: string; observationWindow: string; rollbackCondition: string; riskLevel: string } };
 type Experiment = { id: string; hypothesis: string; variable: string; status: string; reviewAt: string };
 type Audit = { id: string; actor: string; action: string; status: string; at: string };
-type ConversationMessage = { id: string; clientId: string; role: "user" | "assistant" | "system"; content: string; status: "complete" | "error"; taskId?: string; at: string };
+type ConversationMessage = { id: string; clientId: string; conversationId: string; role: "user" | "assistant" | "system"; content: string; status: "complete" | "error"; taskId?: string; at: string };
 type ProductEvent = { type: string; status?: string; message?: string; approvalId?: string; event?: { type: string; phase?: string; attempt?: number; screenshot?: { base64: string; capturedAt: string }; action?: { action: string; target: string; reason: string }; reason?: string } };
 type State = { clients: Client[]; selectedClientId?: string; tasks: Task[]; approvals: Approval[]; experiments: Experiment[]; audit: Audit[]; messages: ConversationMessage[]; events: ProductEvent[]; models: { fast: string; strong: string; gui: string; guiStrong: string; chatConfigured: boolean; guiConfigured: boolean } };
 
@@ -112,7 +112,7 @@ function App() {
     const message = goal.trim();
     setSubmitting(true); setError("");
     setGoal("");
-    setState((current) => ({ ...current, messages: [...current.messages, { id: `local-${Date.now()}`, clientId: clientId || "personal", role: "user", content: message, status: "complete", at: new Date().toISOString() }] }));
+    setState((current) => ({ ...current, messages: [...current.messages, { id: `local-${Date.now()}`, clientId: clientId || "personal", conversationId: "primary", role: "user", content: message, status: "complete", at: new Date().toISOString() }] }));
     try {
       const response = await fetch("/api/messages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...(clientId ? { clientId } : {}), message, locale }) });
       const body = await response.json(); if (!response.ok) throw new Error(body.error ?? copy.taskError);

@@ -50,6 +50,35 @@ describe("product server", () => {
     await server.close();
   });
 
+  it("restores the same Pi conversation after a full server restart", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-session-restart-"));
+    const faux = fauxProvider({ provider: "test", models: [{ id: "code", input: ["text"] }] });
+    const models = createModels(); models.setProvider(faux.provider);
+    faux.setResponses([fauxAssistantMessage('{"mode":"answer","reply":"I will remember reference ALPHA-42.","goal":null}')]);
+    const options = { workspaceRoot: root, env: { ADPILOT_FAST_PROVIDER: "test", ADPILOT_FAST_MODEL: "code", ADPILOT_STRONG_PROVIDER: "test", ADPILOT_STRONG_MODEL: "code" }, models };
+    const firstSystem = await createAdPilotSystem(options);
+    const firstServer = await createServer(firstSystem, { uiRoot: join(root, "missing-ui") });
+    const first = await firstServer.inject({ method: "POST", url: "/api/messages", payload: { conversationId: "launch-review", message: "Remember reference ALPHA-42", locale: "en" } });
+    expect(first.statusCode).toBe(201);
+    await firstServer.close();
+
+    faux.setResponses([(context) => {
+      const transcript = JSON.stringify(context.messages);
+      expect(transcript).toContain("ALPHA-42");
+      expect(context.messages.filter((message) => message.role === "user").length).toBeGreaterThanOrEqual(2);
+      return fauxAssistantMessage('{"mode":"answer","reply":"The saved reference is ALPHA-42.","goal":null}');
+    }]);
+    const restoredSystem = await createAdPilotSystem(options);
+    const restoredServer = await createServer(restoredSystem, { uiRoot: join(root, "missing-ui") });
+    const second = await restoredServer.inject({ method: "POST", url: "/api/messages", payload: { conversationId: "launch-review", message: "What reference did I give you?", locale: "en" } });
+    expect(second.statusCode).toBe(201);
+    expect(second.json().message.content).toBe("The saved reference is ALPHA-42.");
+    const state = await restoredServer.inject({ method: "GET", url: "/api/state?conversationId=launch-review" });
+    expect(state.json()).toMatchObject({ selectedConversationId: "launch-review" });
+    expect(state.json().messages).toHaveLength(4);
+    await restoredServer.close();
+  });
+
   it("serves workspace state and keeps one-time approval tokens off the HTTP response", async () => {
     const root = await mkdtemp(join(tmpdir(), "adpilot-server-"));
     const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
