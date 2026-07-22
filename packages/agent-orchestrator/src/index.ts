@@ -1,7 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { z } from "zod";
-import { ApprovalExecutionPlan, ApprovalOperation } from "@adpilot/approvals";
+import { ApprovalOperation } from "@adpilot/approvals";
 import { PiAgentRuntime } from "@adpilot/runtime";
 import { SpecialistCoordinator } from "@adpilot/specialist-agents";
 import {
@@ -17,7 +17,7 @@ import {
   type TaskState as Task
 } from "@adpilot/shared";
 import { WorkspaceStore } from "@adpilot/workspace";
-import { AdPilotTools } from "@adpilot/tools";
+import { AdPilotTools, VisualApprovalPlanInput } from "@adpilot/tools";
 
 const InvestigationNode = z.object({ question: z.string().min(1), specialist: SpecialistRole, status: z.enum(["pending", "complete", "blocked"]), conclusion: z.string().optional() });
 const MainAgentOutput = z.object({
@@ -155,7 +155,7 @@ export class AdPilotAgent {
       parameters: Type.Object({ operation: Type.Unknown(), executionPlan: Type.Unknown() }),
       executionMode: "sequential",
       execute: async (_id, raw) => {
-        const params = z.object({ operation: ApprovalOperation, executionPlan: ApprovalExecutionPlan }).parse(raw);
+        const params = z.object({ operation: ApprovalOperation, executionPlan: VisualApprovalPlanInput }).parse(raw);
         const approval = await this.tools.createApproval({ clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE" }, params.operation, params.executionPlan);
         createdApprovalIds.push(approval.id);
         return { content: [{ type: "text", text: JSON.stringify({ approvalId: approval.id, status: approval.status }) }], details: { approvalId: approval.id, status: approval.status } };
@@ -172,7 +172,8 @@ export class AdPilotAgent {
           "Treat projectContext.verifiedFacts as the only production account facts. Never convert ordinary context objects, historical prose, hypotheses, observations, stale facts, or specialist assertions into definite account claims.",
           "Every numerical account claim sent to a specialist must be supported by a matching verified fact with screenshot evidence that has not expired.",
           "Review measurement reliability before optimization. Never mutate an account from this conversational run.",
-          "For an executable operation, use prepare_approval exactly once per single-variable change. Never invent an approval id and never execute from this run."
+          "For an executable operation, use prepare_approval exactly once per single-variable change. Never invent an approval id and never execute from this run.",
+          "The prepare_approval executionPlan is intent, not guessed native state. Supply schemaVersion 1, platform, exact visible accountName/accountId/campaignName/campaignId/pageType, operation/currentValue/proposedValue, a precise instruction/target/expectedResult, allowedRegion in screenshot_pixels, riskLevel, and experiment. The product binds browser Profile, native application/window, live surface hash, live dual-reviewed account hash, timestamps, and plan id from the managed browser."
         ].join("\n"),
         prompt: JSON.stringify({ goal, projectContext, currentTask: task }),
         signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool]

@@ -7,7 +7,13 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { AuditLog } from "@adpilot/audit";
 import { ApprovalService } from "@adpilot/approvals";
-import { VisualComputerRuntime, type Screenshot } from "@adpilot/computer-use";
+import {
+  fingerprintSurface,
+  VisualComputerRuntime,
+  type BrowserSessionManager,
+  type DualVisualIdentityVerifier,
+  type Screenshot
+} from "@adpilot/computer-use";
 import { ExperimentStore } from "@adpilot/experiments";
 import { ModelRouter } from "@adpilot/model-router";
 import { PiAgentRuntime } from "@adpilot/runtime";
@@ -43,8 +49,21 @@ describe("AdPilotAgent integration", () => {
           rollbackCondition: "CPA rises more than 20%", riskLevel: "mutate"
         },
         executionPlan: {
-          instruction: "Set the daily budget to 110", target: "Save budget", expectedResult: "Daily budget shows 110",
-          surface: { app: "Browser", domain: "ads.google.com", browserProfile: "client-a-google", allowedApps: ["Browser"], allowedDomains: ["ads.google.com"], surfaceFingerprint: "a".repeat(64) },
+          schemaVersion: 1,
+          platform: "google_ads",
+          accountName: "A",
+          accountId: "acct-1",
+          campaignName: "Android Growth",
+          campaignId: "campaign-1",
+          pageType: "campaign_budget_editor",
+          operation: "set_daily_budget",
+          currentValue: 100,
+          proposedValue: 110,
+          instruction: "Set the daily budget to 110",
+          target: "Save budget",
+          expectedResult: "Daily budget shows 110",
+          allowedRegion: { x: 0, y: 0, width: 100, height: 100, coordinateSpace: "screenshot_pixels" },
+          riskLevel: "mutate",
           experiment: {
             hypothesis: "A staged budget increase will add volume without breaching CPA", variable: "daily_budget",
             baseline: { dailyBudget: 100, cpa: 10 }, expected: "More conversions at stable CPA",
@@ -61,13 +80,47 @@ describe("AdPilotAgent integration", () => {
     ]);
     const router = new ModelRouter({ fast: { provider: "test", model: "fast" }, strong: { provider: "test", model: "strong" }, gui: { provider: "test", model: "fast" } });
     const approvals = new ApprovalService(workspace, "0123456789abcdef0123456789abcdef");
-    const screenshot: Screenshot = { base64: "screen", width: 100, height: 100, scaleFactor: 1, capturedAt: "2026-01-01T00:00:00.000Z", sha256: "a".repeat(64) };
+    const nativeSurface = {
+      platform: "darwin" as const,
+      app: "Google Chrome",
+      bundleId: "com.google.Chrome",
+      browserProfile: "client-a-google",
+      pid: 42,
+      title: "Android Growth - Google Ads",
+      windowId: "window-7",
+      bounds: { x: 0, y: 0, width: 100, height: 100 },
+      screenId: "screen-1",
+      screenBounds: { x: 0, y: 0, width: 100, height: 100 },
+      scaleFactor: 1
+    };
+    const screenshot: Screenshot = {
+      base64: "screen", width: 100, height: 100, scaleFactor: 1,
+      capturedAt: "2026-01-01T00:00:00.000Z", sha256: "a".repeat(64),
+      surface: nativeSurface, surfaceFingerprint: fingerprintSurface(nativeSurface)
+    };
     const computer = new VisualComputerRuntime(
       { capture: async () => screenshot, execute: async () => undefined },
       { ground: async () => ({ action: "done", target: "campaign table", reason: "table is visible", confidence: 1, expected_result: "campaign table is visible", risk_level: "observe" }) },
       { verify: async () => ({ matched: true, confidence: 1, reason: "visible" }) }
     );
-    const tools = new AdPilotTools(workspace, new AuditLog(workspace), approvals, new ExperimentStore(workspace), computer);
+    const session = {
+      sessionId: "1".repeat(32), clientId: "client-a", browserProfile: "client-a-google",
+      profileDirectory: "/tmp/adpilot-test-profile", nativeProfileFingerprint: "test-profile", processId: 42,
+      windowId: "window-7", windowBounds: nativeSurface.bounds, platform: "google_ads", runtimePlatform: "darwin" as const,
+      browserApplicationId: "com.google.Chrome", browserApp: "Google Chrome", sessionStatus: "connected" as const,
+      startedAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z"
+    };
+    const browserSessions = {
+      get: async () => session,
+      assertActive: async () => session
+    } as unknown as BrowserSessionManager;
+    const visualIdentity = {
+      confirm: async () => ({ fingerprintHash: "b".repeat(64), fingerprint: {}, reviewers: [] })
+    } as unknown as DualVisualIdentityVerifier;
+    const tools = new AdPilotTools(
+      workspace, new AuditLog(workspace), approvals, new ExperimentStore(workspace), computer,
+      visualIdentity, browserSessions
+    );
     const runtime = new PiAgentRuntime(models, router, workspace, new SkillRegistry(), tools);
     const specialist: SpecialistAgent = {
       role: "performance_analyst", inputSchema: specialistSchemas.PerformanceInput, outputSchema: specialistSchemas.PerformanceOutput,
