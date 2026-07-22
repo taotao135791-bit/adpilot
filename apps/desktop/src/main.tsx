@@ -25,17 +25,18 @@ import {
   TargetArrow24Regular
 } from "@fluentui/react-icons";
 import { getCopy, starterGoals, type AppLocale } from "./i18n.js";
+import { approvalDisclosure, type Approval } from "./approvalDisclosure.js";
 import { SettingsPanel, type SettingsData, type SettingsTab } from "./SettingsPanel.js";
 import "./styles.css";
 
 type Client = { id: string; name: string; industry: string; timezone: string };
 type Task = { id: string; goal: string; phase: string; completedSteps: string[]; blockers: string[]; nextStep: string | null; owner: string | null; reviewAt: string | null; updatedAt: string };
-type Approval = { id: string; taskId: string; status: string; executionPlan: { target: string } | null; operation: { account: string; campaign: string; operation: string; currentValue: unknown; proposedValue: unknown; changePercentage: number | null; reason: string; evidence: string[]; expectedImpact: string; observationWindow: string; rollbackCondition: string; riskLevel: string } };
 type Experiment = { id: string; hypothesis: string; variable: string; status: string; reviewAt: string };
 type Audit = { id: string; actor: string; action: string; status: string; at: string };
 type ConversationMessage = { id: string; clientId: string; conversationId: string; role: "user" | "assistant" | "system"; content: string; status: "complete" | "error"; taskId?: string; at: string };
 type ProductEvent = { type: string; status?: string; message?: string; approvalId?: string; event?: { type: string; phase?: string; attempt?: number; screenshot?: { width: number; height: number; capturedAt: string; sha256: string }; action?: { action: string; target: string; reason: string }; reason?: string } };
-type State = { clients: Client[]; selectedClientId?: string; tasks: Task[]; approvals: Approval[]; experiments: Experiment[]; audit: Audit[]; messages: ConversationMessage[]; events: ProductEvent[]; models: { fast: string; strong: string; gui: string; guiStrong: string; chatConfigured: boolean; guiConfigured: boolean; browserSession?: string; route?: string; privacyMode?: "standard" | "local-only"; permission?: "OBSERVE" | "INTERACT" | "MUTATE" | "DESTRUCTIVE" } };
+type ComputerExecutionStatus = "running" | "paused" | "cancelled" | "unavailable";
+type State = { clients: Client[]; selectedClientId?: string; tasks: Task[]; approvals: Approval[]; experiments: Experiment[]; audit: Audit[]; messages: ConversationMessage[]; events: ProductEvent[]; computerUse?: { executionStatus?: ComputerExecutionStatus }; models: { fast: string; strong: string; gui: string; guiStrong: string; chatConfigured: boolean; guiConfigured: boolean; browserSession?: string; route?: string; privacyMode?: "standard" | "local-only"; permission?: "OBSERVE" | "INTERACT" | "MUTATE" | "DESTRUCTIVE" } };
 
 const emptyState: State = { clients: [], tasks: [], approvals: [], experiments: [], audit: [], messages: [], events: [], models: { fast: "", strong: "", gui: "", guiStrong: "", chatConfigured: false, guiConfigured: false } };
 function App() {
@@ -51,7 +52,6 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [computerMode, setComputerMode] = useState<"running" | "paused" | "takeover">("running");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const [settingsData, setSettingsData] = useState<SettingsData>();
@@ -103,6 +103,14 @@ function App() {
     return [...roles];
   }, [state.tasks, currentTask]);
   const pendingApprovals = state.approvals.filter((item) => !["executed", "rejected", "failed"].includes(item.status)).length;
+  const computerMode = state.computerUse?.executionStatus ?? "unavailable";
+  const computerModeLabel = computerMode === "running"
+    ? copy.live
+    : computerMode === "paused"
+      ? copy.paused
+      : computerMode === "cancelled"
+        ? copy.cancelled
+        : copy.computerUnavailable;
 
   function applySettings(data: SettingsData) {
     setSettingsData(data);
@@ -122,30 +130,37 @@ function App() {
     setState((current) => ({ ...current, messages: [...current.messages, { id: `local-${Date.now()}`, clientId: clientId || "personal", conversationId: "primary", role: "user", content: message, status: "complete", at: new Date().toISOString() }] }));
     try {
       const response = await fetch("/api/messages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...(clientId ? { clientId } : {}), message, locale }) });
-      const body = await response.json(); if (!response.ok) throw new Error(body.error ?? copy.taskError);
+      const body = await response.json(); if (!response.ok) throw new Error(copy.taskError);
       await loadState(clientId || body.message?.clientId);
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); await loadState(clientId); }
     finally { setSubmitting(false); }
   }
 
   async function computerControl(action: "pause" | "resume" | "takeover") {
-    await fetch(`/api/computer/${action}`, { method: "POST" });
-    setComputerMode(action === "resume" ? "running" : action === "pause" ? "paused" : "takeover");
+    try {
+      const response = await fetch(`/api/computer/${action}`, { method: "POST" });
+      const body = await response.json().catch(() => undefined) as { error?: string; code?: string } | undefined;
+      if (!response.ok) throw new Error(body?.code === "COMPUTER_USE_UNAVAILABLE" ? copy.computerUnavailable : copy.executionError);
+      await loadState(clientId);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      await loadState(clientId);
+    }
   }
 
   async function riskReview(approval: Approval) {
     const response = await fetch(`/api/approvals/${approval.id}/risk-review`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId }) });
-    const body = await response.json(); if (!response.ok) setError(body.error ?? copy.riskError); await loadState(clientId);
+    await response.json(); if (!response.ok) setError(copy.riskError); await loadState(clientId);
   }
 
   async function approve(approval: Approval) {
     const response = await fetch(`/api/approvals/${approval.id}/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId, approvedBy: "workspace-owner" }) });
-    const body = await response.json(); if (!response.ok) setError(body.error ?? copy.approvalError); await loadState(clientId);
+    await response.json(); if (!response.ok) setError(copy.approvalError); await loadState(clientId);
   }
 
   async function commit(approval: Approval) {
     const response = await fetch(`/api/approvals/${approval.id}/commit`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId }) });
-    const body = await response.json(); if (!response.ok) setError(body.error ?? copy.executionError); await loadState(clientId);
+    await response.json(); if (!response.ok) setError(copy.executionError); await loadState(clientId);
   }
 
   if (loading) return (
@@ -230,7 +245,7 @@ function App() {
           <div className="rail-heading"><div><span className="section-kicker">{copy.liveOperations}</span><h2>{copy.executionStack}</h2></div><span className="rail-clock">{new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date())}</span></div>
 
           <section className="computer-panel panel-shell">
-            <div className="panel-heading"><div><Desktop24Regular /><h2>{copy.computer}</h2></div><span className={`mode-pill ${computerMode}`}>{computerMode === "running" ? copy.live : computerMode === "paused" ? copy.paused : copy.takeover}</span></div>
+            <div className="panel-heading"><div><Desktop24Regular /><h2>{copy.computer}</h2></div><span className={`mode-pill ${computerMode}`}>{computerModeLabel}</span></div>
             <div className="screen-bezel">
               <div className="screen-frame">
                 <div className="screen-idle"><span className="scanline" /><i>AP</i><strong>{copy.visualChannel}</strong><small>{latestShot ? formatTime(latestShot.capturedAt, locale) : state.models.guiConfigured ? copy.awaitingSignal : copy.modelNotConfigured}</small></div>
@@ -240,8 +255,8 @@ function App() {
             <div className="micro-task"><span>{copy.currentMicroTask}</span><strong>{latestComputer?.action?.target ?? copy.standby}</strong><small>{latestComputer?.action?.reason ?? copy.oneAction}</small></div>
             <div className="control-row">
               <Button icon={<Pause24Regular />} disabled={computerMode !== "running"} onClick={() => void computerControl("pause")}>{copy.pause}</Button>
-              <Button icon={<PersonArrowLeft24Regular />} onClick={() => void computerControl("takeover")}>{copy.takeOver}</Button>
-              <Button appearance="primary" icon={<Play24Regular />} disabled={computerMode === "running"} onClick={() => void computerControl("resume")}>{copy.resume}</Button>
+              <Button icon={<PersonArrowLeft24Regular />} disabled={computerMode !== "running"} onClick={() => void computerControl("takeover")}>{copy.takeOver}</Button>
+              <Button appearance="primary" icon={<Play24Regular />} disabled={computerMode !== "paused"} onClick={() => void computerControl("resume")}>{copy.resume}</Button>
             </div>
           </section>
 
@@ -266,6 +281,21 @@ function App() {
                 <div><strong>{operationLabel(approval.operation.operation, locale)}</strong><Badge appearance="outline" color={approval.status === "rejected" || approval.status === "failed" ? "danger" : approval.status === "executed" ? "success" : "warning"}>{approvalStatusLabel(approval.status, locale)}</Badge></div>
                 <p>{approval.operation.campaign}</p>
                 <dl><div><dt>{copy.current}</dt><dd>{String(approval.operation.currentValue)}</dd></div><div><dt>{copy.proposed}</dt><dd>{String(approval.operation.proposedValue)}</dd></div></dl>
+                <section className="approval-disclosure" aria-label={copy.approvalDisclosure}>
+                  {approvalDisclosure(approval, locale).map((section) => (
+                    <div className="approval-disclosure-section" key={section.title}>
+                      <h3>{section.title}</h3>
+                      <dl>
+                        {section.entries.map((item) => (
+                          <div key={item.label}>
+                            <dt>{item.label}</dt>
+                            <dd className={item.mono ? "approval-mono" : undefined} title={item.fullValue} aria-label={item.fullValue ? `${item.label}: ${item.fullValue}` : undefined}>{item.value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </div>
+                  ))}
+                </section>
                 {approval.status === "pending_risk_review" && <Button size="small" onClick={() => void riskReview(approval)}>{copy.runRisk}</Button>}
                 {approval.status === "pending_user" && <Button size="small" appearance="primary" onClick={() => void approve(approval)}>{copy.approveOnce}</Button>}
                 {approval.status === "approved" && <Button size="small" appearance="primary" disabled={!approval.executionPlan} onClick={() => void commit(approval)}>{approval.executionPlan ? copy.executeApproved : copy.missingPlan}</Button>}
