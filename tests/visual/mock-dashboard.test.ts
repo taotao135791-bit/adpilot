@@ -28,7 +28,7 @@ type DashboardState = {
   toast: boolean;
 };
 
-const surface = { app: "Local Ad Console", domain: "127.0.0.1", browserProfile: "local-test-profile", allowedApps: ["Local Ad Console"], allowedDomains: ["127.0.0.1"] };
+const surface = { app: "Local Ad Console", domain: "127.0.0.1", browserProfile: "local-test-profile", allowedApps: ["Local Ad Console"], allowedDomains: ["127.0.0.1"], surfaceFingerprint: "f".repeat(64) };
 
 function screenshot(state: DashboardState): Screenshot {
   const content = JSON.stringify(state);
@@ -101,7 +101,7 @@ describe("local mock advertising console", () => {
     const tools = new AdPilotTools(workspace, new AuditLog(workspace), approvals, new ExperimentStore(workspace), runtime);
     const taskId = crypto.randomUUID();
     const operation = {
-      account: "local-account", campaign: "Android Growth", operation: "set_daily_budget",
+      platform: "google_ads" as const, account: "local-account", campaign: "Android Growth", operation: "set_daily_budget",
       currentValue: 100, proposedValue: 120, changePercentage: 20,
       reason: "Mature campaign within the staged budget cap", evidence: ["local-console:before"],
       expectedImpact: "Increase conversion volume", observationWindow: "7 days",

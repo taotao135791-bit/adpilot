@@ -36,7 +36,7 @@ describe("AdPilotAgent integration", () => {
       } } }), { stopReason: "toolUse" }),
       fauxAssistantMessage(fauxToolCall("prepare_approval", {
         operation: {
-          account: "acct-1", campaign: "campaign-1", operation: "set_daily_budget",
+          platform: "google_ads", account: "acct-1", campaign: "campaign-1", operation: "set_daily_budget",
           currentValue: 100, proposedValue: 110, changePercentage: 10,
           reason: "Mature performance supports a staged increase", evidence: [`screenshot:${"a".repeat(64)}`],
           expectedImpact: "Increase qualified volume", observationWindow: "7 days",
@@ -44,7 +44,7 @@ describe("AdPilotAgent integration", () => {
         },
         executionPlan: {
           instruction: "Set the daily budget to 110", target: "Save budget", expectedResult: "Daily budget shows 110",
-          surface: { app: "Browser", domain: "ads.google.com", browserProfile: "client-a-google", allowedApps: ["Browser"], allowedDomains: ["ads.google.com"] },
+          surface: { app: "Browser", domain: "ads.google.com", browserProfile: "client-a-google", allowedApps: ["Browser"], allowedDomains: ["ads.google.com"], surfaceFingerprint: "a".repeat(64) },
           experiment: {
             hypothesis: "A staged budget increase will add volume without breaching CPA", variable: "daily_budget",
             baseline: { dailyBudget: 100, cpa: 10 }, expected: "More conversions at stable CPA",
