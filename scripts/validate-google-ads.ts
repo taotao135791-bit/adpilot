@@ -15,8 +15,9 @@ if (!(["readonly", "prepare"] as string[]).includes(mode) || process.argv.includ
     "  pnpm validate:visual:google-ads:observe -- --client <id> --browser-profile <name> --campaign <name>",
     "  pnpm validate:visual:google-ads:prepare -- --client <id> --browser-profile <name> --campaign <name> --draft-budget <value>",
     "",
-    "Open the manually logged-in Google Ads browser window in the foreground before starting.",
-    "prepare fills a draft budget field and stops before Save/Apply; it never submits."
+    "Start the AdPilot-managed browser first, then log in manually and leave its bound window in the foreground.",
+    "For prepare, manually open the budget editor and focus the budget input before running the command.",
+    "prepare permits only one type action and a read-only confirmation; Save/Apply/Publish cannot execute."
   ].join("\n"));
   process.exit(mode ? 0 : 1);
 }
@@ -26,15 +27,43 @@ const browserProfile = requiredFlag("--browser-profile");
 const campaign = requiredFlag("--campaign");
 const draftBudget = flag("--draft-budget");
 if (mode === "prepare" && !draftBudget) throw new Error("prepare requires --draft-budget");
+if (draftBudget && (!/^\d+(?:\.\d{1,2})?$/.test(draftBudget) || Number(draftBudget) <= 0)) {
+  throw new Error("--draft-budget must be a positive decimal without signs, separators, whitespace, or control characters");
+}
 
 const system = await createAdPilotSystem();
-if (!system.computer) throw new Error("computer use is not configured; configure GUI grounding plus verification in Settings");
+if (!system.computer) throw new Error("Computer Use is not ready; connect an image-capable model in Settings");
 const client = await system.workspace.readClient(clientId);
 const account = client.accounts?.accounts.find((item) => item.platform === "google_ads" && item.browserProfile === browserProfile);
 if (!account || !account.allowedDomains.includes("ads.google.com")) {
   throw new Error(`client ${clientId} has no google_ads account bound to browser profile ${browserProfile} and ads.google.com`);
 }
-const live = await system.computer.identifySurface();
+const session = await system.browserSessions.get(clientId, browserProfile);
+if (!session || session.sessionStatus !== "connected") {
+  throw new Error(`managed browser is not connected; run adpilot browser start --client ${clientId} --profile ${browserProfile}`);
+}
+await system.browserSessions.assertActive(clientId, browserProfile, "google_ads");
+const taskSurface = {
+  app: session.browserApp,
+  applicationId: session.browserApplicationId,
+  ...(session.processId ? { processId: session.processId } : {}),
+  ...(session.windowId ? { windowId: session.windowId } : {}),
+  domain: "ads.google.com",
+  browserProfile,
+  allowedApps: [session.browserApplicationId, session.browserApp],
+  allowedDomains: ["ads.google.com"]
+};
+const live = await system.computer.identifySurface({
+  clientId,
+  taskId: crypto.randomUUID(),
+  platform: "google_ads",
+  instruction: "Confirm the managed Google Ads browser window",
+  target: "Google Ads browser window",
+  expectedResult: "the managed Google Ads browser window is visible",
+  riskLevel: "observe",
+  permission: "OBSERVE",
+  surface: taskSurface
+});
 if (!live.surface) throw new Error("native active-window identity is unavailable");
 if (!/chrome|safari|edge|arc|brave|firefox/i.test(`${live.surface.app} ${live.surface.bundleId ?? ""}`)) {
   throw new Error(`foreground app is not a supported browser: ${live.surface.app}`);
@@ -48,7 +77,7 @@ let screenshotIndex = 0;
 
 const readonlySteps = [
   ["Confirm from the visible logo and navigation that the foreground page is Google Ads; do not click if uncertain", "Google Ads visual identity", "Google Ads logo and navigation are visibly confirmed"],
-  ["Read and confirm the visible Google Ads customer account name and customer ID", "account identity", "the authorized account name and customer ID are visibly confirmed"],
+  ["Read and confirm the visible Google Ads customer account name and customer ID", "account identity", "the logged-in account name and customer ID are visibly confirmed"],
   ["Open the Campaigns page using the visible Google Ads navigation", "Campaigns navigation", "the Campaigns page is visibly open"],
   ["Open the visible date-range selector without changing campaign settings", "date range selector", "the date range menu is visibly open"],
   ["Choose Last 7 days in the open date-range selector", "Last 7 days", "the visible date range is Last 7 days"],
@@ -61,11 +90,8 @@ const readonlySteps = [
 ] as const;
 
 const prepareSteps = [
-  [`Open the visible campaign row named ${campaign}; do not edit yet`, campaign, `campaign ${campaign} details are visibly open`],
-  ["Open the campaign budget edit control, but do not save or apply", "budget edit control", "the budget edit field is visibly available"],
-  ["Focus the daily budget input without submitting", "daily budget input", "the budget input is visibly focused"],
-  [`Replace the draft value in the focused daily budget input with ${draftBudget}; do not click Save, Apply, Publish, or press Enter`, "daily budget input", `the unsaved draft budget visibly shows ${draftBudget}`],
-  ["Stop now. Do not click Save, Apply, Publish, Done, or press Enter. Confirm the draft remains unsubmitted", "unsubmitted budget draft", `the draft budget ${draftBudget} is visible and no success confirmation is present`]
+  [`The user has focused the visible daily budget input for ${campaign}. Replace only its draft value with ${draftBudget}; do not click or press Enter`, "daily budget input", `the unsaved draft budget visibly shows ${draftBudget}`],
+  ["Inspect only. Confirm the draft remains unsubmitted and stop", "unsubmitted budget draft", `the draft budget ${draftBudget} is visible and no success confirmation is present`]
 ] as const;
 
 const steps = mode === "readonly" ? readonlySteps : prepareSteps;
@@ -73,20 +99,19 @@ for (let index = 0; index < steps.length; index += 1) {
   const [instruction, target, expectedResult] = steps[index]!;
   const taskId = crypto.randomUUID();
   const task: VisualMicroTask = {
+    clientId,
     taskId,
     stepId: `${mode}-${String(index + 1).padStart(2, "0")}`,
+    platform: "google_ads",
     instruction,
     target,
     expectedResult,
     riskLevel: index === steps.length - 1 ? "observe" : "interact",
     permission: index === steps.length - 1 ? "OBSERVE" : "INTERACT",
-    surface: {
-      app: live.surface.app,
-      domain: "ads.google.com",
-      browserProfile,
-      allowedApps: [live.surface.app],
-      allowedDomains: ["ads.google.com"]
-    }
+    ...(mode === "prepare"
+      ? { allowedActions: index === 0 ? ["type", "fail"] : ["done", "fail", "screenshot"], retryPolicy: "none" as const }
+      : {}),
+    surface: taskSurface
   };
   const eventStart = system.events.history().length;
   const startedAt = Date.now();
@@ -119,11 +144,23 @@ const manifest = {
   runId,
   mode,
   passed,
-  safety: { domAutomation: false, submitAllowed: false, mutationsAllowed: false },
+  safety: {
+    domAutomation: false,
+    submitAllowed: false,
+    mutationsAllowed: false,
+    prepareActionAllowlist: mode === "prepare" ? [["type", "fail"], ["done", "fail", "screenshot"]] : null,
+    prepareRetryPolicy: mode === "prepare" ? "none" : null
+  },
   clientId,
   accountRef: account.accountRef,
   browserProfile,
+  browserSession: session,
   initialSurface: live,
+  accountFingerprint: {
+    status: "not-created",
+    reason: "This harness never prepares or executes a mutation approval; it does not fabricate a mutation-grade account fingerprint."
+  },
+  screenshotPrivacyAudits: (await system.screenshotAudits.list(clientId)).filter((audit) => records.some((record) => record.task && (record.task as VisualMicroTask).taskId === audit.taskId)),
   models: system.modelStatus,
   tokenUsage: null,
   tokenUsageNote: "The configured provider did not expose per-request usage through the visual runtime interface.",
