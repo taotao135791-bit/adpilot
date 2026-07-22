@@ -35,7 +35,7 @@ type Experiment = { id: string; hypothesis: string; variable: string; status: st
 type Audit = { id: string; actor: string; action: string; status: string; at: string };
 type ConversationMessage = { id: string; clientId: string; conversationId: string; role: "user" | "assistant" | "system"; content: string; status: "complete" | "error"; taskId?: string; at: string };
 type ProductEvent = { type: string; status?: string; message?: string; approvalId?: string; event?: { type: string; phase?: string; attempt?: number; screenshot?: { base64: string; capturedAt: string }; action?: { action: string; target: string; reason: string }; reason?: string } };
-type State = { clients: Client[]; selectedClientId?: string; tasks: Task[]; approvals: Approval[]; experiments: Experiment[]; audit: Audit[]; messages: ConversationMessage[]; events: ProductEvent[]; models: { fast: string; strong: string; gui: string; guiStrong: string; chatConfigured: boolean; guiConfigured: boolean } };
+type State = { clients: Client[]; selectedClientId?: string; tasks: Task[]; approvals: Approval[]; experiments: Experiment[]; audit: Audit[]; messages: ConversationMessage[]; events: ProductEvent[]; models: { fast: string; strong: string; gui: string; guiStrong: string; chatConfigured: boolean; guiConfigured: boolean; browserSession?: string; route?: string; privacyMode?: "standard" | "local-only"; permission?: "OBSERVE" | "INTERACT" | "MUTATE" | "DESTRUCTIVE" } };
 
 const emptyState: State = { clients: [], tasks: [], approvals: [], experiments: [], audit: [], messages: [], events: [], models: { fast: "", strong: "", gui: "", guiStrong: "", chatConfigured: false, guiConfigured: false } };
 function App() {
@@ -55,6 +55,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const [settingsData, setSettingsData] = useState<SettingsData>();
+  const [settingsError, setSettingsError] = useState("");
   const copy = getCopy(locale);
 
   const loadState = useCallback(async (requestedClientId?: string) => {
@@ -75,7 +76,12 @@ function App() {
       const response = await fetch("/api/settings");
       if (!response.ok) throw new Error(getCopy(locale).settingsLoadError);
       applySettings(await response.json() as SettingsData);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+      setSettingsError("");
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setSettingsError(message);
+      setError(message);
+    }
   }, [locale]);
 
   useEffect(() => { void loadState(); }, []);
@@ -167,7 +173,7 @@ function App() {
           </div>
           <div className="top-status">
             <span className="live-label"><i data-ready={state.models.chatConfigured} />{state.models.chatConfigured ? copy.conversationReady : copy.modelRequired}</span>
-            <Tooltip content={copy.settings} relationship="label"><Button className="icon-button" appearance="subtle" icon={<Settings24Regular />} onClick={() => { setSettingsTab("general"); setSettingsOpen(true); if (!settingsData) void loadSettings(); }} /></Tooltip>
+            <Tooltip content={copy.settings} relationship="label"><Button className="icon-button" appearance="subtle" icon={<Settings24Regular />} aria-label={copy.settings} onClick={() => { setSettingsTab("general"); setSettingsOpen(true); if (!settingsData) void loadSettings(); }} /></Tooltip>
           </div>
         </header>
 
@@ -276,7 +282,7 @@ function App() {
             {state.audit.length ? state.audit.slice(-4).reverse().map((event) => <div className="audit-row" key={event.id}><span>{auditActionLabel(event.action, locale)}</span><time>{formatTime(event.at, locale)}</time></div>) : <Empty title={copy.tracePristine} body={copy.traceBody} />}
           </section>
         </aside>
-        <SettingsPanel open={settingsOpen} data={settingsData} initialTab={settingsTab} onClose={() => setSettingsOpen(false)} onSaved={applySettings} />
+        <SettingsPanel open={settingsOpen} data={settingsData} {...(clientId || state.selectedClientId ? { clientId: clientId || state.selectedClientId } : {})} initialTab={settingsTab} {...(settingsError ? { loadError: settingsError } : {})} onReload={() => void loadSettings()} onClose={() => setSettingsOpen(false)} onSaved={applySettings} />
       </div>
     </FluentProvider>
   );
@@ -309,7 +315,7 @@ function ModelRow({ label, value, warn = false, empty, unsupported }: { label: s
   const displayValue = !value || value === "not configured" ? empty : value === "not supported" ? unsupported : value;
   return <div className="model-row"><span>{label}</span><strong className={warn ? "warn" : ""}>{displayValue}</strong></div>;
 }
-function Empty({ title, body }: { title: string; body: string }) { return <div className="empty"><i>—</i><strong>{title}</strong><span>{body}</span></div>; }
+function Empty({ title, body }: { title: string; body: string }) { return <div className="empty"><i>-</i><strong>{title}</strong><span>{body}</span></div>; }
 function MessageBody({ content }: { content: string }) {
   const blocks = content.trim().split(/\n{2,}/);
   return <div className="message-body">{blocks.map((block, index) => {

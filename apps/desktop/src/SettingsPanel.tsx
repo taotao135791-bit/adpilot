@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@fluentui/react-components";
+import { Dismiss24Regular } from "@fluentui/react-icons";
 import type { AppLocale } from "./i18n.js";
+import { ComputerUseSettings } from "./ComputerUseSettings.js";
 
 type SettingsField = { env: string; label: { zh: string; en: string }; secret: boolean; required?: boolean; placeholder?: string };
 type CatalogModel = { id: string; name: string; reasoning: boolean; vision: boolean; contextWindow: number };
@@ -14,7 +16,18 @@ export type SettingsData = {
   catalog: { providers: CatalogProvider[]; computerFields: SettingsField[] };
   providerConfigured: Record<string, boolean>;
   providerCredentials: Record<string, "api_key" | "oauth">;
-  runtimeModels: { fast: string; strong: string; gui: string; guiStrong: string; chatConfigured: boolean; guiConfigured: boolean; browserSession?: string; route?: string };
+  runtimeModels: {
+    fast: string;
+    strong: string;
+    gui: string;
+    guiStrong: string;
+    chatConfigured: boolean;
+    guiConfigured: boolean;
+    browserSession?: string;
+    route?: string;
+    privacyMode?: "standard" | "local-only";
+    permission?: "OBSERVE" | "INTERACT" | "MUTATE" | "DESTRUCTIVE";
+  };
   restartAvailable: boolean;
 };
 
@@ -29,7 +42,16 @@ type AuthSession = {
 
 export type SettingsTab = "general" | "models" | "computer" | "about";
 
-export function SettingsPanel({ open, data, initialTab = "general", onClose, onSaved }: { open: boolean; data: SettingsData | undefined; initialTab?: SettingsTab; onClose: () => void; onSaved: (data: SettingsData) => void }) {
+export function SettingsPanel({ open, data, clientId, initialTab = "general", loadError, onReload, onClose, onSaved }: {
+  open: boolean;
+  data: SettingsData | undefined;
+  clientId?: string;
+  initialTab?: SettingsTab;
+  loadError?: string;
+  onReload: () => void;
+  onClose: () => void;
+  onSaved: (data: SettingsData) => void;
+}) {
   const [tab, setTab] = useState<SettingsTab>("general");
   const [locale, setLocale] = useState<AppLocale>(data?.locale ?? "zh-CN");
   const [appearance, setAppearance] = useState<"dark" | "light" | "system">(data?.appearance ?? "dark");
@@ -43,7 +65,12 @@ export function SettingsPanel({ open, data, initialTab = "general", onClose, onS
   const [authSession, setAuthSession] = useState<AuthSession>();
   const [authInput, setAuthInput] = useState("");
   const [advancedComputer, setAdvancedComputer] = useState(false);
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(onClose);
   const text = settingsCopy(locale);
+
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
   useEffect(() => {
     if (!data) return;
@@ -58,10 +85,25 @@ export function SettingsPanel({ open, data, initialTab = "general", onClose, onS
   useEffect(() => {
     if (!open) return;
     setTab(initialTab);
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [open, initialTab, onClose]);
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0);
+    const handleDialogKeys = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); onCloseRef.current(); return; }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')];
+      if (!focusable.length) return;
+      const first = focusable[0]!;
+      const last = focusable.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    window.addEventListener("keydown", handleDialogKeys);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.removeEventListener("keydown", handleDialogKeys);
+      previousFocus?.focus();
+    };
+  }, [open, initialTab]);
 
   useEffect(() => {
     if (!authSession || authSession.status !== "running") return;
@@ -145,23 +187,24 @@ export function SettingsPanel({ open, data, initialTab = "general", onClose, onS
   }
 
   return <div className="settings-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <section ref={dialogRef} className="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <header className="settings-header">
-        <div><span>ADPILOT / 0.1.1</span><h2 id="settings-title">{text.title}</h2></div>
-        <button className="settings-close" onClick={onClose} aria-label={text.close}>×</button>
+        <div><span>ADPILOT</span><h2 id="settings-title">{text.title}</h2></div>
+        <button ref={closeButtonRef} type="button" className="settings-close" onClick={onClose} aria-label={text.close}><Dismiss24Regular /></button>
       </header>
       <div className="settings-layout">
         <nav className="settings-nav" aria-label={text.navigation}>
-          <SettingsNav active={tab === "general"} label={text.general} meta="01" onClick={() => setTab("general")} />
-          <SettingsNav active={tab === "models"} label={text.models} meta="02" onClick={() => setTab("models")} />
-          <SettingsNav active={tab === "computer"} label={text.computer} meta="03" onClick={() => setTab("computer")} />
-          <SettingsNav active={tab === "about"} label={text.about} meta="04" onClick={() => setTab("about")} />
+          <SettingsNav active={tab === "general"} label={text.general} onClick={() => setTab("general")} />
+          <SettingsNav active={tab === "models"} label={text.models} onClick={() => setTab("models")} />
+          <SettingsNav active={tab === "computer"} label={text.computer} onClick={() => setTab("computer")} />
+          <SettingsNav active={tab === "about"} label={text.about} onClick={() => setTab("about")} />
           <div className="settings-health"><span>{text.connections}</span><strong>{configuredCount.toString().padStart(2, "0")}</strong></div>
         </nav>
         <div className="settings-content">
-          {!data && <div className="settings-loading"><i /><span>{text.loading}</span></div>}
+          {!data && !loadError && <div className="settings-loading" aria-busy="true"><i /><span>{text.loading}</span></div>}
+          {!data && loadError && <div className="settings-load-error" role="alert"><strong>{text.loadingFailed}</strong><p>{loadError}</p><Button onClick={onReload}>{text.retry}</Button></div>}
 
-          {data && tab === "general" && <SettingsSection eyebrow="01" title={text.generalTitle} body={text.generalBody}>
+          {data && tab === "general" && <SettingsSection title={text.generalTitle} body={text.generalBody}>
             <SettingBlock label={text.language} hint={text.languageHint}>
               <Segmented value={locale} options={[{ value: "zh-CN", label: "中文" }, { value: "en", label: "English" }]} onChange={(value) => setLocale(value as AppLocale)} />
             </SettingBlock>
@@ -171,7 +214,7 @@ export function SettingsPanel({ open, data, initialTab = "general", onClose, onS
             <div className="settings-note"><i />{text.localeRule}</div>
           </SettingsSection>}
 
-          {data && tab === "models" && models && <SettingsSection eyebrow="02" title={text.modelsTitle} body={text.modelsBody}>
+          {data && tab === "models" && models && <SettingsSection title={text.modelsTitle} body={text.modelsBody}>
             <div className="route-grid">
               <ModelRoute label={text.fastRoute} hint={text.fastHint} selection={models.fast} providers={data.catalog.providers} providerLabel={text.provider} modelLabel={text.model} visionLabel={text.visionCapability} onProvider={(provider) => changeProvider("fast", provider)} onModel={(model) => setModels({ ...models, fast: { ...models.fast, model } })} />
               <ModelRoute label={text.strongRoute} hint={text.strongHint} selection={models.strong} providers={data.catalog.providers} providerLabel={text.provider} modelLabel={text.model} visionLabel={text.visionCapability} onProvider={(provider) => changeProvider("strong", provider)} onModel={(model) => setModels({ ...models, strong: { ...models.strong, model } })} />
@@ -184,17 +227,14 @@ export function SettingsPanel({ open, data, initialTab = "general", onClose, onS
             {selectedProvider?.auth.oauth && <OAuthConnection session={authSession?.providerId === selectedProvider.id ? authSession : undefined} connected={data.providerCredentials[selectedProvider.id] === "oauth"} input={authInput} text={text} onInput={setAuthInput} onStart={() => void startOAuth()} onRespond={(value) => void respondOAuth(value)} onDisconnect={() => void disconnectOAuth()} />}
           </SettingsSection>}
 
-          {data && tab === "computer" && <SettingsSection eyebrow="03" title={text.computerTitle} body={text.computerBody}>
+          {data && tab === "computer" && <SettingsSection title={text.computerTitle} body={text.computerBody}>
             <div className="settings-note important"><i />{text.computerNote}</div>
-            <dl className="system-manifest"><div><dt>{locale === "zh-CN" ? "Computer Use" : "Computer use"}</dt><dd>{data.runtimeModels.guiConfigured ? text.ready : text.needsVision}</dd></div><div><dt>{locale === "zh-CN" ? "自动路由" : "Automatic route"}</dt><dd>{data.runtimeModels.route ?? data.runtimeModels.gui}</dd></div><div><dt>{locale === "zh-CN" ? "当前视觉模型" : "Current visual model"}</dt><dd>{data.runtimeModels.gui}</dd></div><div><dt>{locale === "zh-CN" ? "失败升级" : "Failure escalation"}</dt><dd>{locale === "zh-CN" ? "已开启" : "Enabled"}</dd></div><div><dt>{locale === "zh-CN" ? "当前浏览器" : "Current browser"}</dt><dd>{data.runtimeModels.browserSession ?? (locale === "zh-CN" ? "未连接" : "Not connected")}</dd></div><div><dt>{text.visualReview}</dt><dd>{data.runtimeModels.guiStrong}</dd></div></dl>
-            <SettingBlock label={locale === "zh-CN" ? "隐私模式" : "Privacy mode"} hint={locale === "zh-CN" ? "本地模式禁止向远程模型发送截图" : "Local-only blocks screenshots from remote models"}>
-              <Segmented value={envDraft.ADPILOT_PRIVACY_MODE || "standard"} options={[{ value: "standard", label: locale === "zh-CN" ? "自动遮挡" : "Masked" }, { value: "local-only", label: locale === "zh-CN" ? "仅本地" : "Local only" }]} onChange={(value) => setEnvDraft({ ...envDraft, ADPILOT_PRIVACY_MODE: value })} />
-            </SettingBlock>
-            <button type="button" className="advanced-settings-toggle" onClick={() => setAdvancedComputer((value) => !value)}>{advancedComputer ? (locale === "zh-CN" ? "收起高级开发者设置" : "Hide advanced developer settings") : (locale === "zh-CN" ? "高级开发者设置" : "Advanced developer settings")}</button>
+            <ComputerUseSettings locale={locale} {...(clientId ? { clientId } : {})} runtime={data.runtimeModels} privacyMode={envDraft.ADPILOT_PRIVACY_MODE || "standard"} onPrivacyMode={(value) => setEnvDraft({ ...envDraft, ADPILOT_PRIVACY_MODE: value })} />
+            <button type="button" className="advanced-settings-toggle" aria-expanded={advancedComputer} onClick={() => setAdvancedComputer((value) => !value)}>{advancedComputer ? text.hideAdvanced : text.showAdvanced}</button>
             {advancedComputer && <div className="settings-fields">{data.catalog.computerFields.filter((field) => field.env !== "ADPILOT_PRIVACY_MODE").map((field) => <CredentialField key={field.env} field={field} locale={locale} configured={Boolean(data.configured[field.env])} value={envDraft[field.env] ?? ""} cleared={cleared.has(field.env)} onChange={(value) => { setEnvDraft({ ...envDraft, [field.env]: value }); setCleared((items) => { const next = new Set(items); next.delete(field.env); return next; }); }} onClear={() => setCleared((items) => new Set(items).add(field.env))} />)}</div>}
           </SettingsSection>}
 
-          {data && tab === "about" && <SettingsSection eyebrow="04" title={text.aboutTitle} body={text.aboutBody}>
+          {data && tab === "about" && <SettingsSection title={text.aboutTitle} body={text.aboutBody}>
             <dl className="system-manifest"><div><dt>{text.runtime}</dt><dd>Pi 0.80.10 · MIT</dd></div><div><dt>{text.visualRuntime}</dt><dd>UI-TARS 1.2.3 · Apache-2.0</dd></div><div><dt>{text.strategyCore}</dt><dd>codex-ads 1.9.2 · MIT</dd></div><div><dt>{text.providersAvailable}</dt><dd>{data.catalog.providers.length}</dd></div></dl>
             <p className="settings-legal">{text.legal}</p>
           </SettingsSection>}
@@ -211,10 +251,10 @@ export function SettingsPanel({ open, data, initialTab = "general", onClose, onS
   </div>;
 }
 
-function SettingsNav({ active, label, meta, onClick }: { active: boolean; label: string; meta: string; onClick: () => void }) { return <button className={active ? "active" : ""} onClick={onClick}><span>{meta}</span><strong>{label}</strong></button>; }
-function SettingsSection({ eyebrow, title, body, children }: { eyebrow: string; title: string; body: string; children: React.ReactNode }) { return <section className="settings-section"><header><span>{eyebrow}</span><h2>{title}</h2><p>{body}</p></header>{children}</section>; }
+function SettingsNav({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) { return <button type="button" className={active ? "active" : ""} aria-current={active ? "page" : undefined} onClick={onClick}><strong>{label}</strong></button>; }
+function SettingsSection({ title, body, children }: { title: string; body: string; children: React.ReactNode }) { return <section className="settings-section"><header><h2>{title}</h2><p>{body}</p></header>{children}</section>; }
 function SettingBlock({ label, hint, children }: { label: string; hint: string; children: React.ReactNode }) { return <div className="setting-block"><div><strong>{label}</strong><span>{hint}</span></div>{children}</div>; }
-function Segmented({ value, options, onChange }: { value: string; options: Array<{ value: string; label: string }>; onChange: (value: string) => void }) { return <div className="segmented">{options.map((option) => <button key={option.value} className={value === option.value ? "active" : ""} onClick={() => onChange(option.value)}>{option.label}</button>)}</div>; }
+function Segmented({ value, options, onChange }: { value: string; options: Array<{ value: string; label: string }>; onChange: (value: string) => void }) { return <div className="segmented" role="radiogroup">{options.map((option) => <button type="button" role="radio" aria-checked={value === option.value} key={option.value} className={value === option.value ? "active" : ""} onClick={() => onChange(option.value)}>{option.label}</button>)}</div>; }
 
 function ModelRoute({ label, hint, selection, providers, providerLabel, modelLabel, visionLabel, onProvider, onModel }: { label: string; hint: string; selection: { provider: string; model: string }; providers: CatalogProvider[]; providerLabel: string; modelLabel: string; visionLabel: string; onProvider: (provider: string) => void; onModel: (model: string) => void }) {
   const provider = providers.find((item) => item.id === selection.provider);
@@ -242,8 +282,8 @@ function CredentialField({ field, locale, configured, value, cleared, onChange, 
 function settingsCopy(locale: AppLocale) {
   const zh = locale === "zh-CN";
   return zh ? {
-    title: "设置", close: "关闭设置", navigation: "设置导航", general: "通用", models: "模型", computer: "电脑控制", about: "关于", connections: "已配置连接", loading: "正在读取安全配置", generalTitle: "语言与外观", generalBody: "界面在任一时刻只使用一种语言。产品名和模型名保持原名。", language: "界面语言", languageHint: "应用到操作台和设置页", appearance: "显示模式", appearanceHint: "选择深色、浅色或跟随系统", dark: "深色", light: "浅色", system: "跟随系统", localeRule: "保存后界面会立即切换；模型配置需要重启运行时。", modelsTitle: "模型路由", modelsBody: "选择日常对话模型和高强度推理模型；支持看图的代码模型会自动作为电脑控制的兜底。", fastRoute: "日常模型", fastHint: "自然对话、分类、报告与普通任务", strongRoute: "深度模型", strongHint: "因果分析、风险复核与失败升级", providerConnection: "供应商连接", credentials: "凭据", providers: "个供应商", provider: "供应商", model: "模型", visionCapability: "视觉", apiKey: "API 密钥", modelsCount: "个模型", noStaticModels: "该供应商使用动态模型目录，首次认证后获取。", oauthTitle: "订阅账户登录", oauthBody: "通过 Pi 的原生授权流程连接订阅账户；访问令牌只保存在本机工作区。", oauthConnected: "OAuth 已连接", connect: "连接账户", connecting: "连接中", disconnect: "断开连接", openAuthorization: "请在浏览器中完成授权。", openBrowser: "打开浏览器", deviceCode: "在授权页面输入此代码", choose: "请选择", continue: "继续", oauthComplete: "授权完成，重启后即可使用。", oauthFailed: "OAuth 授权失败", computerTitle: "电脑控制模型", computerBody: "可接入专用 UI‑TARS 定位与独立视觉复核端点；未填写时自动复用支持图像输入的代码模型。", computerNote: "执行顺序是专用 GUI 模型、强化 GUI 模型、代码模型兜底。定位与复核彼此独立，所有真实修改仍受风险复核、实时窗口绑定和一次性批准约束。", visualPrimary: "截图与动作", visualReview: "结果复核", chatStatus: "自然语言对话", visionStatus: "电脑控制", ready: "已就绪", needsCredential: "需要供应商凭据", needsVision: "请配置专用端点，或选择支持图像且已认证的代码模型", aboutTitle: "系统清单", aboutBody: "本地优先、证据驱动、审批后执行的广告优化智能体。", runtime: "主运行时", visualRuntime: "视觉执行", strategyCore: "广告策略核心", providersAvailable: "可用供应商", legal: "真实账户修改需要独立风险复核、用户批准和一次性执行令牌。完整许可证位于 THIRD_PARTY_NOTICES.md。", localStorage: "配置保存在本机工作区，不会通过设置接口返回密钥明文。", save: "保存配置", saving: "正在保存", saved: "配置已保存；模型路由将在重启后生效。", saveFailed: "保存配置失败", reloadFailed: "无法重新读取配置", restartNow: "立即重启", restartManual: "请关闭并重新启动 AdPilot"
+    title: "设置", close: "关闭设置", navigation: "设置导航", general: "通用", models: "模型", computer: "电脑控制", about: "关于", connections: "已配置连接", loading: "正在读取安全配置", loadingFailed: "无法读取设置", retry: "重试", generalTitle: "语言与外观", generalBody: "界面在任一时刻只使用一种语言。产品名和模型名保持原名。", language: "界面语言", languageHint: "应用到操作台和设置页", appearance: "显示模式", appearanceHint: "选择深色、浅色或跟随系统", dark: "深色", light: "浅色", system: "跟随系统", localeRule: "保存后界面会立即切换；模型配置需要重启运行时。", modelsTitle: "模型路由", modelsBody: "选择日常对话模型和高强度推理模型；支持看图的代码模型会自动作为电脑控制的视觉模型。", fastRoute: "日常模型", fastHint: "自然对话、分类、报告与普通任务", strongRoute: "深度模型", strongHint: "因果分析、风险复核与失败升级", providerConnection: "供应商连接", credentials: "凭据", providers: "个供应商", provider: "供应商", model: "模型", visionCapability: "视觉", apiKey: "API 密钥", modelsCount: "个模型", noStaticModels: "该供应商使用动态模型目录，首次认证后获取。", oauthTitle: "订阅账户登录", oauthBody: "通过 Pi 的原生授权流程连接订阅账户；访问令牌只保存在本机工作区。", oauthConnected: "OAuth 已连接", connect: "连接账户", connecting: "连接中", disconnect: "断开连接", openAuthorization: "请在浏览器中完成授权。", openBrowser: "打开浏览器", deviceCode: "在授权页面输入此代码", choose: "请选择", continue: "继续", oauthComplete: "授权完成，重启后即可使用。", oauthFailed: "OAuth 授权失败", computerTitle: "电脑控制", computerBody: "使用日常与深度代码模型完成看图、定位和复核。专用视觉端点属于可选的高级设置。", computerNote: "系统每次只执行一个可校验动作。账户修改仍需要实时窗口绑定、独立身份校验、风险复核和一次性批准。", showAdvanced: "显示高级开发者设置", hideAdvanced: "收起高级开发者设置", visualPrimary: "截图与动作", visualReview: "结果复核", chatStatus: "自然语言对话", visionStatus: "电脑控制", ready: "已就绪", needsCredential: "需要供应商凭据", needsVision: "请选择支持图像且已认证的代码模型", aboutTitle: "系统清单", aboutBody: "本地优先、证据驱动、审批后执行的广告优化智能体。", runtime: "主运行时", visualRuntime: "视觉执行", strategyCore: "广告策略核心", providersAvailable: "可用供应商", legal: "真实账户修改需要独立风险复核、用户批准和一次性执行令牌。完整许可证位于 THIRD_PARTY_NOTICES.md。", localStorage: "配置保存在本机工作区，不会通过设置接口返回密钥明文。", save: "保存配置", saving: "正在保存", saved: "配置已保存；模型路由将在重启后生效。", saveFailed: "保存配置失败", reloadFailed: "无法重新读取配置", restartNow: "立即重启", restartManual: "请关闭并重新启动 AdPilot"
   } : {
-    title: "Settings", close: "Close settings", navigation: "Settings navigation", general: "General", models: "Models", computer: "Computer use", about: "About", connections: "Configured connections", loading: "Loading secure settings", generalTitle: "Language and appearance", generalBody: "The interface uses one language at a time. Product and model names retain their proper names.", language: "Interface language", languageHint: "Applies to the console and settings", appearance: "Appearance", appearanceHint: "Choose dark, light, or system mode", dark: "Dark", light: "Light", system: "System", localeRule: "The interface changes immediately after saving. Model settings require a runtime restart.", modelsTitle: "Model routing", modelsBody: "Choose daily and high-assurance reasoning models. Image-capable code models remain the computer-use fallback.", fastRoute: "Daily model", fastHint: "Natural conversation, classification, reports, and routine work", strongRoute: "Deep model", strongHint: "Causal analysis, risk review, and failure escalation", providerConnection: "Provider connection", credentials: "Credentials", providers: "providers", provider: "Provider", model: "Model", visionCapability: "vision", apiKey: "API key", modelsCount: "models", noStaticModels: "This provider uses a dynamic model catalog fetched after authentication.", oauthTitle: "Subscription login", oauthBody: "Connect a subscription account through Pi's native authorization flow. Tokens remain in the local workspace.", oauthConnected: "OAuth connected", connect: "Connect account", connecting: "Connecting", disconnect: "Disconnect", openAuthorization: "Complete authorization in your browser.", openBrowser: "Open browser", deviceCode: "Enter this code on the authorization page", choose: "Choose an option", continue: "Continue", oauthComplete: "Authorization complete. Restart to use this connection.", oauthFailed: "OAuth authorization failed", computerTitle: "Computer-use models", computerBody: "Connect dedicated UI-TARS grounding and an independent visual verifier. Leave them blank to reuse image-capable code models.", computerNote: "Routing is dedicated GUI, strong GUI, then code-model fallback. Grounding and verification remain separate; live changes still require risk review, live-surface binding, and one-time approval.", visualPrimary: "Screenshot and action", visualReview: "Result verification", chatStatus: "Natural-language chat", visionStatus: "Computer use", ready: "Ready", needsCredential: "Provider credentials required", needsVision: "Configure dedicated endpoints or authenticate an image-capable code model", aboutTitle: "System manifest", aboutBody: "A local-first, evidence-led advertising agent that acts only after approval.", runtime: "Primary runtime", visualRuntime: "Visual execution", strategyCore: "Advertising core", providersAvailable: "Available providers", legal: "Live account changes require independent risk review, user approval, and a one-time execution token. See THIRD_PARTY_NOTICES.md for complete licensing.", localStorage: "Settings stay in the local workspace. Secret values are never returned by the settings API.", save: "Save settings", saving: "Saving", saved: "Settings saved. Model routing takes effect after restart.", saveFailed: "Could not save settings", reloadFailed: "Could not reload settings", restartNow: "Restart now", restartManual: "Close and relaunch AdPilot"
+    title: "Settings", close: "Close settings", navigation: "Settings navigation", general: "General", models: "Models", computer: "Computer use", about: "About", connections: "Configured connections", loading: "Loading secure settings", loadingFailed: "Could not load settings", retry: "Retry", generalTitle: "Language and appearance", generalBody: "The interface uses one language at a time. Product and model names retain their proper names.", language: "Interface language", languageHint: "Applies to the console and settings", appearance: "Appearance", appearanceHint: "Choose dark, light, or system mode", dark: "Dark", light: "Light", system: "System", localeRule: "The interface changes immediately after saving. Model settings require a runtime restart.", modelsTitle: "Model routing", modelsBody: "Choose daily and high-assurance reasoning models. Image-capable code models become the Computer Use vision models automatically.", fastRoute: "Daily model", fastHint: "Natural conversation, classification, reports, and routine work", strongRoute: "Deep model", strongHint: "Causal analysis, risk review, and failure escalation", providerConnection: "Provider connection", credentials: "Credentials", providers: "providers", provider: "Provider", model: "Model", visionCapability: "vision", apiKey: "API key", modelsCount: "models", noStaticModels: "This provider uses a dynamic model catalog fetched after authentication.", oauthTitle: "Subscription login", oauthBody: "Connect a subscription account through Pi's native authorization flow. Tokens remain in the local workspace.", oauthConnected: "OAuth connected", connect: "Connect account", connecting: "Connecting", disconnect: "Disconnect", openAuthorization: "Complete authorization in your browser.", openBrowser: "Open browser", deviceCode: "Enter this code on the authorization page", choose: "Choose an option", continue: "Continue", oauthComplete: "Authorization complete. Restart to use this connection.", oauthFailed: "OAuth authorization failed", computerTitle: "Computer use", computerBody: "Daily and Deep code models handle screenshots, grounding, and verification. Dedicated vision endpoints are optional advanced settings.", computerNote: "AdPilot performs one verifiable action at a time. Account changes still require live-window binding, independent identity checks, risk review, and one-time approval.", showAdvanced: "Show advanced developer settings", hideAdvanced: "Hide advanced developer settings", visualPrimary: "Screenshot and action", visualReview: "Result verification", chatStatus: "Natural-language chat", visionStatus: "Computer use", ready: "Ready", needsCredential: "Provider credentials required", needsVision: "Select and authenticate an image-capable code model", aboutTitle: "System manifest", aboutBody: "A local-first, evidence-led advertising agent that acts only after approval.", runtime: "Primary runtime", visualRuntime: "Visual execution", strategyCore: "Advertising core", providersAvailable: "Available providers", legal: "Live account changes require independent risk review, user approval, and a one-time execution token. See THIRD_PARTY_NOTICES.md for complete licensing.", localStorage: "Settings stay in the local workspace. Secret values are never returned by the settings API.", save: "Save settings", saving: "Saving", saved: "Settings saved. Model routing takes effect after restart.", saveFailed: "Could not save settings", reloadFailed: "Could not reload settings", restartNow: "Restart now", restartManual: "Close and relaunch AdPilot"
   };
 }
