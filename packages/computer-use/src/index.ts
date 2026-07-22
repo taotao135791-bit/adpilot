@@ -65,6 +65,18 @@ export const VisualAction = z.discriminatedUnion("action", [
   z.object({ action: z.literal("fail"), ...common })
 ]);
 export type VisualAction = z.infer<typeof VisualAction>;
+export type VisualActionKind = VisualAction["action"];
+
+const VisualActionKind = z.enum([
+  "click", "double_click", "right_click", "move", "drag", "type", "hotkey",
+  "scroll", "wait", "screenshot", "done", "fail"
+]);
+
+/** Optional, strictly narrowing guard used by safety-critical validation flows. */
+export const VisualExecutionConstraints = z.object({
+  allowedActions: z.array(VisualActionKind).min(1)
+}).strict();
+export type VisualExecutionConstraints = z.infer<typeof VisualExecutionConstraints>;
 
 /** Runtime execution schema. Provider candidates become executable only after these bindings are attached. */
 export const ExecutableVisualAction = VisualAction.and(z.object({
@@ -129,6 +141,10 @@ export interface VisualMicroTask {
   expectedResult: string;
   riskLevel: z.infer<typeof RiskLevel>;
   permission: Permission;
+  /** Additional least-privilege action boundary for tightly scoped micro-tasks. */
+  allowedActions?: VisualAction["action"][];
+  /** `none` permits exactly one grounding/execution attempt. */
+  retryPolicy?: "default" | "none";
   surface: SurfaceContext;
 }
 
@@ -194,6 +210,9 @@ export type VisualStepResult =
 export class VisualPolicy {
   check(action: VisualAction, screenshot: Screenshot, task: VisualMicroTask): void {
     this.checkSurface(task.surface);
+    if (task.allowedActions && !task.allowedActions.includes(action.action)) {
+      throw new Error(`action ${action.action} is outside this micro-task allowlist`);
+    }
     if (screenshot.surfaceFingerprint && action.surface_fingerprint !== screenshot.surfaceFingerprint) {
       throw new SurfaceChangedBlocker(screenshot.surfaceFingerprint, action.surface_fingerprint ?? "missing");
     }
@@ -323,7 +342,12 @@ export class VisualComputerRuntime {
     return screenshot;
   }
 
-  async runMicroTask(task: VisualMicroTask, initialScreenshot?: Screenshot): Promise<VisualStepResult> {
+  async runMicroTask(
+    task: VisualMicroTask,
+    initialScreenshot?: Screenshot,
+    constraintInput?: VisualExecutionConstraints
+  ): Promise<VisualStepResult> {
+    const constraints = constraintInput ? VisualExecutionConstraints.parse(constraintInput) : undefined;
     let lastAction: VisualAction | undefined;
     const executedCoordinates = new Set<string>();
     let mutationExecuted = false;
@@ -331,14 +355,15 @@ export class VisualComputerRuntime {
     const stepId = task.stepId ?? stableId("step", taskId, task.expectedResult);
     const planId = task.planId ?? stableId("plan", taskId, task.instruction, task.target, task.expectedResult);
     const boundTask = { ...task, taskId, stepId, planId };
+    const attemptLimit = task.retryPolicy === "none" ? 1 : this.maxAttempts;
     if (this.operator.bindTask) await this.operator.bindTask(boundTask);
-    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+    for (let attempt = 1; attempt <= attemptLimit; attempt += 1) {
       if (this.cancelled) return failedResult(attempt - 1, "user cancelled", "CANCELLED", lastAction);
       if (this.paused) return failedResult(attempt - 1, "paused for user takeover", "PAUSED", lastAction);
       if (mutationExecuted) {
         return failedResult(attempt - 1, "mutating actions are never retried after execution", "MUTATION_RETRY_FORBIDDEN", lastAction);
       }
-      const tier: ModelTier = attempt >= this.maxAttempts ? "strong" : "gui";
+      const tier: ModelTier = task.retryPolicy === "none" ? "gui" : attempt >= attemptLimit ? "strong" : "gui";
       try {
         const before = attempt === 1 && initialScreenshot
           ? Screenshot.parse(initialScreenshot)
@@ -348,6 +373,9 @@ export class VisualComputerRuntime {
         const grounded = await withTimeout(this.grounding.ground(boundTask, before, tier), this.stepTimeoutMs, "visual grounding");
         const action = bindActionContext(grounded, boundTask, before, expectedFingerprint);
         lastAction = action;
+        if (constraints && !constraints.allowedActions.includes(action.action)) {
+          throw new VisualRuntimeBlocker("POLICY_BLOCKED", `action ${action.action} is outside this restricted execution step`);
+        }
         try { this.policy.check(action, before, boundTask); }
         catch (error) {
           if (error instanceof VisualRuntimeBlocker) throw error;
@@ -405,7 +433,7 @@ export class VisualComputerRuntime {
         }
       }
     }
-    return failedResult(this.maxAttempts, `visual action failed ${this.maxAttempts} times; blind operation stopped`, "VERIFICATION_FAILED", lastAction);
+    return failedResult(attemptLimit, `visual action failed ${attemptLimit} time${attemptLimit === 1 ? "" : "s"}; blind operation stopped`, "VERIFICATION_FAILED", lastAction);
   }
 
   private async assertSurfaceUnchanged(expectedFingerprint: string): Promise<void> {
@@ -662,6 +690,7 @@ export class OpenAICompatibleUiTarsProvider implements VisualGroundingProvider {
                   target: task.target,
                   expected_result: task.expectedResult,
                   risk_level: task.riskLevel,
+                  allowed_actions: task.allowedActions,
                   surface_fingerprint: surfaceFingerprintFor(screenshot),
                   screenshot: { width: screenshot.width, height: screenshot.height, scaleFactor: screenshot.scaleFactor }
                 }) },
@@ -808,6 +837,7 @@ export class PiVisionModel implements VisualGroundingProvider, VisualVerifier {
             target: task.target,
             expectedResult: task.expectedResult,
             declaredRisk: task.riskLevel,
+            allowedActions: task.allowedActions,
             screenshot: { width: screenshot.width, height: screenshot.height }
           }) },
           { type: "image", data: screenshot.base64, mimeType: "image/png" }

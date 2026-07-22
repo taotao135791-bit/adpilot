@@ -64,6 +64,22 @@ describe("visual action protocol", () => {
     });
   });
 
+  it("applies a narrowing action-kind guard before native input", async () => {
+    let executions = 0;
+    const runtime = new VisualComputerRuntime(
+      { capture: async () => before, execute: async () => { executions += 1; } },
+      { ground: async () => ({ action: "click", x: 100, y: 100, target: "date selector", reason: "visible", confidence: 1, expected_result: "date menu is open", risk_level: "interact" }) },
+      { verify: async () => ({ matched: true, confidence: 1, reason: "open" }) }
+    );
+    await expect(runtime.runMicroTask(task, undefined, { allowedActions: ["type"] })).resolves.toMatchObject({
+      status: "failed",
+      attempts: 1,
+      blockerCode: "POLICY_BLOCKED",
+      blocker: "action click is outside this restricted execution step"
+    });
+    expect(executions).toBe(0);
+  });
+
   it("re-screenshots, escalates, and stops after the third failure", async () => {
     const tiers: string[] = [];
     let captures = 0;
@@ -82,6 +98,34 @@ describe("visual action protocol", () => {
     const action = VisualAction.parse({ action: "click", x: 10, y: 10, target: task.target, reason: "submit", confidence: 1, expected_result: task.expectedResult, risk_level: "mutate" });
     expect(() => new VisualPolicy().check(action, before, { ...task, riskLevel: "mutate", permission: "OBSERVE" })).toThrow("does not allow");
     expect(() => new VisualPolicy().check({ ...action, risk_level: "interact" }, before, { ...task, surface: { ...task.surface, domain: "evil.example" } })).toThrow("not allowlisted");
+  });
+
+  it("enforces a one-attempt action allowlist for scroll-only micro-tasks", async () => {
+    let executions = 0;
+    let groundings = 0;
+    const runtime = new VisualComputerRuntime(
+      { capture: async () => before, execute: async () => { executions += 1; } },
+      {
+        ground: async () => {
+          groundings += 1;
+          return {
+            action: "click", x: 10, y: 10, target: "table body", reason: "wrong action", confidence: 1,
+            expected_result: "the next table rows are visible", risk_level: "interact"
+          };
+        }
+      },
+      { verify: async () => ({ matched: false, confidence: 1, reason: "not reached" }) }
+    );
+    await expect(runtime.runMicroTask({
+      ...task,
+      instruction: "Scroll the visible table down exactly once",
+      target: "table body",
+      expectedResult: "the next table rows are visible",
+      allowedActions: ["scroll", "done", "fail"],
+      retryPolicy: "none"
+    })).resolves.toMatchObject({ status: "failed", attempts: 1, blockerCode: "POLICY_BLOCKED" });
+    expect(groundings).toBe(1);
+    expect(executions).toBe(0);
   });
 
   it("stops immediately on timeout to avoid duplicate actions", async () => {
