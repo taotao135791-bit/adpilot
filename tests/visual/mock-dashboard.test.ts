@@ -19,6 +19,7 @@ import {
   type VisualMicroTask
 } from "@adpilot/computer-use";
 import { ExperimentStore } from "@adpilot/experiments";
+import { SharedFactLedger } from "@adpilot/shared";
 import { AdPilotTools, visualTaskFromExecutionPlan } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
 
@@ -153,15 +154,6 @@ describe("local mock advertising console", () => {
         browserApp: nativeSurface.app
       })
     } as unknown as BrowserSessionManager;
-    const tools = new AdPilotTools(
-      workspace,
-      new AuditLog(workspace),
-      approvals,
-      new ExperimentStore(workspace),
-      runtime,
-      visualIdentity,
-      browserSessions
-    );
     const taskId = crypto.randomUUID();
     const operation = {
       platform: "other" as const, account: "local-account", campaign: "Android Growth", operation: "set_daily_budget",
@@ -209,6 +201,44 @@ describe("local mock advertising console", () => {
         maturityWindowDays: 7, rollbackCondition: "CPA rises more than 20%", reviewAt: "2026-08-01T00:00:00.000Z"
       }
     };
+    const sharedFacts = new SharedFactLedger();
+    const evidenceExpiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+    const sourceScreenshotId = screenshot(operator.state).sha256;
+    const addGuardrailFact = async (predicate: string, value: string | boolean) => {
+      const observed = await sharedFacts.observe({
+        clientId: "visual-client",
+        taskId,
+        subject: operation.campaign,
+        predicate,
+        value,
+        unit: typeof value === "boolean" ? "boolean" : "status",
+        sourceType: "visual_table",
+        sourceScreenshotId,
+        sourceBoundingBox: [900, 560, 220, 40],
+        evidenceIds: [`screenshot:${sourceScreenshotId}`],
+        confidence: 0.98,
+        createdBy: "mock_visual_table_reader",
+        expiresAt: evidenceExpiresAt
+      });
+      return sharedFacts.verify("visual-client", observed.factId, {
+        verifier: "mock_independent_visual_verifier",
+        confidence: 0.97
+      });
+    };
+    const measurementFact = await addGuardrailFact("measurement_status", "reliable");
+    const maturityFact = await addGuardrailFact("campaign_mature", true);
+    const learningFact = await addGuardrailFact("learning_phase", false);
+    const tools = new AdPilotTools(
+      workspace,
+      new AuditLog(workspace),
+      approvals,
+      new ExperimentStore(workspace),
+      runtime,
+      visualIdentity,
+      browserSessions,
+      undefined,
+      sharedFacts
+    );
     const approval = await approvals.create("visual-client", taskId, operation, executionPlan, {
       input: {
         kind: "budget",
@@ -220,7 +250,7 @@ describe("local mock advertising console", () => {
         mature: true,
         learning: false
       },
-      evidenceFactIds: ["mock:measurement", "mock:maturity", "mock:learning"],
+      evidenceFactIds: [measurementFact.factId, maturityFact.factId, learningFact.factId],
       singleVariable: true
     });
     await approvals.recordRiskReview("visual-client", approval.id, true, "Within policy and single-variable guardrail");
