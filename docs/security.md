@@ -12,14 +12,14 @@ A real change requires all of the following:
 2. Deterministic maturity, learning, measurement, magnitude and single-variable checks.
 3. An independent Risk Reviewer decision persisted before user review.
 4. Explicit user approval.
-5. A five-minute one-time HMAC token bound to approval id and the exact operation fingerprint.
+5. A five-minute HMAC token bound to approval id, client, platform, account, Campaign, operation, current/proposed values, risk, live native-surface fingerprint, expiry and exactly one attempt.
 6. Token consumption before execution and terminal `executed` or `failed` state afterward.
 
-The token is stored only in server memory, is never returned to the browser, and is never included in a model prompt. Any changed account, Campaign, operation, current value or proposed value invalidates it.
+The token is stored only in server memory, is never returned to the browser, and is never included in a model prompt. Any changed binding, malformed signature, expiry, replay, cancellation, second attempt, or changed live surface burns or invalidates it. Approval creation obtains the fingerprint from the native operator rather than trusting model output, and consumption re-identifies the foreground surface before execution.
 
 ## Computer Use
 
-The runtime takes a fresh screenshot before every attempt. It stops after three failed visual attempts, escalates the third grounding attempt to the Strong tier, and never retries after a timeout because a late native action could otherwise be duplicated. Pause, user takeover and cancel are checked before capturing a new screen.
+The runtime obtains the active application, bundle id, PID, window title/id, window bounds, screen identity and DPR through native macOS APIs, then captures that window. Every action is bound to task id, step id and its full surface fingerprint. It re-identifies immediately before execution, validates screenshot/window coordinates and DPR, refuses repeated coordinates, and never retries a mutation or timeout. A different app/window/PID/screen is a typed `SURFACE_CHANGED` blocker; an expected title change inside the same native window can proceed to visual verification.
 
 `ImageChangeVerifier` is a conservative fallback for local tests. Production configuration uses an OpenAI-compatible visual verifier to check the declared expected result against before/after screenshots.
 

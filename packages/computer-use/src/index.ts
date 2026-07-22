@@ -258,7 +258,9 @@ export class VisualComputerRuntime {
         const after = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "verification screenshot");
         await this.onEvent({ type: "screenshot", phase: "after", screenshot: after });
         const afterFingerprint = surfaceFingerprintFor(after);
-        if (afterFingerprint !== expectedFingerprint) throw new SurfaceChangedBlocker(expectedFingerprint, afterFingerprint);
+        if (afterFingerprint !== expectedFingerprint && !(before.surface && after.surface && sameNativeWindow(before.surface, after.surface))) {
+          throw new SurfaceChangedBlocker(expectedFingerprint, afterFingerprint);
+        }
         const verified = await withTimeout(this.verifier.verify(action.expected_result, before, after), this.stepTimeoutMs, "visual verification");
         await this.onEvent({ type: "verified", attempt, ...verified });
         if (verified.matched) return { status: "done", attempts: attempt, action, before, after };
@@ -314,6 +316,22 @@ function surfaceFingerprintFor(screenshot: Screenshot): string {
   if (screenshot.surfaceFingerprint) return screenshot.surfaceFingerprint;
   if (screenshot.surface) return fingerprintSurface(screenshot.surface);
   return createHash("sha256").update(`legacy-surface:${screenshot.width}:${screenshot.height}:${screenshot.scaleFactor}`).digest("hex");
+}
+
+function sameNativeWindow(left: NativeSurface, right: NativeSurface): boolean {
+  return left.platform === right.platform
+    && left.app === right.app
+    && left.bundleId === right.bundleId
+    && left.pid === right.pid
+    && left.windowId === right.windowId
+    && left.screenId === right.screenId
+    && left.scaleFactor === right.scaleFactor
+    && stableJsonValue(left.bounds) === stableJsonValue(right.bounds);
+}
+
+function stableJsonValue(value: unknown): string {
+  if (!value || typeof value !== "object") return JSON.stringify(value);
+  return JSON.stringify(Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))));
 }
 
 function bindActionContext(action: VisualAction, taskId: string, stepId: string, surfaceFingerprint: string): VisualAction {
@@ -603,14 +621,12 @@ export class PiVisionModel implements VisualGroundingProvider, VisualVerifier {
 
   async ground(task: VisualMicroTask, screenshot: Screenshot, tier: ModelTier): Promise<VisualAction> {
     const model = tier === "strong" ? this.strong : this.primary;
-    const response = await this.models.completeSimple(model, {
-      systemPrompt: [
+    return this.completeStructured(VisualAction, model, this.strong, [
         "You are the visual grounding layer inside AdPilot. Inspect the screenshot and return exactly one immediate GUI micro-action as JSON.",
         "Never plan the overall task. Coordinates must be absolute screenshot pixels. Never infer hidden elements or credentials.",
         "Allowed actions: click, double_click, right_click, move, drag, type, hotkey, scroll, wait, screenshot, done, fail.",
         "Return keys required by the action plus target, reason, confidence, expected_result, risk_level. Do not wrap JSON in markdown."
-      ].join("\n"),
-      messages: [{
+      ].join("\n"), [{
         role: "user",
         content: [
           { type: "text", text: JSON.stringify({
@@ -626,15 +642,15 @@ export class PiVisionModel implements VisualGroundingProvider, VisualVerifier {
           { type: "image", data: screenshot.base64, mimeType: "image/png" }
         ],
         timestamp: Date.now()
-      }]
-    }, { temperature: 0, maxTokens: 900, maxRetries: 1, timeoutMs: 20_000 });
-    return VisualAction.parse(parseModelJson(assistantText(response)));
+      }], "GROUNDING_FAILED", "GUI action");
   }
 
   async verify(expectedResult: string, before: Screenshot, after: Screenshot): Promise<{ matched: boolean; confidence: number; reason: string }> {
-    const response = await this.models.completeSimple(this.strong, {
-      systemPrompt: "Compare the before and after screenshots. Return JSON only with matched:boolean, confidence:number from 0 to 1, and reason:string. Judge only whether the stated expected result is visibly satisfied.",
-      messages: [{
+    return this.completeStructured(
+      z.object({ matched: z.boolean(), confidence: z.number().min(0).max(1), reason: z.string().min(1) }),
+      this.strong,
+      this.strong,
+      "Compare the before and after screenshots. Return JSON only with matched:boolean, confidence:number from 0 to 1, and reason:string. Judge only whether the stated expected result is visibly satisfied.", [{
         role: "user",
         content: [
           { type: "text", text: `Expected visible result: ${expectedResult}\nBEFORE:` },
@@ -643,9 +659,35 @@ export class PiVisionModel implements VisualGroundingProvider, VisualVerifier {
           { type: "image", data: after.base64, mimeType: "image/png" }
         ],
         timestamp: Date.now()
-      }]
-    }, { temperature: 0, maxTokens: 400, maxRetries: 1, timeoutMs: 20_000 });
-    return z.object({ matched: z.boolean(), confidence: z.number().min(0).max(1), reason: z.string().min(1) }).parse(parseModelJson(assistantText(response)));
+      }], "VERIFICATION_FAILED", "visual verification");
+  }
+
+  private async completeStructured<S extends z.ZodTypeAny>(
+    schema: S,
+    primary: Model<Api>,
+    strong: Model<Api>,
+    systemPrompt: string,
+    messages: Array<any>,
+    blockerCode: "GROUNDING_FAILED" | "VERIFICATION_FAILED",
+    label: string
+  ): Promise<z.output<S>> {
+    let response = await this.models.completeSimple(primary, { systemPrompt, messages }, { temperature: 0, maxTokens: 900, maxRetries: 1, timeoutMs: 20_000 });
+    let invalid = assistantText(response);
+    let issue = "invalid JSON";
+    for (let pass = 1; pass <= 3; pass += 1) {
+      try { return schema.parse(parseModelJson(invalid)); }
+      catch (error) {
+        issue = error instanceof Error ? error.message : String(error);
+        if (pass === 3) break;
+        const repairModel = pass === 1 ? primary : strong;
+        response = await this.models.completeSimple(repairModel, {
+          systemPrompt: `Repair one invalid ${label} JSON object. Return only a complete JSON object matching the requested schema; do not add markdown or commentary.`,
+          messages: [{ role: "user", content: [{ type: "text", text: `Validation error:\n${issue}\n\nInvalid output:\n${invalid}` }], timestamp: Date.now() }]
+        }, { temperature: 0, maxTokens: 900, maxRetries: 1, timeoutMs: 20_000 });
+        invalid = assistantText(response);
+      }
+    }
+    throw new VisualRuntimeBlocker(blockerCode, `${label} returned invalid structured output after three passes: ${issue}`);
   }
 }
 

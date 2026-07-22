@@ -116,6 +116,20 @@ describe("visual action protocol", () => {
     await expect(vision.verify(task.expectedResult, before, after)).resolves.toEqual({ matched: true, confidence: 0.91, reason: "menu is visibly open" });
   });
 
+  it("repairs malformed Pi visual actions before returning a typed blocker", async () => {
+    const faux = fauxProvider({ provider: "repair", models: [{ id: "fast", input: ["text", "image"] }, { id: "strong", input: ["text", "image"], reasoning: true }] });
+    const models = createModels(); models.setProvider(faux.provider);
+    faux.setResponses([
+      fauxAssistantMessage('{"action":"click"}'),
+      fauxAssistantMessage('{"action":"click","x":120,"y":80,"target":"date selector","reason":"visible","confidence":0.94,"expected_result":"date menu is open","risk_level":"interact"}')
+    ]);
+    const vision = new PiVisionModel(models, faux.getModel("fast")!, faux.getModel("strong")!);
+    await expect(vision.ground(task, before, "gui")).resolves.toMatchObject({ action: "click", x: 120, y: 80 });
+
+    faux.setResponses([fauxAssistantMessage("{}"), fauxAssistantMessage("{}"), fauxAssistantMessage("{}")]);
+    await expect(vision.verify(task.expectedResult, before, after)).rejects.toMatchObject({ code: "VERIFICATION_FAILED" });
+  });
+
   it("validates coordinates inside the captured active window", () => {
     const shot: Screenshot = { ...before, width: 1200, height: 800, surface: nativeSurface, surfaceFingerprint: fingerprintSurface(nativeSurface) };
     const action = VisualAction.parse({

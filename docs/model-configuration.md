@@ -1,6 +1,6 @@
 # Model configuration
 
-AdPilot uses Pi's provider registry and model objects. Open the gear menu in the web console or native app to configure language, appearance, model routing, provider credentials, and OAuth. Configuration selects two code-model roles; Computer Use derives its visual model automatically.
+AdPilot uses Pi's provider registry and model objects. Open the gear menu in the web console or native app to configure language, appearance, model routing, provider credentials, OAuth, dedicated GUI grounding, and visual verification.
 
 The catalog is generated from the installed Pi runtime, not maintained as a separate AdPilot allowlist. With Pi 0.80.10 it contains 36 providers and 1,072 static model entries: Amazon Bedrock, Ant Ling, Anthropic, Azure OpenAI, Cerebras, Cloudflare AI Gateway, Cloudflare Workers AI, DeepSeek, Fireworks, GitHub Copilot, Google, Google Vertex AI, Groq, Hugging Face, Kimi For Coding, MiniMax, MiniMax CN, Mistral, Moonshot AI, Moonshot AI CN, NVIDIA, OpenAI, OpenAI Codex, OpenCode Zen, OpenCode Zen Go, OpenRouter, Radius, Together, Vercel AI Gateway, xAI, Xiaomi and its three token-plan regions, Z.AI, and Z.AI Coding CN. Radius has a dynamic catalog that is fetched after authentication.
 
@@ -28,9 +28,24 @@ Settings are stored in `<workspace>/.adpilot/settings.json`; Pi OAuth credential
 
 ## Screenshot grounding and verification
 
-There is no separate VLM configuration. If the daily code model accepts image input, AdPilot uses it for the first two screenshot-grounding attempts. Otherwise it uses the deep model when that model accepts images. The third attempt and before/after verification use the image-capable deep model when available. If neither selected model accepts images, conversation and analysis remain enabled while Computer Use reports that visual capability is unavailable.
+The Computer Use settings page supports an OpenAI-compatible UI-TARS endpoint and a separate visual-verification endpoint:
 
-The code model returns AdPilot's provider-independent `VisualAction` JSON. UI-TARS remains the native screenshot, coordinate conversion, mouse, keyboard, scroll, and action-execution layer; it does not own a second planning loop.
+```dotenv
+ADPILOT_GUI_BASE_URL=http://127.0.0.1:8000/v1
+ADPILOT_GUI_API_KEY=...
+ADPILOT_GUI_MODEL=ui-tars-1.5
+ADPILOT_GUI_STRONG_MODEL=ui-tars-1.5
+ADPILOT_GUI_TIMEOUT_MS=20000
+
+ADPILOT_VERIFY_BASE_URL=http://127.0.0.1:8001/v1
+ADPILOT_VERIFY_API_KEY=...
+ADPILOT_VERIFY_MODEL=vision-verifier
+ADPILOT_VERIFY_TIMEOUT_MS=20000
+```
+
+The dedicated GUI provider is tried before PiVision. Strong GUI routing is used after repeated or low-confidence failures. When the dedicated endpoint is absent or fails, an authenticated image-capable Daily/Deep code model is the bounded fallback. Verification is configured independently and otherwise uses the image-capable Deep code model. If neither path is available, conversation and analysis remain enabled while Computer Use is disabled.
+
+Every provider returns one provider-independent `VisualAction`; UI-TARS never owns the task loop. Invalid action/verifier JSON gets exactly three structured-output passes: normal generation, same-model repair using validation issues, then strong-model repair. Exhaustion becomes a typed blocker rather than free-form text.
 
 ## Runtime controls
 

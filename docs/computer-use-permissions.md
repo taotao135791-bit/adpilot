@@ -23,6 +23,8 @@ The declared task risk, grounded action risk and caller permission must agree. U
 
 Each account entry in `accounts.yaml` names its browser Profile and allowed domains. Every visual microtask must name that exact Profile and may only narrow the stored domain allowlist. A subdomain is allowed only when its parent is explicitly listed; an unbound Profile, broader domain list, unrelated domain or application fails before execution.
 
+On macOS, AppKit/CoreGraphics identify the foreground application, bundle id, PID, window id/title/bounds, screen and scale factor. AppleScript is fallback-only. Screenshots are active-window captures, and model coordinates are validated in screenshot pixels before being translated to global logical coordinates for native execution.
+
 ## Failure behavior
 
-AdPilot captures again and re-grounds after a failed verification. The third attempt uses the Strong tier, after which the operation returns a structured blocker. A timeout stops immediately to avoid duplicating a native action that may finish late. Pause and takeover stop before the next screenshot; cancel is terminal for that runtime instance.
+AdPilot captures again and re-grounds only for non-mutating actions after failed verification. Mutations are never retried. The third attempt uses the Strong tier, after which the operation returns a structured blocker. A timeout stops immediately to avoid duplicating a native action that may finish late. Pause and takeover stop before the next screenshot; cancel is terminal for that runtime instance.

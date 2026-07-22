@@ -3,7 +3,7 @@
 ## Invariants
 
 1. Pi (`@earendil-works/pi-agent-core`) is the only agent loop and conversation runtime.
-2. UI-TARS is not an autonomous agent. AdPilot calls `UITarsModel.invoke()` once per screenshot and executes at most one parsed action.
+2. UI-TARS is not an autonomous agent. A grounding provider receives one screenshot and returns at most one parsed action.
 3. The user talks to one AdPilot Agent. Specialists have isolated prompts, tool scopes and sessions; they return structured results to the main agent.
 4. Knowledge is evidence, Skill is a typed workflow, Tool is an executable capability. Markdown cannot grant authority.
 5. No mutation is authorized by model output. Approval state is persisted and verified outside the model.
@@ -20,10 +20,10 @@ User goal
     -> deterministic change guardrail
     -> independent Risk Reviewer
     -> user approval
-    -> one-time bound token
+    -> one-attempt token bound to exact operation + live native surface
     -> Account Operator visual microtask
       -> screenshot
-      -> one UI-TARS grounding call
+      -> dedicated UI-TARS grounding (PiVision fallback)
       -> VisualPolicy
       -> native NutJS action
       -> screenshot
@@ -49,12 +49,13 @@ User goal
 
 ## Persistence
 
-Each client lives under `workspace/clients/<client-id>/`. Profile, KPI, accounts and constraints are YAML. Tasks, approvals and experiments are structured JSON; audit is JSONL with a SHA-256 chain. Screenshots, traces and memory stay inside that client boundary. Writes are atomic and private files are created with mode `0600` where the platform supports it.
+Each client lives under `workspace/clients/<client-id>/`. Profile, KPI, accounts and constraints are YAML. Tasks, approvals and experiments are structured JSON; audit is JSONL with a SHA-256 chain. Main and specialist Pi sessions are JSONL under `sessions/`, keyed by client plus conversation or task plus role. Runtime checkpoints and compaction summaries restore conversation context, unresolved task state and evidence references after restart. Writes are atomic or append-only and private files use mode `0600` where supported.
 
 ## Model routing
 
 - Daily: natural conversation, extraction and routine synthesis.
 - Deep: ambiguity, conflicts, failed visual retries and risk-sensitive reasoning.
-- Computer Use: automatically reuses the selected image-capable Daily model, escalating to Deep on the third attempt and for verification.
+- GUI grounding: dedicated provider first, optional dedicated Strong provider after failures, then an image-capable Pi model fallback.
+- Visual verification: independent endpoint when configured; otherwise the image-capable Deep model.
 
 Provider/model names come from the persisted native Settings store or environment configuration. The catalog is read directly from Pi, and routing never changes Tool permissions.
