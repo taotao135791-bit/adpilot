@@ -23,6 +23,7 @@
     "capture:ui": "node scripts/capture-ui.mjs",
     "fixtures:visual": "node scripts/generate-visual-fixtures.mjs",
     "eval:gui": "node scripts/evaluate-visual-replay.mjs",
+    "eval:computer-use:live": "tsx scripts/evaluate-computer-use-live.ts",
     "validate:google-ads:readonly": "tsx scripts/validate-google-ads.ts readonly",
     "validate:google-ads:prepare": "tsx scripts/validate-google-ads.ts prepare",
     "validate:visual:google-ads:observe": "tsx scripts/validate-google-ads.ts readonly",
