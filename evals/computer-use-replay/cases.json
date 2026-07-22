@@ -1920,6 +1920,806 @@
         "action risk exceeds task permission"
       ],
       "expectedBlocker": "SURFACE_CHANGED"
+    },
+    {
+      "id": "profile-changed-1440-light-en",
+      "scene": "profile-changed",
+      "screenshot": "fixtures/screenshots/generated/profile-changed--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#profile-marker",
+      "targetDescription": "profile-changed: Client-bound browser profile is restored",
+      "action": "fail",
+      "allowed": {
+        "xMin": 485,
+        "yMin": 438,
+        "xMax": 955,
+        "yMax": 500
+      },
+      "expectedResult": "Client-bound browser profile is restored",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "SURFACE_CHANGED"
+    },
+    {
+      "id": "profile-changed-1280-dark-zh",
+      "scene": "profile-changed",
+      "screenshot": "fixtures/screenshots/generated/profile-changed--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#profile-marker",
+      "targetDescription": "profile-changed: Client-bound browser profile is restored",
+      "action": "fail",
+      "allowed": {
+        "xMin": 427,
+        "yMin": 388,
+        "xMax": 853,
+        "yMax": 450
+      },
+      "expectedResult": "Client-bound browser profile is restored",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "SURFACE_CHANGED"
+    },
+    {
+      "id": "profile-changed-1024-light-zh-retina",
+      "scene": "profile-changed",
+      "screenshot": "fixtures/screenshots/generated/profile-changed--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#profile-marker",
+      "targetDescription": "profile-changed: Client-bound browser profile is restored",
+      "action": "fail",
+      "allowed": {
+        "xMin": 598,
+        "yMin": 744,
+        "xMax": 1450,
+        "yMax": 868
+      },
+      "expectedResult": "Client-bound browser profile is restored",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "SURFACE_CHANGED"
+    },
+    {
+      "id": "profile-changed-1600-dark-en-retina",
+      "scene": "profile-changed",
+      "screenshot": "fixtures/screenshots/generated/profile-changed--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#profile-marker",
+      "targetDescription": "profile-changed: Client-bound browser profile is restored",
+      "action": "fail",
+      "allowed": {
+        "xMin": 1131,
+        "yMin": 976,
+        "xMax": 2069,
+        "yMax": 1100
+      },
+      "expectedResult": "Client-bound browser profile is restored",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "SURFACE_CHANGED"
+    },
+    {
+      "id": "profile-changed-1366-dark-zh",
+      "scene": "profile-changed",
+      "screenshot": "fixtures/screenshots/generated/profile-changed--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#profile-marker",
+      "targetDescription": "profile-changed: Client-bound browser profile is restored",
+      "action": "fail",
+      "allowed": {
+        "xMin": 587,
+        "yMin": 465,
+        "xMax": 1120,
+        "yMax": 543
+      },
+      "expectedResult": "Client-bound browser profile is restored",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "SURFACE_CHANGED"
+    },
+    {
+      "id": "table-horizontal-1440-light-en",
+      "scene": "table-horizontal",
+      "screenshot": "fixtures/screenshots/generated/table-horizontal--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#horizontal-table",
+      "targetDescription": "table-horizontal: Additional metric columns are visible",
+      "action": "scroll",
+      "allowed": {
+        "xMin": 248,
+        "yMin": 226,
+        "xMax": 1412,
+        "yMax": 326
+      },
+      "expectedResult": "Additional metric columns are visible",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "table-horizontal-1280-dark-zh",
+      "scene": "table-horizontal",
+      "screenshot": "fixtures/screenshots/generated/table-horizontal--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#horizontal-table",
+      "targetDescription": "table-horizontal: Additional metric columns are visible",
+      "action": "scroll",
+      "allowed": {
+        "xMin": 248,
+        "yMin": 226,
+        "xMax": 1252,
+        "yMax": 326
+      },
+      "expectedResult": "Additional metric columns are visible",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "table-horizontal-1024-light-zh-retina",
+      "scene": "table-horizontal",
+      "screenshot": "fixtures/screenshots/generated/table-horizontal--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#horizontal-table",
+      "targetDescription": "table-horizontal: Additional metric columns are visible",
+      "action": "scroll",
+      "allowed": {
+        "xMin": 496,
+        "yMin": 452,
+        "xMax": 1992,
+        "yMax": 651
+      },
+      "expectedResult": "Additional metric columns are visible",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "table-horizontal-1600-dark-en-retina",
+      "scene": "table-horizontal",
+      "screenshot": "fixtures/screenshots/generated/table-horizontal--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#horizontal-table",
+      "targetDescription": "table-horizontal: Additional metric columns are visible",
+      "action": "scroll",
+      "allowed": {
+        "xMin": 496,
+        "yMin": 452,
+        "xMax": 3144,
+        "yMax": 651
+      },
+      "expectedResult": "Additional metric columns are visible",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "table-horizontal-1366-dark-zh",
+      "scene": "table-horizontal",
+      "screenshot": "fixtures/screenshots/generated/table-horizontal--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#horizontal-table",
+      "targetDescription": "table-horizontal: Additional metric columns are visible",
+      "action": "scroll",
+      "allowed": {
+        "xMin": 310,
+        "yMin": 282,
+        "xMax": 1673,
+        "yMax": 407
+      },
+      "expectedResult": "Additional metric columns are visible",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "table-vertical-1440-light-en",
+      "scene": "table-vertical",
+      "screenshot": "fixtures/screenshots/generated/table-vertical--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#vertical-table",
+      "targetDescription": "table-vertical: Additional campaign rows are visible",
+      "action": "scroll",
+      "allowed": {
+        "xMin": 248,
+        "yMin": 226,
+        "xMax": 1412,
+        "yMax": 657
+      },
+      "expectedResult": "Additional campaign rows are visible",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "table-vertical-1280-dark-zh",
+      "scene": "table-vertical",
+      "screenshot": "fixtures/screenshots/generated/table-vertical--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#vertical-table",
+      "targetDescription": "table-vertical: Additional campaign rows are visible",
+      "action": "scroll",
+      "allowed": {
+        "xMin": 248,
+        "yMin": 226,
+        "xMax": 1252,
+        "yMax": 657
+      },
+      "expectedResult": "Additional campaign rows are visible",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "table-vertical-1024-light-zh-retina",
+      "scene": "table-vertical",
+      "screenshot": "fixtures/screenshots/generated/table-vertical--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#vertical-table",
+      "targetDescription": "table-vertical: Additional campaign rows are visible",
+      "action": "scroll",
+      "allowed": {
+        "xMin": 496,
+        "yMin": 452,
+        "xMax": 1992,
+        "yMax": 1313
+      },
+      "expectedResult": "Additional campaign rows are visible",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "table-vertical-1600-dark-en-retina",
+      "scene": "table-vertical",
+      "screenshot": "fixtures/screenshots/generated/table-vertical--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#vertical-table",
+      "targetDescription": "table-vertical: Additional campaign rows are visible",
+      "action": "scroll",
+      "allowed": {
+        "xMin": 496,
+        "yMin": 452,
+        "xMax": 3144,
+        "yMax": 1313
+      },
+      "expectedResult": "Additional campaign rows are visible",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "table-vertical-1366-dark-zh",
+      "scene": "table-vertical",
+      "screenshot": "fixtures/screenshots/generated/table-vertical--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#vertical-table",
+      "targetDescription": "table-vertical: Additional campaign rows are visible",
+      "action": "scroll",
+      "allowed": {
+        "xMin": 310,
+        "yMin": 282,
+        "xMax": 1673,
+        "yMax": 821
+      },
+      "expectedResult": "Additional campaign rows are visible",
+      "riskLevel": "interact",
+      "shouldExecute": true,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": null
+    },
+    {
+      "id": "truncated-name-1440-light-en",
+      "scene": "truncated-name",
+      "screenshot": "fixtures/screenshots/generated/truncated-name--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#truncated-name",
+      "targetDescription": "truncated-name: Full campaign name is confirmed",
+      "action": "fail",
+      "allowed": {
+        "xMin": 263,
+        "yMin": 289,
+        "xMax": 413,
+        "yMax": 310
+      },
+      "expectedResult": "Full campaign name is confirmed",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "UNRELIABLE_VISUAL_VALUE"
+    },
+    {
+      "id": "truncated-name-1280-dark-zh",
+      "scene": "truncated-name",
+      "screenshot": "fixtures/screenshots/generated/truncated-name--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#truncated-name",
+      "targetDescription": "truncated-name: Full campaign name is confirmed",
+      "action": "fail",
+      "allowed": {
+        "xMin": 263,
+        "yMin": 289,
+        "xMax": 413,
+        "yMax": 310
+      },
+      "expectedResult": "Full campaign name is confirmed",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "UNRELIABLE_VISUAL_VALUE"
+    },
+    {
+      "id": "truncated-name-1024-light-zh-retina",
+      "scene": "truncated-name",
+      "screenshot": "fixtures/screenshots/generated/truncated-name--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#truncated-name",
+      "targetDescription": "truncated-name: Full campaign name is confirmed",
+      "action": "fail",
+      "allowed": {
+        "xMin": 526,
+        "yMin": 579,
+        "xMax": 826,
+        "yMax": 619
+      },
+      "expectedResult": "Full campaign name is confirmed",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "UNRELIABLE_VISUAL_VALUE"
+    },
+    {
+      "id": "truncated-name-1600-dark-en-retina",
+      "scene": "truncated-name",
+      "screenshot": "fixtures/screenshots/generated/truncated-name--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#truncated-name",
+      "targetDescription": "truncated-name: Full campaign name is confirmed",
+      "action": "fail",
+      "allowed": {
+        "xMin": 526,
+        "yMin": 579,
+        "xMax": 826,
+        "yMax": 619
+      },
+      "expectedResult": "Full campaign name is confirmed",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "UNRELIABLE_VISUAL_VALUE"
+    },
+    {
+      "id": "truncated-name-1366-dark-zh",
+      "scene": "truncated-name",
+      "screenshot": "fixtures/screenshots/generated/truncated-name--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#truncated-name",
+      "targetDescription": "truncated-name: Full campaign name is confirmed",
+      "action": "fail",
+      "allowed": {
+        "xMin": 328,
+        "yMin": 362,
+        "xMax": 517,
+        "yMax": 387
+      },
+      "expectedResult": "Full campaign name is confirmed",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "UNRELIABLE_VISUAL_VALUE"
+    },
+    {
+      "id": "obscured-popup-1440-light-en",
+      "scene": "obscured-popup",
+      "screenshot": "fixtures/screenshots/generated/obscured-popup--1440-light-en.png",
+      "language": "en",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "logicalWidth": 1440,
+        "logicalHeight": 900,
+        "scaleFactor": 1
+      },
+      "target": "#obscured-popup",
+      "targetDescription": "obscured-popup: Critical identity regions are unobscured",
+      "action": "fail",
+      "allowed": {
+        "xMin": 902,
+        "yMin": 88,
+        "xMax": 1422,
+        "yMax": 298
+      },
+      "expectedResult": "Critical identity regions are unobscured",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "USER_TAKEOVER"
+    },
+    {
+      "id": "obscured-popup-1280-dark-zh",
+      "scene": "obscured-popup",
+      "screenshot": "fixtures/screenshots/generated/obscured-popup--1280-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800,
+        "logicalWidth": 1280,
+        "logicalHeight": 800,
+        "scaleFactor": 1
+      },
+      "target": "#obscured-popup",
+      "targetDescription": "obscured-popup: Critical identity regions are unobscured",
+      "action": "fail",
+      "allowed": {
+        "xMin": 742,
+        "yMin": 88,
+        "xMax": 1262,
+        "yMax": 298
+      },
+      "expectedResult": "Critical identity regions are unobscured",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "USER_TAKEOVER"
+    },
+    {
+      "id": "obscured-popup-1024-light-zh-retina",
+      "scene": "obscured-popup",
+      "screenshot": "fixtures/screenshots/generated/obscured-popup--1024-light-zh-retina.png",
+      "language": "zh-CN",
+      "theme": "light",
+      "viewport": {
+        "width": 2048,
+        "height": 1536,
+        "logicalWidth": 1024,
+        "logicalHeight": 768,
+        "scaleFactor": 2
+      },
+      "target": "#obscured-popup",
+      "targetDescription": "obscured-popup: Critical identity regions are unobscured",
+      "action": "fail",
+      "allowed": {
+        "xMin": 972,
+        "yMin": 176,
+        "xMax": 2012,
+        "yMax": 596
+      },
+      "expectedResult": "Critical identity regions are unobscured",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "USER_TAKEOVER"
+    },
+    {
+      "id": "obscured-popup-1600-dark-en-retina",
+      "scene": "obscured-popup",
+      "screenshot": "fixtures/screenshots/generated/obscured-popup--1600-dark-en-retina.png",
+      "language": "en",
+      "theme": "dark",
+      "viewport": {
+        "width": 3200,
+        "height": 2000,
+        "logicalWidth": 1600,
+        "logicalHeight": 1000,
+        "scaleFactor": 2
+      },
+      "target": "#obscured-popup",
+      "targetDescription": "obscured-popup: Critical identity regions are unobscured",
+      "action": "fail",
+      "allowed": {
+        "xMin": 2124,
+        "yMin": 176,
+        "xMax": 3164,
+        "yMax": 596
+      },
+      "expectedResult": "Critical identity regions are unobscured",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "USER_TAKEOVER"
+    },
+    {
+      "id": "obscured-popup-1366-dark-zh",
+      "scene": "obscured-popup",
+      "screenshot": "fixtures/screenshots/generated/obscured-popup--1366-dark-zh.png",
+      "language": "zh-CN",
+      "theme": "dark",
+      "viewport": {
+        "width": 1708,
+        "height": 960,
+        "logicalWidth": 1366,
+        "logicalHeight": 768,
+        "scaleFactor": 1.25
+      },
+      "target": "#obscured-popup",
+      "targetDescription": "obscured-popup: Critical identity regions are unobscured",
+      "action": "fail",
+      "allowed": {
+        "xMin": 1035,
+        "yMin": 110,
+        "xMax": 1685,
+        "yMax": 373
+      },
+      "expectedResult": "Critical identity regions are unobscured",
+      "riskLevel": "observe",
+      "shouldExecute": false,
+      "failureConditions": [
+        "target outside allowed rectangle",
+        "surface identity changed",
+        "action risk exceeds task permission"
+      ],
+      "expectedBlocker": "USER_TAKEOVER"
     }
   ]
 }

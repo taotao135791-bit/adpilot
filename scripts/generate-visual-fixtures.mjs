@@ -18,7 +18,12 @@ const scenes = [
   ["loading", "#loading-state", "wait", "observe", "Campaign data finishes loading"],
   ["error-dialog", "#error-dialog", "fail", "observe", "User handles the expired session"],
   ["browser-switched", "#switched-marker", "fail", "observe", "Authorized advertising window is restored"],
-  ["unauthorized-app", "#unauthorized-marker", "fail", "observe", "Authorized application is restored"]
+  ["unauthorized-app", "#unauthorized-marker", "fail", "observe", "Authorized application is restored"],
+  ["profile-changed", "#profile-marker", "fail", "observe", "Client-bound browser profile is restored"],
+  ["table-horizontal", "#horizontal-table", "scroll", "interact", "Additional metric columns are visible"],
+  ["table-vertical", "#vertical-table", "scroll", "interact", "Additional campaign rows are visible"],
+  ["truncated-name", "#truncated-name", "fail", "observe", "Full campaign name is confirmed"],
+  ["obscured-popup", "#obscured-popup", "fail", "observe", "Critical identity regions are unobscured"]
 ];
 const variants = [
   { name: "1440-light-en", width: 1440, height: 900, scale: 1, theme: "light", lang: "en" },
@@ -60,9 +65,9 @@ try {
 } finally { await browser.close(); }
 
 const grounding = { version: 1, generatedAt: new Date().toISOString(), source: "synthetic sanitized Google Ads-style console", cases };
-const visiblySatisfied = new Set(["campaign-list", "date-picker", "budget-edit", "bid-edit", "conversion-goals", "asset-list", "account-switch"]);
+const visiblySatisfied = new Set(["campaign-list", "date-picker", "budget-edit", "bid-edit", "conversion-goals", "asset-list", "account-switch", "table-horizontal", "table-vertical"]);
 const verification = { version: 1, cases: cases.map((item) => ({ id: item.id, before: item.screenshot, after: item.screenshot, expectedResult: item.expectedResult, expectedMatched: visiblySatisfied.has(item.scene), scene: item.scene })) };
-const replay = { version: 1, cases: cases.map((item) => ({ ...item, expectedBlocker: item.action === "fail" ? (item.scene === "browser-switched" || item.scene === "unauthorized-app" ? "SURFACE_CHANGED" : "USER_TAKEOVER") : null })) };
+const replay = { version: 1, cases: cases.map((item) => ({ ...item, expectedBlocker: item.action === "fail" ? (["browser-switched", "unauthorized-app", "profile-changed"].includes(item.scene) ? "SURFACE_CHANGED" : item.scene === "truncated-name" ? "UNRELIABLE_VISUAL_VALUE" : "USER_TAKEOVER") : null })) };
 for (const [path, value] of [["evals/gui-grounding/cases.json", grounding], ["evals/gui-verification/cases.json", verification], ["evals/computer-use-replay/cases.json", replay]]) {
   await mkdir(dirname(resolve(path)), { recursive: true });
   await writeFile(resolve(path), `${JSON.stringify(value, null, 2)}\n`);

@@ -7,7 +7,7 @@ const ReplayCase = z.object({
   id: z.string().min(1), scene: z.string().min(1), screenshot: z.string().min(1),
   language: z.enum(["zh-CN", "en"]), theme: z.enum(["light", "dark"]),
   viewport: z.object({ width: z.number().int().positive(), height: z.number().int().positive(), logicalWidth: z.number().int().positive(), logicalHeight: z.number().int().positive(), scaleFactor: z.number().positive() }),
-  action: z.enum(["click", "type", "wait", "fail"]),
+  action: z.enum(["click", "type", "scroll", "wait", "fail"]),
   allowed: z.object({ xMin: z.number().nonnegative(), yMin: z.number().nonnegative(), xMax: z.number().positive(), yMax: z.number().positive() }),
   riskLevel: z.enum(["observe", "interact", "mutate", "destructive"]),
   shouldExecute: z.boolean(), failureConditions: z.array(z.string().min(1)).min(3), expectedBlocker: z.string().nullable()
@@ -15,10 +15,10 @@ const ReplayCase = z.object({
 
 const manifest = z.object({ version: z.literal(1), cases: z.array(ReplayCase).min(50) }).parse(JSON.parse(await readFile(resolve("evals/computer-use-replay/cases.json"), "utf8")));
 
-describe("60-case sanitized visual replay corpus", () => {
+describe("85-case sanitized visual replay corpus", () => {
   it("covers required scenes, languages, themes, resolutions, and scaling", () => {
     const scenes = new Set(manifest.cases.map((item) => item.scene));
-    for (const scene of ["campaign-list", "date-picker", "budget-edit", "bid-edit", "conversion-goals", "asset-list", "account-switch", "confirm-dialog", "loading", "error-dialog", "browser-switched", "unauthorized-app"]) expect(scenes.has(scene)).toBe(true);
+    for (const scene of ["campaign-list", "date-picker", "budget-edit", "bid-edit", "conversion-goals", "asset-list", "account-switch", "confirm-dialog", "loading", "error-dialog", "browser-switched", "unauthorized-app", "profile-changed", "table-horizontal", "table-vertical", "truncated-name", "obscured-popup"]) expect(scenes.has(scene)).toBe(true);
     expect(new Set(manifest.cases.map((item) => item.language))).toEqual(new Set(["zh-CN", "en"]));
     expect(new Set(manifest.cases.map((item) => item.theme))).toEqual(new Set(["light", "dark"]));
     expect(new Set(manifest.cases.map((item) => item.viewport.scaleFactor)).size).toBeGreaterThanOrEqual(3);

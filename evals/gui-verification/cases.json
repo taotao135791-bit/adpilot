@@ -480,6 +480,206 @@
       "expectedResult": "Authorized application is restored",
       "expectedMatched": false,
       "scene": "unauthorized-app"
+    },
+    {
+      "id": "profile-changed-1440-light-en",
+      "before": "fixtures/screenshots/generated/profile-changed--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/profile-changed--1440-light-en.png",
+      "expectedResult": "Client-bound browser profile is restored",
+      "expectedMatched": false,
+      "scene": "profile-changed"
+    },
+    {
+      "id": "profile-changed-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/profile-changed--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/profile-changed--1280-dark-zh.png",
+      "expectedResult": "Client-bound browser profile is restored",
+      "expectedMatched": false,
+      "scene": "profile-changed"
+    },
+    {
+      "id": "profile-changed-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/profile-changed--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/profile-changed--1024-light-zh-retina.png",
+      "expectedResult": "Client-bound browser profile is restored",
+      "expectedMatched": false,
+      "scene": "profile-changed"
+    },
+    {
+      "id": "profile-changed-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/profile-changed--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/profile-changed--1600-dark-en-retina.png",
+      "expectedResult": "Client-bound browser profile is restored",
+      "expectedMatched": false,
+      "scene": "profile-changed"
+    },
+    {
+      "id": "profile-changed-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/profile-changed--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/profile-changed--1366-dark-zh.png",
+      "expectedResult": "Client-bound browser profile is restored",
+      "expectedMatched": false,
+      "scene": "profile-changed"
+    },
+    {
+      "id": "table-horizontal-1440-light-en",
+      "before": "fixtures/screenshots/generated/table-horizontal--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/table-horizontal--1440-light-en.png",
+      "expectedResult": "Additional metric columns are visible",
+      "expectedMatched": true,
+      "scene": "table-horizontal"
+    },
+    {
+      "id": "table-horizontal-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/table-horizontal--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/table-horizontal--1280-dark-zh.png",
+      "expectedResult": "Additional metric columns are visible",
+      "expectedMatched": true,
+      "scene": "table-horizontal"
+    },
+    {
+      "id": "table-horizontal-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/table-horizontal--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/table-horizontal--1024-light-zh-retina.png",
+      "expectedResult": "Additional metric columns are visible",
+      "expectedMatched": true,
+      "scene": "table-horizontal"
+    },
+    {
+      "id": "table-horizontal-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/table-horizontal--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/table-horizontal--1600-dark-en-retina.png",
+      "expectedResult": "Additional metric columns are visible",
+      "expectedMatched": true,
+      "scene": "table-horizontal"
+    },
+    {
+      "id": "table-horizontal-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/table-horizontal--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/table-horizontal--1366-dark-zh.png",
+      "expectedResult": "Additional metric columns are visible",
+      "expectedMatched": true,
+      "scene": "table-horizontal"
+    },
+    {
+      "id": "table-vertical-1440-light-en",
+      "before": "fixtures/screenshots/generated/table-vertical--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/table-vertical--1440-light-en.png",
+      "expectedResult": "Additional campaign rows are visible",
+      "expectedMatched": true,
+      "scene": "table-vertical"
+    },
+    {
+      "id": "table-vertical-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/table-vertical--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/table-vertical--1280-dark-zh.png",
+      "expectedResult": "Additional campaign rows are visible",
+      "expectedMatched": true,
+      "scene": "table-vertical"
+    },
+    {
+      "id": "table-vertical-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/table-vertical--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/table-vertical--1024-light-zh-retina.png",
+      "expectedResult": "Additional campaign rows are visible",
+      "expectedMatched": true,
+      "scene": "table-vertical"
+    },
+    {
+      "id": "table-vertical-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/table-vertical--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/table-vertical--1600-dark-en-retina.png",
+      "expectedResult": "Additional campaign rows are visible",
+      "expectedMatched": true,
+      "scene": "table-vertical"
+    },
+    {
+      "id": "table-vertical-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/table-vertical--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/table-vertical--1366-dark-zh.png",
+      "expectedResult": "Additional campaign rows are visible",
+      "expectedMatched": true,
+      "scene": "table-vertical"
+    },
+    {
+      "id": "truncated-name-1440-light-en",
+      "before": "fixtures/screenshots/generated/truncated-name--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/truncated-name--1440-light-en.png",
+      "expectedResult": "Full campaign name is confirmed",
+      "expectedMatched": false,
+      "scene": "truncated-name"
+    },
+    {
+      "id": "truncated-name-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/truncated-name--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/truncated-name--1280-dark-zh.png",
+      "expectedResult": "Full campaign name is confirmed",
+      "expectedMatched": false,
+      "scene": "truncated-name"
+    },
+    {
+      "id": "truncated-name-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/truncated-name--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/truncated-name--1024-light-zh-retina.png",
+      "expectedResult": "Full campaign name is confirmed",
+      "expectedMatched": false,
+      "scene": "truncated-name"
+    },
+    {
+      "id": "truncated-name-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/truncated-name--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/truncated-name--1600-dark-en-retina.png",
+      "expectedResult": "Full campaign name is confirmed",
+      "expectedMatched": false,
+      "scene": "truncated-name"
+    },
+    {
+      "id": "truncated-name-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/truncated-name--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/truncated-name--1366-dark-zh.png",
+      "expectedResult": "Full campaign name is confirmed",
+      "expectedMatched": false,
+      "scene": "truncated-name"
+    },
+    {
+      "id": "obscured-popup-1440-light-en",
+      "before": "fixtures/screenshots/generated/obscured-popup--1440-light-en.png",
+      "after": "fixtures/screenshots/generated/obscured-popup--1440-light-en.png",
+      "expectedResult": "Critical identity regions are unobscured",
+      "expectedMatched": false,
+      "scene": "obscured-popup"
+    },
+    {
+      "id": "obscured-popup-1280-dark-zh",
+      "before": "fixtures/screenshots/generated/obscured-popup--1280-dark-zh.png",
+      "after": "fixtures/screenshots/generated/obscured-popup--1280-dark-zh.png",
+      "expectedResult": "Critical identity regions are unobscured",
+      "expectedMatched": false,
+      "scene": "obscured-popup"
+    },
+    {
+      "id": "obscured-popup-1024-light-zh-retina",
+      "before": "fixtures/screenshots/generated/obscured-popup--1024-light-zh-retina.png",
+      "after": "fixtures/screenshots/generated/obscured-popup--1024-light-zh-retina.png",
+      "expectedResult": "Critical identity regions are unobscured",
+      "expectedMatched": false,
+      "scene": "obscured-popup"
+    },
+    {
+      "id": "obscured-popup-1600-dark-en-retina",
+      "before": "fixtures/screenshots/generated/obscured-popup--1600-dark-en-retina.png",
+      "after": "fixtures/screenshots/generated/obscured-popup--1600-dark-en-retina.png",
+      "expectedResult": "Critical identity regions are unobscured",
+      "expectedMatched": false,
+      "scene": "obscured-popup"
+    },
+    {
+      "id": "obscured-popup-1366-dark-zh",
+      "before": "fixtures/screenshots/generated/obscured-popup--1366-dark-zh.png",
+      "after": "fixtures/screenshots/generated/obscured-popup--1366-dark-zh.png",
+      "expectedResult": "Critical identity regions are unobscured",
+      "expectedMatched": false,
+      "scene": "obscured-popup"
     }
   ]
 }
