@@ -1,10 +1,32 @@
-import { describe, expect, it } from "vitest";
+import { Jimp } from "jimp";
+import { describe, expect, it, vi } from "vitest";
 import { createModels } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { PiVisionModel, VisualAction, VisualComputerRuntime, VisualPolicy, type NativeOperator, type Screenshot } from "./index.js";
+import {
+  GuiGroundingProviderRouter,
+  ExecutableVisualAction,
+  MacOSNativeSurfaceIdentity,
+  OpenAICompatibleUiTarsProvider,
+  PiVisionModel,
+  UiTarsNativeOperator,
+  VisualAction,
+  VisualComputerRuntime,
+  VisualPolicy,
+  fingerprintSurface,
+  type NativeOperator,
+  type NativeSurface,
+  type NativeSurfaceIdentity,
+  type Screenshot,
+  type VisualGroundingProvider
+} from "./index.js";
 
 const before: Screenshot = { base64: "before", width: 1000, height: 800, scaleFactor: 2, capturedAt: "2026-01-01T00:00:00.000Z", sha256: "a".repeat(64) };
 const after: Screenshot = { ...before, base64: "after", capturedAt: "2026-01-01T00:00:01.000Z", sha256: "b".repeat(64) };
+const nativeSurface: NativeSurface = {
+  platform: "darwin", app: "Browser", bundleId: "com.example.browser", pid: 42, title: "Ads",
+  windowId: "7", bounds: { x: 100, y: 50, width: 500, height: 400 },
+  screenId: "1", screenBounds: { x: 0, y: 0, width: 1440, height: 900 }, scaleFactor: 2
+};
 const task = {
   instruction: "Open date selector", target: "date selector", expectedResult: "date menu is open",
   riskLevel: "interact" as const, permission: "INTERACT" as const,
@@ -14,6 +36,7 @@ const task = {
 describe("visual action protocol", () => {
   it("rejects invalid actions and coordinates", () => {
     expect(() => VisualAction.parse({ action: "click", x: -1 })).toThrow();
+    expect(() => ExecutableVisualAction.parse({ action: "done", target: "x", reason: "x", confidence: 1, expected_result: "x", risk_level: "observe" })).toThrow();
     const action = VisualAction.parse({ action: "click", x: 1200, y: 20, target: "x", reason: "x", confidence: 1, expected_result: "x", risk_level: "interact" });
     expect(() => new VisualPolicy().check(action, before, task)).toThrow("outside");
   });
@@ -27,6 +50,9 @@ describe("visual action protocol", () => {
     const result = await runtime.runMicroTask(task);
     expect(result.status).toBe("done");
     expect(executed).toEqual(["click"]);
+    expect(result.status === "done" && result.action).toMatchObject({
+      task_id: expect.stringMatching(/^task_/), step_id: expect.stringMatching(/^step_/), surface_fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/)
+    });
   });
 
   it("re-screenshots, escalates, and stops after the third failure", async () => {
@@ -34,7 +60,7 @@ describe("visual action protocol", () => {
     let captures = 0;
     const runtime = new VisualComputerRuntime(
       { capture: async () => ({ ...before, capturedAt: new Date(1_700_000_000_000 + captures++).toISOString() }), execute: async () => undefined },
-      { ground: async (_task, _shot, tier) => { tiers.push(tier); return { action: "click", x: 10, y: 10, target: "date selector", reason: "try", confidence: 0.5, expected_result: "date menu is open", risk_level: "interact" }; } },
+      { ground: async (_task, _shot, tier) => { tiers.push(tier); return { action: "click", x: 10 + tiers.length, y: 10, target: "date selector", reason: "try", confidence: 0.5, expected_result: "date menu is open", risk_level: "interact" }; } },
       { verify: async () => ({ matched: false, confidence: 1, reason: "unchanged" }) }
     );
     const result = await runtime.runMicroTask(task);
@@ -88,5 +114,142 @@ describe("visual action protocol", () => {
     const vision = new PiVisionModel(models, faux.getModel("code-fast")!, faux.getModel("code-strong")!);
     await expect(vision.ground(task, before, "gui")).resolves.toMatchObject({ action: "click", x: 120, y: 80 });
     await expect(vision.verify(task.expectedResult, before, after)).resolves.toEqual({ matched: true, confidence: 0.91, reason: "menu is visibly open" });
+  });
+
+  it("validates coordinates inside the captured active window", () => {
+    const shot: Screenshot = { ...before, width: 1200, height: 800, surface: nativeSurface, surfaceFingerprint: fingerprintSurface(nativeSurface) };
+    const action = VisualAction.parse({
+      action: "click", x: 1100, y: 10, target: "x", reason: "x", confidence: 1,
+      expected_result: "x", risk_level: "interact", surface_fingerprint: shot.surfaceFingerprint
+    });
+    expect(() => new VisualPolicy().check(action, shot, task)).toThrow("outside the active window");
+  });
+
+  it("blocks a surface switch before execution with a typed blocker", async () => {
+    let executions = 0;
+    const expected = fingerprintSurface(nativeSurface);
+    const changed = fingerprintSurface({ ...nativeSurface, windowId: "8", title: "Unexpected dialog" });
+    const shot: Screenshot = { ...before, surface: nativeSurface, surfaceFingerprint: expected };
+    const operator: NativeOperator = {
+      capture: async () => shot,
+      identifySurface: async () => ({ surface: { ...nativeSurface, windowId: "8", title: "Unexpected dialog" }, fingerprint: changed }),
+      execute: async () => { executions += 1; }
+    };
+    const runtime = new VisualComputerRuntime(operator, {
+      ground: async () => ({ action: "click", x: 20, y: 20, target: "date selector", reason: "visible", confidence: 1, expected_result: "open", risk_level: "interact" })
+    }, { verify: async () => ({ matched: true, confidence: 1, reason: "open" }) });
+    await expect(runtime.runMicroTask(task)).resolves.toMatchObject({ status: "failed", attempts: 1, blockerCode: "SURFACE_CHANGED" });
+    expect(executions).toBe(0);
+  });
+
+  it("blocks a surface switch after execution without retrying the action", async () => {
+    let captures = 0;
+    let executions = 0;
+    const firstFingerprint = fingerprintSurface(nativeSurface);
+    const popup = { ...nativeSurface, windowId: "9", title: "Confirmation" };
+    const popupFingerprint = fingerprintSurface(popup);
+    const operator: NativeOperator = {
+      capture: async () => {
+        captures += 1;
+        return captures === 1
+          ? { ...before, surface: nativeSurface, surfaceFingerprint: firstFingerprint }
+          : { ...after, surface: popup, surfaceFingerprint: popupFingerprint };
+      },
+      identifySurface: async () => ({ surface: nativeSurface, fingerprint: firstFingerprint }),
+      execute: async () => { executions += 1; }
+    };
+    const runtime = new VisualComputerRuntime(operator, {
+      ground: async () => ({ action: "click", x: 20, y: 20, target: "date selector", reason: "visible", confidence: 1, expected_result: "open", risk_level: "interact" })
+    }, { verify: async () => ({ matched: true, confidence: 1, reason: "open" }) });
+    await expect(runtime.runMicroTask(task)).resolves.toMatchObject({ status: "failed", attempts: 1, blockerCode: "SURFACE_CHANGED" });
+    expect(executions).toBe(1);
+    expect(captures).toBe(2);
+  });
+
+  it("never retries a mutation or repeats the same coordinates", async () => {
+    let mutationExecutions = 0;
+    const mutationRuntime = new VisualComputerRuntime(
+      { capture: async () => before, execute: async () => { mutationExecutions += 1; } },
+      { ground: async () => ({ action: "type", text: "120", target: "budget", reason: "draft", confidence: 1, expected_result: "draft is 120", risk_level: "mutate" }) },
+      { verify: async () => ({ matched: false, confidence: 1, reason: "not visible" }) }
+    );
+    await expect(mutationRuntime.runMicroTask({ ...task, riskLevel: "mutate", permission: "MUTATE" })).resolves.toMatchObject({
+      status: "failed", attempts: 1, blockerCode: "MUTATION_RETRY_FORBIDDEN"
+    });
+    expect(mutationExecutions).toBe(1);
+
+    let clickExecutions = 0;
+    const duplicateRuntime = new VisualComputerRuntime(
+      { capture: async () => before, execute: async () => { clickExecutions += 1; } },
+      { ground: async () => ({ action: "click", x: 10, y: 10, target: "date selector", reason: "same", confidence: 1, expected_result: "open", risk_level: "interact" }) },
+      { verify: async () => ({ matched: false, confidence: 1, reason: "unchanged" }) }
+    );
+    await expect(duplicateRuntime.runMicroTask(task)).resolves.toMatchObject({ status: "failed", attempts: 2, blockerCode: "DUPLICATE_COORDINATE" });
+    expect(clickExecutions).toBe(1);
+  });
+
+  it("routes dedicated UI-TARS first and PiVision only as fallback", async () => {
+    const events: string[] = [];
+    const dedicated: VisualGroundingProvider = {
+      id: "dedicated", kind: "dedicated", ground: async () => { throw new Error("offline"); }
+    };
+    const fallback: VisualGroundingProvider = {
+      id: "pi", kind: "pi-vision",
+      ground: async () => ({ action: "done", target: "task", reason: "visible", confidence: 1, expected_result: "done", risk_level: "observe" })
+    };
+    const router = new GuiGroundingProviderRouter(dedicated, fallback, (event) => { events.push(`${event.provider}:${event.outcome}`); });
+    await expect(router.ground(task, before, "gui")).resolves.toMatchObject({ action: "done" });
+    expect(events).toEqual(["dedicated:failed", "pi:selected"]);
+  });
+
+  it("calls a dedicated OpenAI-compatible UI-TARS endpoint and parses one action", async () => {
+    const image = await new Jimp({ width: 20, height: 10, color: 0xffffffff }).getBuffer("image/png");
+    const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ role: string }> };
+      expect(payload.model).toBe("ui-tars-strong");
+      expect(payload.messages.map((message) => message.role)).toEqual(["system", "user"]);
+      return new Response(JSON.stringify({ choices: [{ message: { content: "Thought: visible target\nAction: click(start_box='[100,200,100,200]')" } }] }), {
+        status: 200, headers: { "content-type": "application/json" }
+      });
+    });
+    const provider = new OpenAICompatibleUiTarsProvider({
+      baseURL: "https://grounding.example/v1", apiKey: "secret", model: "ui-tars", strongModel: "ui-tars-strong", fetch: request as typeof fetch
+    });
+    const shot: Screenshot = { ...before, base64: image.toString("base64") };
+    await expect(provider.ground({ ...task, taskId: "task-1", stepId: "step-1" }, shot, "strong")).resolves.toMatchObject({ action: "click", target: "date selector" });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses native macOS surface probing before AppleScript fallback", async () => {
+    const fallback = vi.fn(async () => ({ ...nativeSurface, title: "fallback" }));
+    const native = vi.fn(async () => nativeSurface);
+    const identity = new MacOSNativeSurfaceIdentity(native, fallback);
+    await expect(identity.identifyActiveSurface()).resolves.toEqual(nativeSurface);
+    expect(fallback).not.toHaveBeenCalled();
+
+    const fallbackIdentity = new MacOSNativeSurfaceIdentity(async () => { throw new Error("native unavailable"); }, fallback);
+    await expect(fallbackIdentity.identifyActiveSurface()).resolves.toMatchObject({ title: "fallback" });
+    expect(fallback).toHaveBeenCalledTimes(1);
+  });
+
+  it("captures an active window and translates window pixels to global native coordinates", async () => {
+    const image = await new Jimp({ width: 40, height: 20, color: 0xffffffff }).getBuffer("image/png");
+    const identity: NativeSurfaceIdentity = {
+      identifyActiveSurface: async () => nativeSurface,
+      captureActiveWindow: async () => ({
+        base64: image.toString("base64"), width: 40, height: 20, scaleFactor: 2,
+        surface: nativeSurface, surfaceFingerprint: fingerprintSurface(nativeSurface)
+      })
+    };
+    const execute = vi.fn(async (_params: unknown) => undefined);
+    const native = new UiTarsNativeOperator({ execute, screenshot: vi.fn() } as never, identity);
+    const shot = await native.capture();
+    await native.execute(VisualAction.parse({
+      action: "click", x: 20, y: 10, target: "x", reason: "visible", confidence: 1,
+      expected_result: "clicked", risk_level: "interact"
+    }), shot);
+    const params = execute.mock.calls[0]?.[0] as { parsedPrediction: { action_inputs: { start_box: string } }; screenWidth: number };
+    expect(params.screenWidth).toBe(40);
+    expect(params.parsedPrediction.action_inputs.start_box).toBe("[2.75,2.75,2.75,2.75]");
   });
 });

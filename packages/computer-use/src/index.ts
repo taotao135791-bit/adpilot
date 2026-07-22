@@ -1,13 +1,26 @@
 import { createHash } from "node:crypto";
 import { Jimp } from "jimp";
 import { NutJSOperator } from "@ui-tars/operator-nut-js";
-import { UITarsModel, parseBoxToScreenCoords, type ScreenshotOutput } from "@ui-tars/sdk/core";
+import { actionParser } from "@ui-tars/action-parser";
+import { parseBoxToScreenCoords, preprocessResizeImage, type ScreenshotOutput } from "@ui-tars/sdk/core";
 import { UITarsModelVersion } from "@ui-tars/sdk";
 import type { Api, AssistantMessage, Model, Models } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import { PermissionLevel, RiskLevel, type ModelTier, type PermissionLevel as Permission } from "@adpilot/shared";
+import {
+  MacOSNativeSurfaceIdentity,
+  NativeSurface,
+  SurfaceCaptureChangedError,
+  fingerprintSurface,
+  type NativeSurfaceIdentity
+} from "./surface.js";
+
+export * from "./surface.js";
 
 const common = {
+  task_id: z.string().min(1).optional(),
+  step_id: z.string().min(1).optional(),
+  surface_fingerprint: z.string().length(64).optional(),
   target: z.string().min(1),
   reason: z.string().min(1),
   confidence: z.number().min(0).max(1),
@@ -15,14 +28,14 @@ const common = {
   risk_level: RiskLevel
 };
 
-const coordinate = { x: z.number().nonnegative(), y: z.number().nonnegative() };
+const coordinate = { x: z.number().finite().nonnegative(), y: z.number().finite().nonnegative() };
 
 export const VisualAction = z.discriminatedUnion("action", [
   z.object({ action: z.literal("click"), ...coordinate, ...common }),
   z.object({ action: z.literal("double_click"), ...coordinate, ...common }),
   z.object({ action: z.literal("right_click"), ...coordinate, ...common }),
   z.object({ action: z.literal("move"), ...coordinate, ...common }),
-  z.object({ action: z.literal("drag"), ...coordinate, end_x: z.number().nonnegative(), end_y: z.number().nonnegative(), ...common }),
+  z.object({ action: z.literal("drag"), ...coordinate, end_x: z.number().finite().nonnegative(), end_y: z.number().finite().nonnegative(), ...common }),
   z.object({ action: z.literal("type"), text: z.string().min(1), ...common }),
   z.object({ action: z.literal("hotkey"), keys: z.string().min(1), ...common }),
   z.object({ action: z.literal("scroll"), direction: z.enum(["up", "down", "left", "right"]), x: z.number().nonnegative().optional(), y: z.number().nonnegative().optional(), ...common }),
@@ -33,13 +46,23 @@ export const VisualAction = z.discriminatedUnion("action", [
 ]);
 export type VisualAction = z.infer<typeof VisualAction>;
 
+/** Runtime execution schema. Provider candidates become executable only after these bindings are attached. */
+export const ExecutableVisualAction = VisualAction.and(z.object({
+  task_id: z.string().min(1),
+  step_id: z.string().min(1),
+  surface_fingerprint: z.string().length(64)
+}));
+export type ExecutableVisualAction = z.infer<typeof ExecutableVisualAction>;
+
 export const Screenshot = z.object({
   base64: z.string().min(1),
   width: z.number().int().positive(),
   height: z.number().int().positive(),
   scaleFactor: z.number().positive(),
   capturedAt: z.string().datetime(),
-  sha256: z.string().length(64)
+  sha256: z.string().length(64),
+  surface: NativeSurface.optional(),
+  surfaceFingerprint: z.string().length(64).optional()
 });
 export type Screenshot = z.infer<typeof Screenshot>;
 
@@ -52,6 +75,8 @@ export interface SurfaceContext {
 }
 
 export interface VisualMicroTask {
+  taskId?: string;
+  stepId?: string;
   instruction: string;
   target: string;
   expectedResult: string;
@@ -64,6 +89,11 @@ export interface GroundingModel {
   ground(task: VisualMicroTask, screenshot: Screenshot, tier: ModelTier): Promise<VisualAction>;
 }
 
+export interface VisualGroundingProvider extends GroundingModel {
+  readonly id: string;
+  readonly kind: "dedicated" | "pi-vision";
+}
+
 export interface VisualVerifier {
   verify(expectedResult: string, before: Screenshot, after: Screenshot): Promise<{ matched: boolean; confidence: number; reason: string }>;
 }
@@ -71,6 +101,7 @@ export interface VisualVerifier {
 export interface NativeOperator {
   capture(): Promise<Screenshot>;
   execute(action: VisualAction, screenshot: Screenshot): Promise<void>;
+  identifySurface?(): Promise<{ surface: NativeSurface; fingerprint: string }>;
 }
 
 export type VisualRuntimeEvent =
@@ -78,15 +109,55 @@ export type VisualRuntimeEvent =
   | { type: "grounded"; attempt: number; tier: ModelTier; action: VisualAction }
   | { type: "executed"; attempt: number; action: VisualAction }
   | { type: "verified"; attempt: number; matched: boolean; confidence: number; reason: string }
-  | { type: "blocked"; attempt: number; reason: string };
+  | { type: "blocked"; attempt: number; reason: string; code?: VisualBlockerCode };
+
+export const VisualBlockerCode = z.enum([
+  "SURFACE_CHANGED",
+  "DUPLICATE_COORDINATE",
+  "MUTATION_RETRY_FORBIDDEN",
+  "TIMEOUT",
+  "POLICY_BLOCKED",
+  "GROUNDING_FAILED",
+  "VERIFICATION_FAILED",
+  "CANCELLED",
+  "PAUSED"
+]);
+export type VisualBlockerCode = z.infer<typeof VisualBlockerCode>;
+
+export class VisualRuntimeBlocker extends Error {
+  constructor(readonly code: VisualBlockerCode, message: string) {
+    super(message);
+    this.name = "VisualRuntimeBlocker";
+  }
+}
+
+export class SurfaceChangedBlocker extends VisualRuntimeBlocker {
+  constructor(readonly expectedFingerprint: string, readonly actualFingerprint: string) {
+    super("SURFACE_CHANGED", `active surface fingerprint changed (${expectedFingerprint} -> ${actualFingerprint})`);
+    this.name = "SurfaceChangedBlocker";
+  }
+}
 
 export type VisualStepResult =
   | { status: "done"; attempts: number; action: VisualAction; before: Screenshot; after: Screenshot }
-  | { status: "failed"; attempts: number; blocker: string; lastAction?: VisualAction };
+  | { status: "failed"; attempts: number; blocker: string; blockerCode?: VisualBlockerCode; lastAction?: VisualAction };
 
 export class VisualPolicy {
   check(action: VisualAction, screenshot: Screenshot, task: VisualMicroTask): void {
     this.checkSurface(task.surface);
+    if (screenshot.surfaceFingerprint && action.surface_fingerprint !== screenshot.surfaceFingerprint) {
+      throw new SurfaceChangedBlocker(screenshot.surfaceFingerprint, action.surface_fingerprint ?? "missing");
+    }
+    if (task.taskId && action.task_id !== task.taskId) throw new Error("grounded action is not bound to the requested task");
+    if (task.stepId && action.step_id !== task.stepId) throw new Error("grounded action is not bound to the requested step");
+    if (screenshot.surface) {
+      if (!task.surface.allowedApps.includes(screenshot.surface.app)) {
+        throw new Error(`active application is not allowlisted: ${screenshot.surface.app}`);
+      }
+      if (task.surface.app !== screenshot.surface.app) {
+        throw new Error(`active application does not match requested surface: ${screenshot.surface.app}`);
+      }
+    }
     const permission = PermissionLevel.parse(task.permission);
     const permissionRank = { OBSERVE: 0, INTERACT: 1, MUTATE: 2, DESTRUCTIVE: 3 } as const;
     const riskPermission = { observe: "OBSERVE", interact: "INTERACT", mutate: "MUTATE", destructive: "DESTRUCTIVE" } as const;
@@ -100,6 +171,13 @@ export class VisualPolicy {
     if (action.action === "drag") points.push([action.end_x, action.end_y]);
     for (const [x, y] of points) {
       if (x < 0 || y < 0 || x >= screenshot.width || y >= screenshot.height) throw new Error("action coordinates are outside the screenshot");
+      if (screenshot.surface) {
+        const logicalX = x / screenshot.scaleFactor;
+        const logicalY = y / screenshot.scaleFactor;
+        if (logicalX < 0 || logicalY < 0 || logicalX >= screenshot.surface.bounds.width || logicalY >= screenshot.surface.bounds.height) {
+          throw new Error("action coordinates are outside the active window");
+        }
+      }
     }
     if (terminalOrUtility && action.risk_level !== "observe") {
       throw new Error(`${action.action} must be observe risk`);
@@ -135,39 +213,109 @@ export class VisualComputerRuntime {
 
   async runMicroTask(task: VisualMicroTask): Promise<VisualStepResult> {
     let lastAction: VisualAction | undefined;
+    const executedCoordinates = new Set<string>();
+    let mutationExecuted = false;
+    const taskId = task.taskId ?? stableId("task", task.instruction, task.target);
+    const stepId = task.stepId ?? stableId("step", taskId, task.expectedResult);
     for (let attempt = 1; attempt <= 3; attempt += 1) {
-      if (this.cancelled) return { status: "failed", attempts: attempt - 1, blocker: "user cancelled", ...(lastAction ? { lastAction } : {}) };
-      if (this.paused) return { status: "failed", attempts: attempt - 1, blocker: "paused for user takeover", ...(lastAction ? { lastAction } : {}) };
+      if (this.cancelled) return failedResult(attempt - 1, "user cancelled", "CANCELLED", lastAction);
+      if (this.paused) return failedResult(attempt - 1, "paused for user takeover", "PAUSED", lastAction);
+      if (mutationExecuted) {
+        return failedResult(attempt - 1, "mutating actions are never retried after execution", "MUTATION_RETRY_FORBIDDEN", lastAction);
+      }
       const tier: ModelTier = attempt >= 3 ? "strong" : "gui";
       try {
         const before = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "screenshot capture");
         await this.onEvent({ type: "screenshot", phase: "before", screenshot: before });
-        const action = VisualAction.parse(await withTimeout(this.grounding.ground(task, before, tier), this.stepTimeoutMs, "visual grounding"));
+        const expectedFingerprint = surfaceFingerprintFor(before);
+        const grounded = await withTimeout(this.grounding.ground({ ...task, taskId, stepId }, before, tier), this.stepTimeoutMs, "visual grounding");
+        const action = bindActionContext(grounded, taskId, stepId, expectedFingerprint);
         lastAction = action;
-        this.policy.check(action, before, task);
+        this.policy.check(action, before, { ...task, taskId, stepId });
         await this.onEvent({ type: "grounded", attempt, tier, action });
         if (action.action === "fail") return { status: "failed", attempts: attempt, blocker: action.reason, lastAction: action };
         if (action.action === "done") return { status: "done", attempts: attempt, action, before, after: before };
+
+        const coordinateKey = actionCoordinateKey(action);
+        if (coordinateKey && executedCoordinates.has(coordinateKey)) {
+          throw new VisualRuntimeBlocker("DUPLICATE_COORDINATE", `refusing to repeat coordinates for ${action.action}: ${coordinateKey}`);
+        }
+        await this.assertSurfaceUnchanged(expectedFingerprint);
+        if (coordinateKey) executedCoordinates.add(coordinateKey);
         await withTimeout(this.operator.execute(action, before), this.stepTimeoutMs, "native action");
+        mutationExecuted = action.risk_level === "mutate" || action.risk_level === "destructive";
         await this.onEvent({ type: "executed", attempt, action });
         const after = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "verification screenshot");
         await this.onEvent({ type: "screenshot", phase: "after", screenshot: after });
+        const afterFingerprint = surfaceFingerprintFor(after);
+        if (afterFingerprint !== expectedFingerprint) throw new SurfaceChangedBlocker(expectedFingerprint, afterFingerprint);
         const verified = await withTimeout(this.verifier.verify(action.expected_result, before, after), this.stepTimeoutMs, "visual verification");
         await this.onEvent({ type: "verified", attempt, ...verified });
         if (verified.matched) return { status: "done", attempts: attempt, action, before, after };
+        if (mutationExecuted) {
+          return failedResult(attempt, `mutation was executed but could not be visually verified: ${verified.reason}`, "MUTATION_RETRY_FORBIDDEN", action);
+        }
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        await this.onEvent({ type: "blocked", attempt, reason });
+        const code = blockerCode(error);
+        await this.onEvent({ type: "blocked", attempt, reason, ...(code ? { code } : {}) });
+        if (error instanceof SurfaceCaptureChangedError) {
+          return failedResult(attempt, reason, "SURFACE_CHANGED", lastAction);
+        }
+        if (error instanceof VisualRuntimeBlocker) {
+          return failedResult(attempt, reason, error.code, lastAction);
+        }
         if (error instanceof VisualTimeoutError) {
-          return { status: "failed", attempts: attempt, blocker: `${reason}; stopped to avoid a duplicate or blind action`, ...(lastAction ? { lastAction } : {}) };
+          return failedResult(attempt, `${reason}; stopped to avoid a duplicate or blind action`, "TIMEOUT", lastAction);
+        }
+        if (mutationExecuted) {
+          return failedResult(attempt, `${reason}; mutating action will not be retried`, "MUTATION_RETRY_FORBIDDEN", lastAction);
         }
       }
     }
-    return { status: "failed", attempts: 3, blocker: "visual action failed three times; blind operation stopped", ...(lastAction ? { lastAction } : {}) };
+    return failedResult(3, "visual action failed three times; blind operation stopped", "VERIFICATION_FAILED", lastAction);
+  }
+
+  private async assertSurfaceUnchanged(expectedFingerprint: string): Promise<void> {
+    if (!this.operator.identifySurface) return;
+    const current = await withTimeout(this.operator.identifySurface(), this.stepTimeoutMs, "surface identity");
+    if (current.fingerprint !== expectedFingerprint) throw new SurfaceChangedBlocker(expectedFingerprint, current.fingerprint);
   }
 }
 
 class VisualTimeoutError extends Error {}
+
+function failedResult(attempts: number, blocker: string, blockerCode: VisualBlockerCode, lastAction?: VisualAction): VisualStepResult {
+  return { status: "failed", attempts, blocker, blockerCode, ...(lastAction ? { lastAction } : {}) };
+}
+
+function blockerCode(error: unknown): VisualBlockerCode | undefined {
+  if (error instanceof VisualRuntimeBlocker) return error.code;
+  if (error instanceof SurfaceCaptureChangedError) return "SURFACE_CHANGED";
+  if (error instanceof VisualTimeoutError) return "TIMEOUT";
+  return undefined;
+}
+
+function stableId(prefix: string, ...parts: string[]): string {
+  return `${prefix}_${createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 24)}`;
+}
+
+function surfaceFingerprintFor(screenshot: Screenshot): string {
+  if (screenshot.surfaceFingerprint) return screenshot.surfaceFingerprint;
+  if (screenshot.surface) return fingerprintSurface(screenshot.surface);
+  return createHash("sha256").update(`legacy-surface:${screenshot.width}:${screenshot.height}:${screenshot.scaleFactor}`).digest("hex");
+}
+
+function bindActionContext(action: VisualAction, taskId: string, stepId: string, surfaceFingerprint: string): VisualAction {
+  return ExecutableVisualAction.parse({ ...action, task_id: taskId, step_id: stepId, surface_fingerprint: surfaceFingerprint });
+}
+
+function actionCoordinateKey(action: VisualAction): string | undefined {
+  if (!("x" in action) || action.x === undefined || !("y" in action) || action.y === undefined) return undefined;
+  return action.action === "drag"
+    ? `${action.action}:${action.x}:${action.y}:${action.end_x}:${action.end_y}`
+    : `${action.action}:${action.x}:${action.y}`;
+}
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -184,12 +332,32 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
 }
 
 export class UiTarsNativeOperator implements NativeOperator {
-  constructor(private readonly operator = new NutJSOperator()) {}
+  private lastCapture: Screenshot | undefined;
+
+  constructor(
+    private readonly operator = new NutJSOperator(),
+    private readonly surfaceIdentity: NativeSurfaceIdentity | undefined = process.platform === "darwin" ? new MacOSNativeSurfaceIdentity() : undefined
+  ) {}
 
   async capture(): Promise<Screenshot> {
+    if (this.surfaceIdentity) {
+      const captured = await this.surfaceIdentity.captureActiveWindow();
+      const screenshot = Screenshot.parse({
+        base64: captured.base64,
+        width: captured.width,
+        height: captured.height,
+        scaleFactor: captured.scaleFactor,
+        capturedAt: new Date().toISOString(),
+        sha256: createHash("sha256").update(captured.base64).digest("hex"),
+        surface: captured.surface,
+        surfaceFingerprint: captured.surfaceFingerprint
+      });
+      this.lastCapture = screenshot;
+      return screenshot;
+    }
     const raw = await this.operator.screenshot();
     const image = await Jimp.fromBuffer(Buffer.from(raw.base64.replace(/^data:image\/\w+;base64,/, ""), "base64"));
-    return Screenshot.parse({
+    const screenshot = Screenshot.parse({
       base64: raw.base64.replace(/^data:image\/\w+;base64,/, ""),
       width: image.width,
       height: image.height,
@@ -197,6 +365,28 @@ export class UiTarsNativeOperator implements NativeOperator {
       capturedAt: new Date().toISOString(),
       sha256: createHash("sha256").update(raw.base64).digest("hex")
     });
+    this.lastCapture = screenshot;
+    return screenshot;
+  }
+
+  async identifySurface(): Promise<{ surface: NativeSurface; fingerprint: string }> {
+    if (this.surfaceIdentity) {
+      const surface = await this.surfaceIdentity.identifyActiveSurface();
+      return { surface, fingerprint: fingerprintSurface(surface) };
+    }
+    if (!this.lastCapture) throw new Error("surface identity is unavailable before the first capture");
+    const surface = NativeSurface.parse({
+      platform: process.platform === "win32" ? "win32" : "linux",
+      app: "Desktop",
+      pid: process.pid,
+      title: "",
+      windowId: "fullscreen",
+      bounds: { x: 0, y: 0, width: this.lastCapture.width / this.lastCapture.scaleFactor, height: this.lastCapture.height / this.lastCapture.scaleFactor },
+      screenId: "primary",
+      screenBounds: { x: 0, y: 0, width: this.lastCapture.width / this.lastCapture.scaleFactor, height: this.lastCapture.height / this.lastCapture.scaleFactor },
+      scaleFactor: this.lastCapture.scaleFactor
+    });
+    return { surface, fingerprint: surfaceFingerprintFor(this.lastCapture) };
   }
 
   async execute(action: VisualAction, screenshot: Screenshot): Promise<void> {
@@ -207,9 +397,9 @@ export class UiTarsNativeOperator implements NativeOperator {
     }
     if (action.action === "done" || action.action === "fail") return;
     const startBox = "x" in action && action.x !== undefined && "y" in action && action.y !== undefined
-      ? normalizedBox(action.x, action.y, screenshot)
+      ? operatorBox(action.x, action.y, screenshot)
       : "";
-    const endBox = action.action === "drag" ? normalizedBox(action.end_x, action.end_y, screenshot) : undefined;
+    const endBox = action.action === "drag" ? operatorBox(action.end_x, action.end_y, screenshot) : undefined;
     const actionType = ({ double_click: "left_double", right_click: "right_single", move: "mouse_move" } as Record<string, string>)[action.action] ?? action.action;
     const actionInputs: Record<string, string> = {};
     if (startBox) actionInputs.start_box = startBox;
@@ -229,43 +419,168 @@ export class UiTarsNativeOperator implements NativeOperator {
   }
 }
 
-function normalizedBox(x: number, y: number, screenshot: Screenshot): string {
-  return `[${x / screenshot.width},${y / screenshot.height},${x / screenshot.width},${y / screenshot.height}]`;
+function operatorBox(x: number, y: number, screenshot: Screenshot): string {
+  const globalX = screenshot.surface ? screenshot.surface.bounds.x + x / screenshot.scaleFactor : x;
+  const globalY = screenshot.surface ? screenshot.surface.bounds.y + y / screenshot.scaleFactor : y;
+  return `[${globalX / screenshot.width},${globalY / screenshot.height},${globalX / screenshot.width},${globalY / screenshot.height}]`;
 }
 
-export class UiTarsGroundingModel implements GroundingModel {
-  private readonly model: UITarsModel;
-  private readonly strongModel: UITarsModel;
+export interface OpenAICompatibleUiTarsConfig {
+  baseURL: string;
+  apiKey?: string;
+  model: string;
+  strongModel?: string;
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+  fetch?: typeof fetch;
+  uiTarsVersion?: UITarsModelVersion;
+}
 
-  constructor(config: { apiKey: string; baseURL: string; model: string; strongModel?: string }) {
-    if (!config.apiKey || !config.baseURL || !config.model) throw new Error("GUI grounding model is not configured");
-    this.model = new UITarsModel({ ...config, temperature: 0, max_tokens: 1000 });
-    this.strongModel = new UITarsModel({ ...config, model: config.strongModel ?? config.model, temperature: 0, max_tokens: 1000 });
+/** Dedicated UI-TARS/OpenAI-compatible one-step grounding provider. It never owns a task loop. */
+export class OpenAICompatibleUiTarsProvider implements VisualGroundingProvider {
+  readonly id = "ui-tars-openai-compatible";
+  readonly kind = "dedicated" as const;
+  private readonly request: typeof fetch;
+
+  constructor(private readonly config: OpenAICompatibleUiTarsConfig) {
+    if (!config.baseURL || !config.model) throw new Error("dedicated GUI grounding endpoint and model are required");
+    this.request = config.fetch ?? globalThis.fetch;
   }
 
   async ground(task: VisualMicroTask, screenshot: Screenshot, tier: ModelTier): Promise<VisualAction> {
-    const instruction = [
-      "Plan exactly one immediate GUI micro-action. Do not plan the overall advertising task.",
-      `Instruction: ${task.instruction}`,
-      `Target: ${task.target}`,
-      `Expected result: ${task.expectedResult}`
-    ].join("\n");
-    const output = await (tier === "strong" ? this.strongModel : this.model).invoke({
-      conversations: [{ from: "human", value: instruction }, { from: "human", value: "<image>" }],
-      images: [screenshot.base64],
-      screenContext: { width: screenshot.width, height: screenshot.height },
-      scaleFactor: screenshot.scaleFactor,
-      uiTarsVersion: UITarsModelVersion.V1_5
-    });
-    if (output.parsedPredictions.length !== 1) throw new Error("grounding model must return exactly one action");
-    const parsed = output.parsedPredictions[0];
-    if (!parsed) throw new Error("grounding model returned no action");
-    return mapGroundedAction(parsed, screenshot, task);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs ?? 20_000);
+    try {
+      const modelVersion = this.config.uiTarsVersion ?? UITarsModelVersion.V1_5;
+      const maxPixels = modelVersion === UITarsModelVersion.V1_5 ? 16384 * 28 * 28 : 2700 * 28 * 28;
+      const image = await preprocessResizeImage(screenshot.base64, maxPixels);
+      const response = await this.request(`${this.config.baseURL.replace(/\/$/, "")}/chat/completions`, {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "content-type": "application/json",
+          ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {}),
+          ...this.config.headers
+        },
+        body: JSON.stringify({
+          model: tier === "strong" ? this.config.strongModel ?? this.config.model : this.config.model,
+          temperature: 0,
+          top_p: 0.7,
+          max_tokens: 900,
+          stream: false,
+          messages: [
+            { role: "system", content: uiTarsMicroActionPrompt() },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: JSON.stringify({
+                  task_id: task.taskId,
+                  step_id: task.stepId,
+                  instruction: task.instruction,
+                  target: task.target,
+                  expected_result: task.expectedResult,
+                  risk_level: task.riskLevel,
+                  surface_fingerprint: surfaceFingerprintFor(screenshot),
+                  screenshot: { width: screenshot.width, height: screenshot.height, scaleFactor: screenshot.scaleFactor }
+                }) },
+                { type: "image_url", image_url: { url: `data:image/png;base64,${image}` } }
+              ]
+            }
+          ]
+        })
+      });
+      if (!response.ok) {
+        const detail = (await response.text().catch(() => "")).slice(0, 500);
+        throw new Error(`dedicated GUI grounding failed: HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
+      }
+      const body = await response.json() as { choices?: Array<{ message?: { content?: string | Array<{ type?: string; text?: string }> } }> };
+      const prediction = openAIMessageText(body.choices?.[0]?.message?.content);
+      if (!prediction) throw new Error("dedicated GUI grounding returned no prediction");
+      const parsed = actionParser({
+        prediction,
+        factor: [1000, 1000],
+        screenContext: { width: screenshot.width, height: screenshot.height },
+        scaleFactor: screenshot.scaleFactor,
+        modelVer: modelVersion
+      }).parsed;
+      if (parsed.length !== 1 || !parsed[0]) throw new Error("dedicated GUI grounding must return exactly one action");
+      return mapGroundedAction(parsed[0], screenshot, task);
+    } catch (error) {
+      if (controller.signal.aborted) throw new VisualTimeoutError(`dedicated GUI grounding timed out after ${this.config.timeoutMs ?? 20_000}ms`);
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 }
 
+/** Backward-compatible name for the dedicated provider. */
+export class UiTarsGroundingModel extends OpenAICompatibleUiTarsProvider {}
+
+export interface GuiGroundingRouteEvent {
+  provider: string;
+  kind: VisualGroundingProvider["kind"];
+  tier: ModelTier;
+  outcome: "selected" | "failed";
+  error?: string;
+}
+
+/** Dedicated UI-TARS is always attempted first; PiVision is the bounded fallback. */
+export class GuiGroundingProviderRouter implements GroundingModel {
+  constructor(
+    private readonly dedicated: VisualGroundingProvider | undefined,
+    private readonly piVisionFallback: VisualGroundingProvider,
+    private readonly onRoute: (event: GuiGroundingRouteEvent) => void | Promise<void> = () => undefined
+  ) {}
+
+  async ground(task: VisualMicroTask, screenshot: Screenshot, tier: ModelTier): Promise<VisualAction> {
+    const providers = this.dedicated ? [this.dedicated, this.piVisionFallback] : [this.piVisionFallback];
+    const failures: string[] = [];
+    for (const provider of providers) {
+      try {
+        const action = await provider.ground(task, screenshot, tier);
+        await this.onRoute({ provider: provider.id, kind: provider.kind, tier, outcome: "selected" });
+        return action;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        failures.push(`${provider.id}: ${message}`);
+        await this.onRoute({ provider: provider.id, kind: provider.kind, tier, outcome: "failed", error: message });
+      }
+    }
+    throw new Error(`all GUI grounding providers failed (${failures.join("; ")})`);
+  }
+}
+
+function uiTarsMicroActionPrompt(): string {
+  return [
+    "You are a short-horizon GUI grounding runtime. Return exactly one immediate visible action and never plan the overall task.",
+    "Output exactly: Thought: <brief visible evidence>\\nAction: <one function call>.",
+    "Allowed actions:",
+    "click(start_box='[x1,y1,x2,y2]')",
+    "left_double(start_box='[x1,y1,x2,y2]')",
+    "right_single(start_box='[x1,y1,x2,y2]')",
+    "mouse_move(start_box='[x1,y1,x2,y2]')",
+    "drag(start_box='[x1,y1,x2,y2]', end_box='[x1,y1,x2,y2]')",
+    "type(content='')",
+    "hotkey(key='')",
+    "scroll(start_box='[x1,y1,x2,y2]', direction='up or down')",
+    "wait()",
+    "finished()",
+    "call_user()",
+    "Coordinates use the model's UI-TARS coordinate space. Never emit multiple actions or guess an invisible target."
+  ].join("\n");
+}
+
+function openAIMessageText(content: string | Array<{ type?: string; text?: string }> | undefined): string {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) return content.map((part) => part.text ?? "").join("\n").trim();
+  return "";
+}
+
 /** Uses the same Pi code/reasoning models as chat for screenshot grounding and verification. */
-export class PiVisionModel implements GroundingModel, VisualVerifier {
+export class PiVisionModel implements VisualGroundingProvider, VisualVerifier {
+  readonly id = "pi-vision";
+  readonly kind = "pi-vision" as const;
   constructor(
     private readonly models: Models,
     private readonly primary: Model<Api>,
@@ -287,7 +602,16 @@ export class PiVisionModel implements GroundingModel, VisualVerifier {
       messages: [{
         role: "user",
         content: [
-          { type: "text", text: JSON.stringify({ instruction: task.instruction, target: task.target, expectedResult: task.expectedResult, declaredRisk: task.riskLevel, screenshot: { width: screenshot.width, height: screenshot.height } }) },
+          { type: "text", text: JSON.stringify({
+            task_id: task.taskId,
+            step_id: task.stepId,
+            surface_fingerprint: surfaceFingerprintFor(screenshot),
+            instruction: task.instruction,
+            target: task.target,
+            expectedResult: task.expectedResult,
+            declaredRisk: task.riskLevel,
+            screenshot: { width: screenshot.width, height: screenshot.height }
+          }) },
           { type: "image", data: screenshot.base64, mimeType: "image/png" }
         ],
         timestamp: Date.now()
