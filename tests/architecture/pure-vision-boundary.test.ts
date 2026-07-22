@@ -3,12 +3,19 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const productionRoots = [
+  "apps/cli/src",
+  "apps/electron/src",
+  "packages/approvals",
+  "packages/advertising-core/src",
   "packages/computer-use",
   "packages/tools",
   "packages/application",
   "packages/agent-orchestrator",
   "packages/specialist-agents",
-  "packages/visual-table-reader"
+  "packages/visual-table-reader",
+  "packages/runtime",
+  "packages/server",
+  "packages/skills"
 ];
 
 const forbiddenDependencies = [
@@ -21,7 +28,10 @@ const forbiddenExecutionPatterns: Array<[string, RegExp]> = [
   ["selector locator", /\.locator\s*\(/],
   ["accessibility snapshot", /accessibility\s*\.\s*snapshot\s*\(/],
   ["Chrome DevTools Protocol", /\b(?:CDP|ChromeDevTools|chrome-remote-interface)\b/],
-  ["WebDriver execution", /\b(?:WebDriver|webdriver)\b/]
+  ["Chrome remote-debugging", /(?:--remote-debugging-port|\/json\/protocol|\/json\/list)/],
+  ["WebDriver execution", /\b(?:WebDriver|webdriver)\b/],
+  ["browser credential or storage access", /(?:document\.cookie|localStorage|sessionStorage|\.cookies\s*\()/],
+  ["advertising API endpoint", /(?:googleads\.googleapis\.com|graph\.facebook\.com|business-api\.tiktok\.com|api\.searchads\.apple\.com|api\.ads\.microsoft\.com|advertising-api\.amazon\.com|api\.linkedin\.com\/rest\/ad)/]
 ];
 
 describe("pure-vision production architecture", () => {
