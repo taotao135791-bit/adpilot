@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, session, shell } from "electron";
 import { createAdPilotSystem } from "@adpilot/application";
 import { createServer } from "@adpilot/server";
+import { isExternalWebUrl, isTrustedDesktopUrl } from "./security.js";
 
 let mainWindow: BrowserWindow | undefined;
 let localServer: Awaited<ReturnType<typeof createServer>> | undefined;
@@ -13,15 +14,9 @@ const moduleDirectory = fileURLToPath(new URL(".", import.meta.url));
 app.setName("AdPilot");
 
 function loadEnvironment(): void {
-  const candidates = [
-    resolve(process.cwd(), ".env"),
-    join(app.getPath("userData"), ".env")
-  ];
-  for (const candidate of candidates) {
-    if (!existsSync(candidate)) continue;
-    try { process.loadEnvFile(candidate); } catch (error) { console.warn(`Unable to load ${candidate}`, error); }
-    break;
-  }
+  const environmentFile = join(app.getPath("userData"), ".env");
+  if (!existsSync(environmentFile)) return;
+  try { process.loadEnvFile(environmentFile); } catch (error) { console.warn(`Unable to load ${environmentFile}`, error); }
 }
 
 function desktopUiRoot(): string {
@@ -62,14 +57,14 @@ async function openDesktop(): Promise<void> {
 
   const origin = new URL(localUrl).origin;
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith(origin)) return { action: "allow" };
-    void shell.openExternal(url);
+    if (isTrustedDesktopUrl(url, origin)) return { action: "allow" };
+    if (isExternalWebUrl(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (url.startsWith(origin)) return;
+    if (isTrustedDesktopUrl(url, origin)) return;
     event.preventDefault();
-    void shell.openExternal(url);
+    if (isExternalWebUrl(url)) void shell.openExternal(url);
   });
   mainWindow.once("ready-to-show", () => mainWindow?.show());
   mainWindow.on("closed", () => { mainWindow = undefined; });

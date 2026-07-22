@@ -11,7 +11,8 @@
     "README.md",
     "LICENSE",
     "LICENSES.md",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "licenses/**"
   ],
   "main": "dist/electron/main.js",
   "packageManager": "pnpm@10.30.3",
@@ -35,8 +36,8 @@
     "build:desktop": "vite build",
     "build:electron": "tsup apps/electron/src/main.ts --format esm --platform node --out-dir dist/electron --external electron",
     "desktop": "pnpm build && env -u ELECTRON_RUN_AS_NODE electron dist/electron/main.js",
-    "desktop:dir": "pnpm build && electron-builder --mac dir",
-    "desktop:dmg": "pnpm build && electron-builder --mac dmg",
+    "desktop:dir": "pnpm build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir",
+    "desktop:dmg": "pnpm build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:ads-core": "python3 -m pytest packages/advertising-core/python/tests/uac -q",
@@ -87,6 +88,7 @@
     "appId": "com.adpilot.desktop",
     "productName": "AdPilot",
     "asar": true,
+    "forceCodeSigning": false,
     "asarUnpack": [
       "dist/desktop/**",
       "node_modules/**/*.node"
@@ -94,13 +96,18 @@
     "files": [
       "dist/electron/**",
       "dist/desktop/**",
-      "package.json"
+      "package.json",
+      "LICENSE",
+      "LICENSES.md",
+      "THIRD_PARTY_NOTICES.md",
+      "licenses/**"
     ],
     "directories": {
       "output": "release"
     },
     "mac": {
       "category": "public.app-category.business",
+      "identity": null,
       "icon": "build/icon.icns",
       "target": [
         "dmg"
