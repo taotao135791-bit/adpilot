@@ -1,6 +1,11 @@
 import { z } from "zod";
-import { PiAgentRuntime } from "@adpilot/runtime";
-import { SpecialistRole, type SpecialistRole as Role } from "@adpilot/shared";
+import type { RuntimeRequest, RuntimeResult } from "@adpilot/runtime";
+import {
+  SharedFact as SharedFactSchema,
+  SpecialistRole,
+  type SharedFact,
+  type SpecialistRole as Role
+} from "@adpilot/shared";
 import { CampaignMetrics, ChangeGuardrailInput } from "@adpilot/advertising-core";
 import { type AdPilotTools, type ToolContext } from "@adpilot/tools";
 import { VisualAction, type VisualMicroTask } from "@adpilot/computer-use";
@@ -8,7 +13,9 @@ import { VisualAction, type VisualMicroTask } from "@adpilot/computer-use";
 export interface SpecialistRequest<I = unknown> {
   context: ToolContext;
   input: I;
-  sharedFacts: Record<string, unknown>;
+  sharedFacts: SharedFact[] | Record<string, unknown>;
+  /** Observed facts are withheld unless the root explicitly selects them. */
+  requiredObservedFactIds?: readonly string[];
 }
 
 export interface SpecialistAgent<I = unknown, O = unknown> {
@@ -16,6 +23,107 @@ export interface SpecialistAgent<I = unknown, O = unknown> {
   readonly inputSchema: z.ZodType<I, z.ZodTypeDef, any>;
   readonly outputSchema: z.ZodType<O, z.ZodTypeDef, any>;
   execute(request: SpecialistRequest<I>): Promise<O>;
+}
+
+export interface SpecialistRuntime {
+  run(request: RuntimeRequest): Promise<RuntimeResult>;
+}
+
+export interface SpecialistSessionState {
+  key: string;
+  sessionId: string;
+  taskId: string;
+  role: Role;
+  messages: RuntimeResult["messages"];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Persistence seam for a root-owned durable specialist runtime. */
+export interface SpecialistSessionRepository {
+  load(key: string): Promise<SpecialistSessionState | undefined>;
+  save(state: SpecialistSessionState): Promise<void>;
+}
+
+export class InMemorySpecialistSessionRepository implements SpecialistSessionRepository {
+  private readonly sessions = new Map<string, SpecialistSessionState>();
+
+  async load(key: string): Promise<SpecialistSessionState | undefined> {
+    const state = this.sessions.get(key);
+    return state ? structuredClone(state) : undefined;
+  }
+
+  async save(state: SpecialistSessionState): Promise<void> {
+    this.sessions.set(state.key, structuredClone(state));
+  }
+}
+
+export function specialistSessionKey(taskId: string, roleInput: Role): string {
+  const normalizedTaskId = z.string().uuid().parse(taskId);
+  const role = SpecialistRole.parse(roleInput);
+  return `specialist-${normalizedTaskId}-${role}`;
+}
+
+const LEGACY_TRANSCRIPT_KEYS = new Set([
+  "conversation",
+  "conversations",
+  "messages",
+  "recentMemory",
+  "transcript",
+  "transcripts"
+]);
+
+export interface SharedFactSelection {
+  taskId: string;
+  role: Role;
+  requiredObservedFactIds?: readonly string[];
+  now?: Date;
+}
+
+/**
+ * Produces the bounded fact packet visible to one specialist. Terminal,
+ * cross-task and expired facts are never forwarded. Legacy records are kept
+ * compatible as explicitly supplied observed facts, with transcript-like
+ * fields removed.
+ */
+export function selectSharedFactsForSpecialist(
+  input: SharedFact[] | Record<string, unknown>,
+  selection: SharedFactSelection
+): SharedFact[] {
+  const taskId = z.string().uuid().parse(selection.taskId);
+  const role = SpecialistRole.parse(selection.role);
+  const now = selection.now ?? new Date();
+  if (!Array.isArray(input)) {
+    return Object.entries(input)
+      .filter(([key]) => !LEGACY_TRANSCRIPT_KEYS.has(key))
+      .map(([key, value]) => SharedFactSchema.parse({
+        fact_id: `legacy.${key}`,
+        source: "legacy_dispatch",
+        evidence: [`legacy-dispatch:${key}`],
+        confidence: 0.5,
+        status: "observed",
+        created_by: "root_agent_compatibility_adapter",
+        verified_by: [],
+        task_id: taskId,
+        expires_at: null,
+        value
+      }));
+  }
+
+  const requiredObserved = new Set(selection.requiredObservedFactIds ?? []);
+  const seen = new Set<string>();
+  const selected: SharedFact[] = [];
+  for (const rawFact of input) {
+    const fact = SharedFactSchema.parse(rawFact);
+    if (seen.has(fact.fact_id)) throw new Error(`duplicate shared fact: ${fact.fact_id}`);
+    seen.add(fact.fact_id);
+    if (fact.task_id !== taskId) continue;
+    if (fact.expires_at && Date.parse(fact.expires_at) <= now.getTime()) continue;
+    if (fact.status === "verified" || (fact.status === "observed" && requiredObserved.has(fact.fact_id))) {
+      selected.push(fact);
+    }
+  }
+  return selected.map((fact) => ({ ...fact, value: structuredClone(fact.value) }));
 }
 
 const EvidenceFinding = z.object({ finding: z.string().min(1), evidence: z.array(z.string()).default([]), confidence: z.number().min(0).max(1) });
@@ -42,21 +150,48 @@ abstract class PiSpecialist<I, O> implements SpecialistAgent<I, O> {
   abstract readonly outputSchema: z.ZodType<O, z.ZodTypeDef, any>;
   abstract readonly allowedSkills: string[];
   abstract readonly mission: string;
-  constructor(protected readonly runtime: PiAgentRuntime) {}
+  constructor(
+    protected readonly runtime: SpecialistRuntime,
+    private readonly sessions: SpecialistSessionRepository = new InMemorySpecialistSessionRepository()
+  ) {}
   async execute(request: SpecialistRequest<I>): Promise<O> {
     const input = this.inputSchema.parse(request.input);
-    return this.runtime.runStructured({
-      context: { ...request.context, actor: this.role, sessionId: crypto.randomUUID(), role: this.role },
+    const key = specialistSessionKey(request.context.taskId, this.role);
+    const previous = await this.sessions.load(key);
+    if (previous && (previous.taskId !== request.context.taskId || previous.role !== this.role)) {
+      throw new Error(`specialist session identity mismatch: ${key}`);
+    }
+    const sharedFacts = selectSharedFactsForSpecialist(request.sharedFacts, {
+      taskId: request.context.taskId,
+      role: this.role,
+      ...(request.requiredObservedFactIds ? { requiredObservedFactIds: request.requiredObservedFactIds } : {})
+    });
+    const result = await this.runtime.run({
+      context: { ...request.context, actor: this.role, sessionId: previous?.sessionId ?? key, role: this.role },
       systemPrompt: [
         `You are the isolated ${this.role} specialist inside AdPilot.`,
         this.mission,
         "Use only the supplied shared facts and tool results. Do not assume access to other specialists' transcripts.",
-        "Separate observed facts, deterministic calculations, and inference."
+        "Separate observed facts, deterministic calculations, and inference.",
+        "Return the final answer as one JSON object matching the requested specialist output. Do not wrap it in markdown."
       ].join("\n"),
-      prompt: JSON.stringify({ input, sharedFacts: request.sharedFacts }),
+      prompt: JSON.stringify({ input, sharedFacts }),
       signals: { task: this.role === "risk_reviewer" ? "risk_review" : "causal_analysis" },
-      allowedSkills: this.allowedSkills
-    }, this.outputSchema);
+      allowedSkills: this.allowedSkills,
+      ...(previous ? { priorMessages: previous.messages } : {})
+    });
+    const output = this.outputSchema.parse(parseJsonObject(result.text));
+    const now = new Date().toISOString();
+    await this.sessions.save({
+      key,
+      sessionId: previous?.sessionId ?? key,
+      taskId: request.context.taskId,
+      role: this.role,
+      messages: result.messages,
+      createdAt: previous?.createdAt ?? now,
+      updatedAt: now
+    });
+    return output;
   }
 }
 
@@ -93,7 +228,7 @@ const RiskOutput = z.object({ approved: z.boolean(), reason: z.string().min(1), 
 export class RiskReviewer extends PiSpecialist<z.infer<typeof RiskInput>, z.infer<typeof RiskOutput>> {
   readonly role = "risk_reviewer" as const; readonly inputSchema = RiskInput; readonly outputSchema = RiskOutput;
   readonly allowedSkills: string[] = []; readonly mission = "Independently review every real account mutation. You have veto power; safety and evidence outrank optimization upside.";
-  constructor(runtime: PiAgentRuntime, private readonly tools: AdPilotTools) { super(runtime); }
+  constructor(runtime: SpecialistRuntime, private readonly tools: AdPilotTools, sessions?: SpecialistSessionRepository) { super(runtime, sessions); }
   override async execute(request: SpecialistRequest<z.infer<typeof RiskInput>>) {
     const input = this.inputSchema.parse(request.input); const vetoes: string[] = [];
     if (!input.guardrailAllowed) vetoes.push(...input.guardrailReasons.length ? input.guardrailReasons : ["deterministic guardrail denied the operation"]);
@@ -121,3 +256,15 @@ export class SpecialistCoordinator {
 }
 
 export const specialistSchemas = { AccountOperatorInput, AccountOperatorOutput, PerformanceInput, PerformanceOutput, MediaBuyerInput, MediaBuyerOutput, MeasurementInput, MeasurementOutput, CreativeInput, CreativeOutput, RiskInput, RiskOutput };
+
+function parseJsonObject(text: string): unknown {
+  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start < 0 || end <= start) throw new Error("structured specialist output is not JSON");
+    return JSON.parse(trimmed.slice(start, end + 1));
+  }
+}

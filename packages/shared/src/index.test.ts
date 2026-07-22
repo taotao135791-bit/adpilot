@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertSafeIdentifier, PermissionLevel, stableJson, TaskState } from "./index.js";
+import { assertSafeIdentifier, PermissionLevel, SharedFact, SharedFactStatus, stableJson, TaskState } from "./index.js";
 
 describe("shared contracts", () => {
   it("accepts only explicit permission levels", () => {
@@ -19,5 +19,35 @@ describe("shared contracts", () => {
   it("rejects incomplete task state", () => {
     expect(() => TaskState.parse({ goal: "Improve CPA" })).toThrow();
   });
-});
 
+  it("defines the complete shared-fact lifecycle and verifier contract", () => {
+    expect(SharedFactStatus.options).toEqual([
+      "observed", "verified", "disputed", "rejected", "superseded", "expired"
+    ]);
+    const taskId = crypto.randomUUID();
+    expect(SharedFact.parse({
+      fact_id: "measurement.purchase_count",
+      source: "backend_export",
+      evidence: ["export:payments-2026-07-21.csv"],
+      confidence: 0.98,
+      status: "verified",
+      created_by: "measurement_reviewer",
+      verified_by: ["root_agent"],
+      task_id: taskId,
+      expires_at: null,
+      value: 42
+    })).toMatchObject({ task_id: taskId, status: "verified", value: 42 });
+    expect(() => SharedFact.parse({
+      fact_id: "measurement.purchase_count",
+      source: "backend_export",
+      evidence: ["export:payments-2026-07-21.csv"],
+      confidence: 0.98,
+      status: "verified",
+      created_by: "measurement_reviewer",
+      verified_by: [],
+      task_id: taskId,
+      expires_at: null,
+      value: 42
+    })).toThrow("verified facts require at least one verifier");
+  });
+});

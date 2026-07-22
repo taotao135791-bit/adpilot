@@ -54,6 +54,43 @@ export const SpecialistRole = z.enum([
 ]);
 export type SpecialistRole = z.infer<typeof SpecialistRole>;
 
+/**
+ * Lifecycle for facts exchanged between the root agent and bounded specialists.
+ * Only `verified` facts are generally reusable. `observed` facts require an
+ * explicit per-dispatch selection by the root agent.
+ */
+export const SharedFactStatus = z.enum([
+  "observed",
+  "verified",
+  "disputed",
+  "rejected",
+  "superseded",
+  "expired"
+]);
+export type SharedFactStatus = z.infer<typeof SharedFactStatus>;
+
+export const SharedFact = z.object({
+  fact_id: z.string().min(1),
+  source: z.string().min(1),
+  evidence: z.array(z.string().min(1)).min(1),
+  confidence: z.number().min(0).max(1),
+  status: SharedFactStatus,
+  created_by: z.string().min(1),
+  verified_by: z.array(z.string().min(1)),
+  task_id: z.string().uuid(),
+  expires_at: z.string().datetime().nullable(),
+  value: z.unknown()
+}).superRefine((fact, context) => {
+  if (fact.status === "verified" && fact.verified_by.length === 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["verified_by"],
+      message: "verified facts require at least one verifier"
+    });
+  }
+});
+export type SharedFact = z.infer<typeof SharedFact>;
+
 export const TaskState = z.object({
   id: z.string().uuid(),
   clientId: z.string().min(1),
