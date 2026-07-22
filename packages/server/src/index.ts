@@ -144,10 +144,10 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
   });
 
   app.post("/api/tasks", async (request, reply) => {
-    const body = z.object({ clientId: z.string(), goal: z.string().min(1), sharedFacts: z.record(z.unknown()).default({}) }).parse(request.body);
+    const body = z.object({ clientId: z.string(), goal: z.string().min(1) }).strict().parse(request.body);
     system.events.publish({ type: "task", status: "running", message: body.goal });
     try {
-      const result = await system.agent.runTask(body.clientId, body.goal, body.sharedFacts);
+      const result = await system.agent.runTask(body.clientId, body.goal);
       system.events.publish({ type: "task", status: result.task.phase, taskId: result.task.id, message: result.result.summary });
       reply.code(201); return result;
     } catch (error) {

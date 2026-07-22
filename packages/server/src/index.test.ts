@@ -103,6 +103,13 @@ describe("product server", () => {
     const state = await server.inject({ method: "GET", url: "/api/state" });
     expect(state.json()).toMatchObject({ selectedClientId: "personal", clients: [{ id: "personal", name: "AdPilot" }], messages: [] });
 
+    const legacyFactInjection = await server.inject({
+      method: "POST",
+      url: "/api/tasks",
+      payload: { clientId: "personal", goal: "Inspect performance", sharedFacts: { spend: 999 } }
+    });
+    expect(legacyFactInjection.statusCode).toBe(400);
+
     await system.workspace.appendJsonl("personal", "conversation.jsonl", {
       id: crypto.randomUUID(), clientId: "personal", role: "system", status: "error",
       content: '[{"code":"invalid_type","expected":"answer | investigate"}]', at: new Date().toISOString()
