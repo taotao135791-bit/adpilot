@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { Platform, RiskLevel, stableJson, systemClock, type Clock } from "@adpilot/shared";
 import { WorkspaceStore } from "@adpilot/workspace";
@@ -20,54 +20,126 @@ export const ApprovalOperation = z.object({
 });
 export type ApprovalOperation = z.infer<typeof ApprovalOperation>;
 
-export const ApprovalExecutionPlan = z.object({
+const ExecutionValue = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
+const Sha256Fingerprint = z.string().regex(/^[a-f0-9]{64}$/);
+
+export const VisualAllowedRegion = z.object({
+  x: z.number().finite().nonnegative(),
+  y: z.number().finite().nonnegative(),
+  width: z.number().finite().positive(),
+  height: z.number().finite().positive(),
+  coordinateSpace: z.enum(["screenshot_pixels", "screen_points"])
+}).strict();
+export type VisualAllowedRegion = z.infer<typeof VisualAllowedRegion>;
+
+const visualExecutionPlanShape = {
+  schemaVersion: z.literal(1),
+  planId: z.string().uuid(),
+  taskId: z.string().uuid(),
+  clientId: z.string().min(1),
+  platform: Platform,
+  browserProfile: z.string().min(1),
+  applicationId: z.string().min(1),
+  applicationName: z.string().min(1),
+  windowId: z.string().min(1),
+  domain: z.string().min(1).nullable(),
+  allowedApplications: z.array(z.string().min(1)).min(1),
+  allowedDomains: z.array(z.string().min(1)),
+  accountName: z.string().min(1),
+  accountId: z.string().min(1),
+  campaignName: z.string().min(1),
+  campaignId: z.string().min(1),
+  pageType: z.string().min(1),
+  operation: z.string().min(1),
+  currentValue: ExecutionValue,
+  proposedValue: ExecutionValue,
   instruction: z.string().min(1),
   target: z.string().min(1),
   expectedResult: z.string().min(1),
-  surface: z.object({
-    app: z.string().min(1),
-    domain: z.string().min(1).optional(),
-    browserProfile: z.string().min(1),
-    allowedApps: z.array(z.string().min(1)).min(1),
-    allowedDomains: z.array(z.string().min(1)).default([]),
-    surfaceFingerprint: z.string().length(64).optional()
-  }),
-  experiment: z.object({
-    hypothesis: z.string().min(1),
-    variable: z.string().min(1),
-    baseline: z.record(z.number()),
-    expected: z.string().min(1),
-    successCriteria: z.string().min(1),
-    failureCriteria: z.string().min(1),
-    maturityWindowDays: z.number().int().positive(),
-    rollbackCondition: z.string().min(1),
-    reviewAt: z.string().datetime()
-  })
-});
+  allowedRegion: VisualAllowedRegion,
+  riskLevel: RiskLevel,
+  surfaceFingerprint: Sha256Fingerprint,
+  accountFingerprint: Sha256Fingerprint,
+  createdAt: z.string().datetime(),
+  expiresAt: z.string().datetime()
+} as const;
+
+/**
+ * Stable contract for the complete visual work approved by the user.
+ *
+ * This schema is deliberately strict: accepting and silently stripping a new
+ * execution field would leave that field outside the approval fingerprint.
+ */
+export const VisualExecutionPlan = z.object(visualExecutionPlanShape).strict().superRefine(validatePlanLifetime);
+export type VisualExecutionPlan = z.infer<typeof VisualExecutionPlan>;
+
+export const ApprovalExperiment = z.object({
+  hypothesis: z.string().min(1),
+  variable: z.string().min(1),
+  baseline: z.record(z.number()),
+  expected: z.string().min(1),
+  successCriteria: z.string().min(1),
+  failureCriteria: z.string().min(1),
+  maturityWindowDays: z.number().int().positive(),
+  rollbackCondition: z.string().min(1),
+  reviewAt: z.string().datetime()
+}).strict();
+
+/** A visual execution contract plus the experiment created after success. */
+export const ApprovalExecutionPlan = z.object({
+  ...visualExecutionPlanShape,
+  experiment: ApprovalExperiment
+}).strict().superRefine(validatePlanLifetime);
 export type ApprovalExecutionPlan = z.infer<typeof ApprovalExecutionPlan>;
 
+/** Remove non-execution metadata before generating or checking the fingerprint. */
+export function extractVisualExecutionPlan(planInput: ApprovalExecutionPlan): VisualExecutionPlan {
+  const { experiment: _experiment, ...visualPlan } = ApprovalExecutionPlan.parse(planInput);
+  return VisualExecutionPlan.parse(visualPlan);
+}
+
+/** SHA-256 over every accepted execution field in canonical key order. */
+export function executionPlanFingerprint(planInput: VisualExecutionPlan): string {
+  const plan = VisualExecutionPlan.parse(planInput);
+  return createHash("sha256").update(stableJson(plan)).digest("hex");
+}
+
 export const ApprovalTokenBinding = z.object({
+  schemaVersion: z.literal(2),
   approvalId: z.string().uuid(),
   clientId: z.string().min(1),
+  taskId: z.string().uuid(),
+  planId: z.string().uuid(),
   platform: Platform,
+  browserProfile: z.string().min(1),
+  applicationId: z.string().min(1),
+  windowId: z.string().min(1),
+  accountName: z.string().min(1),
   accountId: z.string().min(1),
+  campaignName: z.string().min(1),
   campaignId: z.string().min(1),
+  pageType: z.string().min(1),
   operation: z.string().min(1),
-  currentValue: z.union([z.string(), z.number(), z.boolean(), z.null()]),
-  proposedValue: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+  currentValue: ExecutionValue,
+  proposedValue: ExecutionValue,
   riskLevel: RiskLevel,
-  surfaceFingerprint: z.string().length(64),
+  surfaceFingerprint: Sha256Fingerprint,
+  accountFingerprint: Sha256Fingerprint,
+  executionPlanFingerprint: Sha256Fingerprint,
   expiresAt: z.string().datetime(),
   maxAttempts: z.literal(1)
-});
+}).strict();
 export type ApprovalTokenBinding = z.infer<typeof ApprovalTokenBinding>;
 
-export const Approval = z.object({
+const ApprovalV2 = z.object({
+  schemaVersion: z.literal(2),
   id: z.string().uuid(),
   clientId: z.string().min(1),
   taskId: z.string().uuid(),
   operation: ApprovalOperation,
   executionPlan: ApprovalExecutionPlan.nullable().default(null),
+  executionPlanFingerprint: Sha256Fingerprint.nullable().default(null),
+  legacyExecutionPlan: z.unknown().optional(),
   fingerprint: z.string().min(1),
   status: z.enum(["pending_risk_review", "rejected", "pending_user", "approved", "executing", "executed", "failed", "expired", "cancelled"]),
   riskReview: z.object({ reviewer: z.literal("risk_reviewer"), approved: z.boolean(), reason: z.string().min(1), at: z.string().datetime() }).nullable(),
@@ -79,6 +151,27 @@ export const Approval = z.object({
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 });
+
+/**
+ * Old persisted approvals remain readable for audit/recovery, but their
+ * incomplete plans and tokens are converted to terminal, non-executable data.
+ */
+export const Approval = z.preprocess((input) => {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const record = input as Record<string, unknown>;
+  if (record.schemaVersion === 2) return record;
+  const previousStatus = record.status;
+  return {
+    ...record,
+    schemaVersion: 2,
+    executionPlan: null,
+    executionPlanFingerprint: null,
+    ...(record.executionPlan == null ? {} : { legacyExecutionPlan: record.executionPlan }),
+    tokenBinding: null,
+    tokenNonceHash: null,
+    status: previousStatus === "approved" ? "cancelled" : previousStatus === "executing" ? "failed" : previousStatus
+  };
+}, ApprovalV2);
 export type Approval = z.infer<typeof Approval>;
 
 export class ApprovalError extends Error {}
@@ -96,10 +189,21 @@ export class ApprovalService {
     const operation = ApprovalOperation.parse(operationInput);
     validateNumericChange(operation);
     const executionPlan = planInput ? ApprovalExecutionPlan.parse(planInput) : null;
-    const now = this.clock.now().toISOString();
+    const nowDate = this.clock.now();
+    if (executionPlan) {
+      const visualPlan = extractVisualExecutionPlan(executionPlan);
+      validateExecutionPlanContext(visualPlan, operation, clientId, taskId);
+      if (nowDate >= new Date(visualPlan.expiresAt)) throw new ApprovalError("visual execution plan is already expired");
+      if (new Date(visualPlan.createdAt).getTime() > nowDate.getTime() + 30_000) {
+        throw new ApprovalError("visual execution plan creation time is in the future");
+      }
+    }
+    const planFingerprint = executionPlan ? executionPlanFingerprint(extractVisualExecutionPlan(executionPlan)) : null;
+    const now = nowDate.toISOString();
     const approval = Approval.parse({
-      id: crypto.randomUUID(), clientId, taskId, operation, executionPlan,
-      fingerprint: this.fingerprint(operation), status: "pending_risk_review",
+      schemaVersion: 2, id: crypto.randomUUID(), clientId, taskId, operation, executionPlan,
+      executionPlanFingerprint: planFingerprint,
+      fingerprint: this.operationFingerprint(operation), status: "pending_risk_review",
       riskReview: null, userApproval: null, tokenNonceHash: null, tokenExpiresAt: null,
       tokenBinding: null, tokenAttempts: 0,
       createdAt: now, updatedAt: now
@@ -122,17 +226,48 @@ export class ApprovalService {
   async approveByUser(clientId: string, id: string, approvedBy: string): Promise<{ approval: Approval; token: string }> {
     const current = await this.get(clientId, id);
     if (current.status !== "pending_user" || !current.riskReview?.approved) throw new ApprovalError("risk review must approve before user approval");
-    const surfaceFingerprint = current.executionPlan?.surface.surfaceFingerprint;
-    if (!surfaceFingerprint) throw new ApprovalError("a verified surface fingerprint is required before user approval");
+    if (!current.executionPlan || !current.executionPlanFingerprint) {
+      throw new ApprovalError("a complete visual execution plan is required before user approval");
+    }
+    const visualPlan = extractVisualExecutionPlan(current.executionPlan);
+    validateExecutionPlanContext(visualPlan, current.operation, current.clientId, current.taskId);
+    const recalculatedFingerprint = executionPlanFingerprint(visualPlan);
+    if (!safeEqual(recalculatedFingerprint, current.executionPlanFingerprint)) {
+      await this.invalidate(current, "failed");
+      throw new ApprovalError("stored visual execution plan fingerprint is invalid");
+    }
     const now = this.clock.now();
-    const expiresAt = new Date(now.getTime() + 5 * 60_000);
+    const planExpiresAt = new Date(visualPlan.expiresAt);
+    if (now >= planExpiresAt) {
+      await this.update(current, { status: "expired", updatedAt: now.toISOString() });
+      throw new ApprovalError("visual execution plan expired before approval");
+    }
+    const expiresAt = new Date(Math.min(now.getTime() + 5 * 60_000, planExpiresAt.getTime()));
     const nonce = crypto.randomUUID();
     const binding = ApprovalTokenBinding.parse({
-      approvalId: current.id, clientId: current.clientId, platform: current.operation.platform,
-      accountId: current.operation.account, campaignId: current.operation.campaign,
-      operation: current.operation.operation, currentValue: current.operation.currentValue,
-      proposedValue: current.operation.proposedValue, riskLevel: current.operation.riskLevel,
-      surfaceFingerprint, expiresAt: expiresAt.toISOString(), maxAttempts: 1
+      schemaVersion: 2,
+      approvalId: current.id,
+      clientId: current.clientId,
+      taskId: current.taskId,
+      planId: visualPlan.planId,
+      platform: visualPlan.platform,
+      browserProfile: visualPlan.browserProfile,
+      applicationId: visualPlan.applicationId,
+      windowId: visualPlan.windowId,
+      accountName: visualPlan.accountName,
+      accountId: visualPlan.accountId,
+      campaignName: visualPlan.campaignName,
+      campaignId: visualPlan.campaignId,
+      pageType: visualPlan.pageType,
+      operation: visualPlan.operation,
+      currentValue: visualPlan.currentValue,
+      proposedValue: visualPlan.proposedValue,
+      riskLevel: visualPlan.riskLevel,
+      surfaceFingerprint: visualPlan.surfaceFingerprint,
+      accountFingerprint: visualPlan.accountFingerprint,
+      executionPlanFingerprint: recalculatedFingerprint,
+      expiresAt: expiresAt.toISOString(),
+      maxAttempts: 1
     });
     const encodedBinding = Buffer.from(stableJson(binding)).toString("base64url");
     const signature = this.sign(`${encodedBinding}.${nonce}`);
@@ -149,21 +284,47 @@ export class ApprovalService {
     return { approval, token };
   }
 
-  async consume(clientId: string, id: string, token: string, exactOperation: ApprovalOperation, liveSurfaceFingerprint: string): Promise<Approval> {
+  /**
+   * Check the complete actual plan without consuming a valid token. A mismatch
+   * still destroys an approved token so callers cannot probe and then retry.
+   */
+  async verifyExecutionPlan(clientId: string, id: string, actualPlan: VisualExecutionPlan): Promise<{
+    approval: Approval;
+    approvedFingerprint: string;
+    actualFingerprint: string;
+  }> {
+    const current = await this.get(clientId, id);
+    if (current.status !== "approved") throw new ApprovalError("approval token is not usable");
+    const parsed = await this.assertExactExecutionPlan(current, actualPlan);
+    return {
+      approval: current,
+      approvedFingerprint: current.executionPlanFingerprint!,
+      actualFingerprint: executionPlanFingerprint(parsed)
+    };
+  }
+
+  async consume(
+    clientId: string,
+    id: string,
+    token: string,
+    exactOperation: ApprovalOperation,
+    actualPlan: VisualExecutionPlan | string
+  ): Promise<Approval> {
     const current = await this.get(clientId, id);
     if (current.status !== "approved") throw new ApprovalError("approval token is not usable");
     if (!current.tokenBinding || current.tokenAttempts >= current.tokenBinding.maxAttempts) {
       await this.invalidate(current, "failed");
       throw new ApprovalError("approval token attempt limit reached");
     }
-    if (this.fingerprint(ApprovalOperation.parse(exactOperation)) !== current.fingerprint) {
+    if (this.operationFingerprint(ApprovalOperation.parse(exactOperation)) !== current.fingerprint) {
       await this.invalidate(current, "failed");
       throw new ApprovalError("operation no longer matches approval");
     }
-    if (liveSurfaceFingerprint !== current.tokenBinding.surfaceFingerprint) {
+    if (typeof actualPlan === "string") {
       await this.invalidate(current, "cancelled");
-      throw new ApprovalError("surface changed after approval");
+      throw new ApprovalError("a complete actual visual execution plan is required; a surface fingerprint alone is insufficient");
     }
+    await this.assertExactExecutionPlan(current, actualPlan);
     const parts = token.split(".");
     if (parts.length !== 3) {
       await this.invalidate(current, "failed");
@@ -222,7 +383,7 @@ export class ApprovalService {
     return recovered;
   }
 
-  private fingerprint(operation: ApprovalOperation): string {
+  private operationFingerprint(operation: ApprovalOperation): string {
     return this.sign(stableJson({
       platform: operation.platform,
       account: operation.account,
@@ -232,6 +393,34 @@ export class ApprovalService {
       proposedValue: operation.proposedValue,
       riskLevel: operation.riskLevel
     }));
+  }
+
+  private async assertExactExecutionPlan(current: Approval, actualPlanInput: VisualExecutionPlan): Promise<VisualExecutionPlan> {
+    if (!current.executionPlan || !current.executionPlanFingerprint || !current.tokenBinding) {
+      await this.invalidate(current, "failed");
+      throw new ApprovalError("approval has no executable visual plan binding");
+    }
+    let actualPlan: VisualExecutionPlan;
+    try {
+      actualPlan = VisualExecutionPlan.parse(actualPlanInput);
+      validateExecutionPlanContext(actualPlan, current.operation, current.clientId, current.taskId);
+    } catch (error) {
+      await this.invalidate(current, "cancelled");
+      throw new ApprovalError(`actual visual execution plan is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const approvedPlan = extractVisualExecutionPlan(current.executionPlan);
+    const approvedFingerprint = executionPlanFingerprint(approvedPlan);
+    const actualFingerprint = executionPlanFingerprint(actualPlan);
+    const bindingFingerprint = current.tokenBinding.executionPlanFingerprint;
+    if (
+      !safeEqual(approvedFingerprint, current.executionPlanFingerprint)
+      || !safeEqual(bindingFingerprint, current.executionPlanFingerprint)
+      || !safeEqual(actualFingerprint, current.executionPlanFingerprint)
+    ) {
+      await this.invalidate(current, "cancelled");
+      throw new ApprovalError("visual execution plan no longer matches approval; prepare and approve a new plan");
+    }
+    return actualPlan;
   }
 
   private sign(value: string): string {
@@ -257,6 +446,51 @@ function safeEqual(left: string, right: string): boolean {
   const a = Buffer.from(left);
   const b = Buffer.from(right);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function validatePlanLifetime(
+  plan: { createdAt: string; expiresAt: string },
+  context: z.RefinementCtx
+): void {
+  if (new Date(plan.expiresAt).getTime() <= new Date(plan.createdAt).getTime()) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["expiresAt"],
+      message: "visual execution plan must expire after it is created"
+    });
+  }
+}
+
+function validateExecutionPlanContext(
+  plan: VisualExecutionPlan,
+  operation: ApprovalOperation,
+  clientId: string,
+  taskId: string
+): void {
+  const mismatches: string[] = [];
+  if (plan.clientId !== clientId) mismatches.push("clientId");
+  if (plan.taskId !== taskId) mismatches.push("taskId");
+  if (plan.platform !== operation.platform) mismatches.push("platform");
+  if (plan.accountId !== operation.account) mismatches.push("accountId");
+  if (plan.campaignId !== operation.campaign) mismatches.push("campaignId");
+  if (plan.operation !== operation.operation) mismatches.push("operation");
+  if (stableJson(plan.currentValue) !== stableJson(operation.currentValue)) mismatches.push("currentValue");
+  if (stableJson(plan.proposedValue) !== stableJson(operation.proposedValue)) mismatches.push("proposedValue");
+  if (plan.riskLevel !== operation.riskLevel) mismatches.push("riskLevel");
+  if (!plan.allowedApplications.includes(plan.applicationId) && !plan.allowedApplications.includes(plan.applicationName)) {
+    mismatches.push("allowedApplications");
+  }
+  if (plan.domain) {
+    const domain = plan.domain.toLowerCase();
+    const allowed = plan.allowedDomains.some((candidate) => {
+      const normalized = candidate.toLowerCase();
+      return domain === normalized || domain.endsWith(`.${normalized}`);
+    });
+    if (!allowed) mismatches.push("allowedDomains");
+  }
+  if (mismatches.length > 0) {
+    throw new ApprovalError(`visual execution plan differs from approval context: ${mismatches.join(", ")}`);
+  }
 }
 
 function validateNumericChange(operation: ApprovalOperation): void {
