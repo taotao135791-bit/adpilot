@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
@@ -85,7 +85,8 @@ export class WorkspaceStore {
       "traces",
       "memory",
       "tasks",
-      "approvals"
+      "approvals",
+      "sessions"
     ].map((directory) => mkdir(join(root, directory), { recursive: true, mode: 0o700 })));
     await Promise.all([
       this.writeYaml(profile.id, "profile.yaml", profile),
@@ -145,13 +146,7 @@ export class WorkspaceStore {
   }
 
   async appendJsonl(clientId: string, relativePath: string, value: unknown): Promise<void> {
-    const path = this.resolveClientPath(clientId, relativePath);
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    const current = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return "";
-      throw error;
-    });
-    await writeAtomic(path, `${current}${JSON.stringify(value)}\n`);
+    await this.appendText(clientId, relativePath, `${JSON.stringify(value)}\n`);
   }
 
   async readJsonl<S extends z.ZodTypeAny>(clientId: string, relativePath: string, schema: S): Promise<Array<z.output<S>>> {
@@ -165,6 +160,31 @@ export class WorkspaceStore {
 
   async writeJson(clientId: string, relativePath: string, value: unknown): Promise<void> {
     await writeAtomic(this.resolveClientPath(clientId, relativePath), `${JSON.stringify(value, null, 2)}\n`);
+  }
+
+  async readText(clientId: string, relativePath: string): Promise<string | undefined> {
+    return readFile(this.resolveClientPath(clientId, relativePath), "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+  }
+
+  async createText(clientId: string, relativePath: string, content: string): Promise<boolean> {
+    const path = this.resolveClientPath(clientId, relativePath);
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    try {
+      await writeFile(path, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw error;
+    }
+  }
+
+  async appendText(clientId: string, relativePath: string, content: string): Promise<void> {
+    const path = this.resolveClientPath(clientId, relativePath);
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    await appendFile(path, content, { encoding: "utf8", mode: 0o600 });
   }
 
   async readJson<S extends z.ZodTypeAny>(clientId: string, relativePath: string, schema: S): Promise<z.output<S>> {

@@ -1,10 +1,14 @@
-import { Agent, DEFAULT_COMPACTION_SETTINGS, InMemorySessionStorage, Session, estimateContextTokens, formatSkillsForSystemPrompt, prepareCompaction, compact, type AgentEvent, type AgentMessage, type AgentTool, type SessionMetadata, type Skill as PiSkill } from "@earendil-works/pi-agent-core";
+import { Agent, DEFAULT_COMPACTION_SETTINGS, Session, estimateContextTokens, formatSkillsForSystemPrompt, prepareCompaction, compact, shouldCompact, type AgentEvent, type AgentMessage, type AgentTool, type CompactionSettings, type Skill as PiSkill } from "@earendil-works/pi-agent-core";
 import type { Api, Model, Models } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import { ModelRouter, resolvePiModel, type RoutingSignals } from "@adpilot/model-router";
 import { SkillRegistry } from "@adpilot/skills";
 import type { ToolContext, AdPilotTools } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
+import { AdPilotSessionStorage, resolvePiSessionId } from "./session-storage.js";
+
+export { AdPilotSessionStorage, resolvePiSessionId } from "./session-storage.js";
+export type { AdPilotSessionMetadata } from "./session-storage.js";
 
 export interface RuntimeExtension {
   name: string;
@@ -16,6 +20,7 @@ export interface RuntimeExtension {
 
 export interface RuntimeRunContext extends ToolContext {
   sessionId: string;
+  conversationId?: string;
   role: string;
 }
 
@@ -31,39 +36,82 @@ export interface RuntimeRequest {
 
 export interface RuntimeResult {
   text: string;
+  sessionId?: string;
   model: { provider: string; id: string; tier: string };
   messages: AgentMessage[];
   events: AgentEvent[];
   recovered: boolean;
+  compacted?: boolean;
 }
 
+export interface PiAgentRuntimeOptions {
+  compaction?: Partial<CompactionSettings>;
+  compactionInstructions?: string;
+}
+
+export interface RuntimeRecoveryCheckpoint {
+  version: 1;
+  clientId: string;
+  conversationId: string;
+  sessionId: string;
+  phase: "running" | "compacting" | "compacted" | "idle" | "failed";
+  leafId: string | null;
+  entryCount: number;
+  updatedAt: string;
+  firstKeptEntryId?: string;
+  tokensBefore?: number;
+  compactionEntryId?: string;
+  error?: string;
+}
+
+type ResolvedRuntimeRequest = Omit<RuntimeRequest, "context"> & {
+  context: RuntimeRunContext & { conversationId: string };
+};
+
+const DEFAULT_ADPILOT_COMPACTION_INSTRUCTIONS = [
+  "Preserve client, advertising account, campaign, ad group, creative and experiment identifiers exactly.",
+  "Preserve budget values, currencies, timezones, KPI targets, approval state, guardrail decisions and completed tool side effects.",
+  "Never imply that an account mutation occurred unless a persisted tool result confirms it."
+].join(" ");
+
 export class PiAgentRuntime {
+  private readonly compactionSettings: CompactionSettings;
+  private readonly compactionInstructions: string;
+  private readonly sessionLocks = new Map<string, Promise<void>>();
+
   constructor(
     private readonly models: Models,
     private readonly router: ModelRouter,
     private readonly workspace: WorkspaceStore,
     private readonly skills: SkillRegistry,
     private readonly tools: AdPilotTools,
-    private readonly extensions: RuntimeExtension[] = []
-  ) {}
+    private readonly extensions: RuntimeExtension[] = [],
+    options: PiAgentRuntimeOptions = {}
+  ) {
+    this.compactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, ...options.compaction };
+    this.compactionInstructions = options.compactionInstructions ?? DEFAULT_ADPILOT_COMPACTION_INSTRUCTIONS;
+  }
 
   async run(request: RuntimeRequest): Promise<RuntimeResult> {
-    for (const extension of this.extensions) await extension.beforeRun?.(request.context);
-    const decision = this.router.route(request.signals);
-    let model = resolvePiModel(this.models, decision.ref);
-    try {
-      let result = await this.execute(request, model, decision.tier, false);
-      if (result.messages.some((message) => message.role === "assistant" && message.stopReason === "error") && decision.tier !== "strong") {
-        model = resolvePiModel(this.models, this.router.route({ ...request.signals, reviewerEscalated: true }).ref);
-        result = await this.execute({ ...request, priorMessages: result.messages }, model, "strong", true);
+    const resolvedRequest = this.resolveRequest(request);
+    return this.withSessionLock(resolvedRequest.context.sessionId, async () => {
+      for (const extension of this.extensions) await extension.beforeRun?.(resolvedRequest.context);
+      const decision = this.router.route(resolvedRequest.signals);
+      let model = resolvePiModel(this.models, decision.ref);
+      try {
+        let result = await this.execute(resolvedRequest, model, decision.tier, false);
+        if (result.messages.some((message) => message.role === "assistant" && message.stopReason === "error") && decision.tier !== "strong") {
+          model = resolvePiModel(this.models, this.router.route({ ...resolvedRequest.signals, reviewerEscalated: true }).ref);
+          result = await this.execute({ ...resolvedRequest, priorMessages: result.messages }, model, "strong", true);
+        }
+        for (const extension of this.extensions) await extension.afterRun?.(result, resolvedRequest.context);
+        return result;
+      } catch (unknownError) {
+        const error = unknownError instanceof Error ? unknownError : new Error(String(unknownError));
+        for (const extension of this.extensions) await extension.onError?.(error, resolvedRequest.context);
+        throw error;
       }
-      for (const extension of this.extensions) await extension.afterRun?.(result, request.context);
-      return result;
-    } catch (unknownError) {
-      const error = unknownError instanceof Error ? unknownError : new Error(String(unknownError));
-      for (const extension of this.extensions) await extension.onError?.(error, request.context);
-      throw error;
-    }
+    });
   }
 
   async runStructured<S extends z.ZodTypeAny>(request: RuntimeRequest, schema: S): Promise<z.output<S>> {
@@ -89,10 +137,17 @@ export class PiAgentRuntime {
     } as AgentTool;
   }
 
-  private async execute(request: RuntimeRequest, model: Model<Api>, tier: string, recovered: boolean): Promise<RuntimeResult> {
+  private async execute(request: ResolvedRuntimeRequest, model: Model<Api>, tier: string, recovered: boolean): Promise<RuntimeResult> {
     const piSkills = this.buildPiSkills(request.allowedSkills ?? []);
     const skillsPrompt = formatSkillsForSystemPrompt(piSkills);
-    const session = new Session(new InMemorySessionStorage<SessionMetadata>({ metadata: { id: request.context.sessionId, createdAt: new Date().toISOString() } }));
+    const storage = await AdPilotSessionStorage.openOrCreate(this.workspace, request.context.clientId, request.context.conversationId);
+    const session = new Session(storage);
+    if ((await session.getEntries()).length === 0 && request.priorMessages?.length) {
+      for (const message of request.priorMessages) await session.appendMessage(message);
+    }
+    let lastCompactionEntryId = await this.compactAtThreshold(session, model, request.context);
+    let compacted = Boolean(lastCompactionEntryId);
+    const persistedContext = await session.buildContext();
     const events: AgentEvent[] = [];
     const tools = [...(request.tools ?? [])];
     if ((request.allowedSkills?.length ?? 0) > 0) tools.push(this.createSkillTool(request.context, request.allowedSkills ?? []));
@@ -101,7 +156,7 @@ export class PiAgentRuntime {
         systemPrompt: `${request.systemPrompt}\n\n${skillsPrompt}`,
         model,
         tools,
-        messages: request.priorMessages ?? []
+        messages: persistedContext.messages
       },
       streamFn: (selectedModel, context, options) => this.models.streamSimple(selectedModel, context, options),
       sessionId: request.context.sessionId,
@@ -112,18 +167,28 @@ export class PiAgentRuntime {
         return undefined;
       }
     });
-    agent.subscribe(async (event) => {
-      events.push(event);
-      for (const extension of this.extensions) await extension.onEvent?.(event, request.context);
-      if (event.type === "message_end") {
-        await session.appendMessage(event.message);
-        await this.workspace.appendJsonl(request.context.clientId, `traces/${request.context.sessionId}.jsonl`, { type: "message", at: new Date().toISOString(), message: event.message });
-      }
-    });
-    await agent.prompt(request.prompt);
-    await agent.waitForIdle();
-    const text = lastAssistantText(agent.state.messages);
-    return { text, model: { provider: model.provider, id: model.id, tier }, messages: agent.state.messages.slice(), events, recovered };
+    await this.writeCheckpoint(session, request.context, "running");
+    try {
+      agent.subscribe(async (event) => {
+        events.push(event);
+        for (const extension of this.extensions) await extension.onEvent?.(event, request.context);
+        if (event.type === "message_end") {
+          await session.appendMessage(event.message);
+          await this.workspace.appendJsonl(request.context.clientId, `traces/${request.context.sessionId}.jsonl`, { type: "message", at: new Date().toISOString(), message: event.message });
+        }
+      });
+      await agent.prompt(request.prompt);
+      await agent.waitForIdle();
+      const text = lastAssistantText(agent.state.messages);
+      const compactionEntryId = await this.compactAtThreshold(session, model, request.context);
+      lastCompactionEntryId = compactionEntryId ?? lastCompactionEntryId;
+      compacted = compacted || Boolean(compactionEntryId);
+      await this.writeCheckpoint(session, request.context, "idle", lastCompactionEntryId ? { compactionEntryId: lastCompactionEntryId } : undefined);
+      return { text, sessionId: request.context.sessionId, model: { provider: model.provider, id: model.id, tier }, messages: agent.state.messages.slice(), events, recovered, compacted };
+    } catch (error) {
+      await this.writeCheckpoint(session, request.context, "failed", { error: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
+      throw error;
+    }
   }
 
   private buildPiSkills(names: string[]): PiSkill[] {
@@ -145,7 +210,7 @@ export class PiAgentRuntime {
 
   async compactSession(session: Session, model: Model<Api>, customInstructions: string): Promise<boolean> {
     const entries = await session.getBranch();
-    const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
+    const preparation = prepareCompaction(entries, this.compactionSettings);
     if (!preparation.ok || !preparation.value) return false;
     const result = await compact(preparation.value, this.models, model, customInstructions);
     if (!result.ok) throw result.error;
@@ -155,6 +220,81 @@ export class PiAgentRuntime {
 
   contextUsage(messages: AgentMessage[]) {
     return estimateContextTokens(messages);
+  }
+
+  private resolveRequest(request: RuntimeRequest): ResolvedRuntimeRequest {
+    const conversationId = request.context.conversationId?.trim() || request.context.sessionId;
+    const sessionId = resolvePiSessionId(request.context.clientId, conversationId);
+    return { ...request, context: { ...request.context, conversationId, sessionId } };
+  }
+
+  private async compactAtThreshold(
+    session: Session,
+    model: Model<Api>,
+    context: RuntimeRunContext & { conversationId: string }
+  ): Promise<string | undefined> {
+    if (model.contextWindow <= 0) return undefined;
+    const sessionContext = await session.buildContext();
+    const usage = estimateContextTokens(sessionContext.messages);
+    if (!shouldCompact(usage.tokens, model.contextWindow, this.compactionSettings)) return undefined;
+    const entries = await session.getBranch();
+    const preparation = prepareCompaction(entries, this.compactionSettings);
+    if (!preparation.ok) throw preparation.error;
+    if (!preparation.value) return undefined;
+    await this.writeCheckpoint(session, context, "compacting", {
+      firstKeptEntryId: preparation.value.firstKeptEntryId,
+      tokensBefore: preparation.value.tokensBefore
+    });
+    const result = await compact(preparation.value, this.models, model, this.compactionInstructions);
+    if (!result.ok) throw result.error;
+    const compactionEntryId = await session.appendCompaction(
+      result.value.summary,
+      result.value.firstKeptEntryId,
+      result.value.tokensBefore,
+      result.value.details
+    );
+    await this.writeCheckpoint(session, context, "compacted", {
+      firstKeptEntryId: result.value.firstKeptEntryId,
+      tokensBefore: result.value.tokensBefore,
+      compactionEntryId
+    });
+    return compactionEntryId;
+  }
+
+  private async writeCheckpoint(
+    session: Session,
+    context: RuntimeRunContext & { conversationId: string },
+    phase: RuntimeRecoveryCheckpoint["phase"],
+    details: Partial<Pick<RuntimeRecoveryCheckpoint, "firstKeptEntryId" | "tokensBefore" | "compactionEntryId" | "error">> = {}
+  ): Promise<void> {
+    const [leafId, entries] = await Promise.all([session.getLeafId(), session.getEntries()]);
+    const checkpoint: RuntimeRecoveryCheckpoint = {
+      version: 1,
+      clientId: context.clientId,
+      conversationId: context.conversationId,
+      sessionId: context.sessionId,
+      phase,
+      leafId,
+      entryCount: entries.length,
+      updatedAt: new Date().toISOString(),
+      ...details
+    };
+    await this.workspace.writeJson(context.clientId, `sessions/${context.sessionId}.recovery.json`, checkpoint);
+  }
+
+  private async withSessionLock<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.sessionLocks.get(sessionId) ?? Promise.resolve();
+    let release: () => void = () => undefined;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    const queued = previous.then(() => current);
+    this.sessionLocks.set(sessionId, queued);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.sessionLocks.get(sessionId) === queued) this.sessionLocks.delete(sessionId);
+    }
   }
 }
 
