@@ -15,8 +15,11 @@ import {
   fingerprintSurface,
   type NativeSurfaceIdentity
 } from "./surface.js";
+import { BrowserSessionLostError } from "./browser-session.js";
 
 export * from "./surface.js";
+export * from "./browser-session.js";
+export * from "./privacy.js";
 
 const common = {
   task_id: z.string().min(1).optional(),
@@ -114,6 +117,7 @@ export type VisualRuntimeEvent =
 
 export const VisualBlockerCode = z.enum([
   "SURFACE_CHANGED",
+  "BROWSER_SESSION_LOST",
   "DUPLICATE_COORDINATE",
   "MUTATION_RETRY_FORBIDDEN",
   "TIMEOUT",
@@ -293,6 +297,9 @@ export class VisualComputerRuntime {
         if (error instanceof SurfaceCaptureChangedError || error instanceof NativeSurfaceUnavailableError) {
           return failedResult(attempt, reason, "SURFACE_CHANGED", lastAction);
         }
+        if (error instanceof BrowserSessionLostError) {
+          return failedResult(attempt, reason, "BROWSER_SESSION_LOST", lastAction);
+        }
         if (error instanceof VisualRuntimeBlocker) {
           return failedResult(attempt, reason, error.code, lastAction);
         }
@@ -323,6 +330,7 @@ function failedResult(attempts: number, blocker: string, blockerCode: VisualBloc
 function blockerCode(error: unknown): VisualBlockerCode | undefined {
   if (error instanceof VisualRuntimeBlocker) return error.code;
   if (error instanceof SurfaceCaptureChangedError) return "SURFACE_CHANGED";
+  if (error instanceof BrowserSessionLostError) return "BROWSER_SESSION_LOST";
   if (error instanceof VisualTimeoutError) return "TIMEOUT";
   return undefined;
 }

@@ -1,0 +1,440 @@
+import { createHash, randomUUID } from "node:crypto";
+import { appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { Jimp } from "jimp";
+import { z } from "zod";
+import type {
+  Screenshot,
+  VisualAction,
+  VisualGroundingProvider,
+  VisualMicroTask,
+  VisualVerifier
+} from "./index.js";
+import type { ModelTier } from "@adpilot/shared";
+
+export const ScreenshotRegion = z.object({
+  x: z.number().int().nonnegative(),
+  y: z.number().int().nonnegative(),
+  width: z.number().int().positive(),
+  height: z.number().int().positive()
+});
+export type ScreenshotRegion = z.infer<typeof ScreenshotRegion>;
+
+export const PrivacyMaskCategory = z.enum([
+  "user_avatar",
+  "email",
+  "browser_tabs",
+  "notification",
+  "unrelated_account",
+  "top_personal_info",
+  "system_menu_bar",
+  "other_campaign",
+  "unrelated_financial_data",
+  "custom"
+]);
+export type PrivacyMaskCategory = z.infer<typeof PrivacyMaskCategory>;
+
+export const ScreenshotMask = z.object({
+  category: PrivacyMaskCategory,
+  region: ScreenshotRegion,
+  reason: z.string().min(1)
+});
+export type ScreenshotMask = z.infer<typeof ScreenshotMask>;
+
+export const ScreenshotPrivacyMode = z.enum(["minimized", "local-only"]);
+export type ScreenshotPrivacyMode = z.infer<typeof ScreenshotPrivacyMode>;
+
+export const ModelPrivacyDescriptor = z.object({
+  provider: z.string().min(1),
+  modelId: z.string().min(1),
+  location: z.enum(["local", "remote"]),
+  retentionPolicy: z.string().min(1)
+});
+export type ModelPrivacyDescriptor = z.infer<typeof ModelPrivacyDescriptor>;
+
+export const LocalScreenshotArtifact = z.object({
+  screenshotId: z.string().uuid(),
+  clientId: z.string().min(1),
+  taskId: z.string().min(1),
+  sha256: z.string().length(64),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  capturedAt: z.string().datetime(),
+  localPath: z.string().min(1),
+  retentionPolicy: z.string().min(1)
+});
+export type LocalScreenshotArtifact = z.infer<typeof LocalScreenshotArtifact>;
+
+export const ScreenshotModelCallAudit = z.object({
+  auditId: z.string().uuid(),
+  clientId: z.string().min(1),
+  taskId: z.string().min(1),
+  purpose: z.enum(["grounding", "verification", "table_read", "account_identity", "other"]),
+  modelProvider: z.string().min(1),
+  modelId: z.string().min(1),
+  screenshotId: z.string().uuid(),
+  screenshotSha256: z.string().length(64),
+  sentRoi: ScreenshotRegion,
+  masks: z.array(ScreenshotMask),
+  transmittedWidth: z.number().int().positive().optional(),
+  transmittedHeight: z.number().int().positive().optional(),
+  leftLocal: z.boolean(),
+  fullScreenshotLocalOnly: z.literal(true),
+  privacyMode: ScreenshotPrivacyMode,
+  dataRetentionPolicy: z.string().min(1),
+  outcome: z.enum(["prepared", "blocked"]),
+  createdAt: z.string().datetime()
+});
+export type ScreenshotModelCallAudit = z.infer<typeof ScreenshotModelCallAudit>;
+
+export interface ScreenshotArtifactStore {
+  saveFull(input: {
+    screenshotId: string;
+    clientId: string;
+    taskId: string;
+    screenshot: Screenshot;
+    retentionPolicy: string;
+  }): Promise<LocalScreenshotArtifact>;
+}
+
+export interface ScreenshotModelCallAuditStore {
+  append(record: ScreenshotModelCallAudit): Promise<void>;
+  list(clientId?: string): Promise<ScreenshotModelCallAudit[]>;
+}
+
+/** Stores complete captures only inside the supplied local Workspace directory. */
+export class FileScreenshotArtifactStore implements ScreenshotArtifactStore {
+  constructor(private readonly workspaceDirectory: string) {}
+
+  async saveFull(input: {
+    screenshotId: string;
+    clientId: string;
+    taskId: string;
+    screenshot: Screenshot;
+    retentionPolicy: string;
+  }): Promise<LocalScreenshotArtifact> {
+    const screenshotId = z.string().uuid().parse(input.screenshotId);
+    const clientKey = createHash("sha256").update(input.clientId).digest("hex").slice(0, 24);
+    const directory = join(this.workspaceDirectory, "screenshots", clientKey);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const localPath = join(directory, `${screenshotId}.png`);
+    const buffer = screenshotBuffer(input.screenshot.base64);
+    const sha256 = createHash("sha256").update(buffer).digest("hex");
+    await writeFile(localPath, buffer, { mode: 0o600 });
+    await chmod(localPath, 0o600);
+    const artifact = LocalScreenshotArtifact.parse({
+      screenshotId,
+      clientId: input.clientId,
+      taskId: input.taskId,
+      sha256,
+      width: input.screenshot.width,
+      height: input.screenshot.height,
+      capturedAt: input.screenshot.capturedAt,
+      localPath,
+      retentionPolicy: input.retentionPolicy
+    });
+    const metadataPath = join(directory, `${screenshotId}.json`);
+    await writeFile(metadataPath, `${JSON.stringify(artifact, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await chmod(metadataPath, 0o600);
+    return artifact;
+  }
+}
+
+/** Append-only model image disclosure ledger. It never contains image bytes. */
+export class FileScreenshotModelCallAuditStore implements ScreenshotModelCallAuditStore {
+  private readonly file: string;
+
+  constructor(private readonly workspaceDirectory: string) {
+    this.file = join(workspaceDirectory, "audit", "screenshot-model-calls.jsonl");
+  }
+
+  async append(record: ScreenshotModelCallAudit): Promise<void> {
+    const parsed = ScreenshotModelCallAudit.parse(record);
+    await mkdir(join(this.workspaceDirectory, "audit"), { recursive: true, mode: 0o700 });
+    await appendFile(this.file, `${JSON.stringify(parsed)}\n`, { encoding: "utf8", mode: 0o600 });
+    await chmod(this.file, 0o600);
+  }
+
+  async list(clientId?: string): Promise<ScreenshotModelCallAudit[]> {
+    let content: string;
+    try { content = await readFile(this.file, "utf8"); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    return content.split("\n").filter(Boolean).map((line) => ScreenshotModelCallAudit.parse(JSON.parse(line)))
+      .filter((record) => !clientId || record.clientId === clientId);
+  }
+}
+
+export interface PrepareScreenshotForModelInput {
+  clientId: string;
+  taskId: string;
+  purpose: ScreenshotModelCallAudit["purpose"];
+  screenshot: Screenshot;
+  roi: ScreenshotRegion;
+  sensitiveRegions?: ScreenshotMask[];
+  includeDefaultMasks?: boolean;
+  model: ModelPrivacyDescriptor;
+  privacyMode?: ScreenshotPrivacyMode;
+  localFullRetentionPolicy?: string;
+}
+
+export interface PreparedModelScreenshot {
+  /** Sanitized ROI only. This is the sole image object safe to pass to a model. */
+  screenshot: Screenshot;
+  screenshotId: string;
+  originalRoi: ScreenshotRegion;
+  masks: ScreenshotMask[];
+  fullArtifact: LocalScreenshotArtifact;
+  audit: ScreenshotModelCallAudit;
+}
+
+export class PrivacyModeRemoteProviderError extends Error {
+  readonly code = "PRIVACY_MODE_REMOTE_PROVIDER_BLOCKED" as const;
+  constructor(readonly audit: ScreenshotModelCallAudit) {
+    super(`privacy mode blocked remote screenshot provider ${audit.modelProvider}/${audit.modelId}`);
+    this.name = "PrivacyModeRemoteProviderError";
+  }
+}
+
+export class ScreenshotMinimizationError extends Error {
+  readonly code = "SCREENSHOT_MINIMIZATION_REQUIRED" as const;
+}
+
+/**
+ * Saves the complete capture locally, crops the requested ROI, masks sensitive
+ * pixels, and returns only the minimized image plus a disclosure audit record.
+ */
+export class ScreenshotPrivacyPipeline {
+  constructor(
+    private readonly artifacts: ScreenshotArtifactStore,
+    private readonly audits: ScreenshotModelCallAuditStore,
+    private readonly now: () => Date = () => new Date()
+  ) {}
+
+  async prepareForModel(input: PrepareScreenshotForModelInput): Promise<PreparedModelScreenshot> {
+    if (!input.clientId || !input.taskId) throw new Error("clientId and taskId are required for screenshot privacy auditing");
+    const model = ModelPrivacyDescriptor.parse(input.model);
+    const privacyMode = ScreenshotPrivacyMode.parse(input.privacyMode ?? "minimized");
+    const roi = validateRegionWithin(ScreenshotRegion.parse(input.roi), input.screenshot.width, input.screenshot.height, "ROI");
+    const screenshotId = randomUUID();
+    const retention = input.localFullRetentionPolicy ?? "local-session";
+    const fullArtifact = await this.artifacts.saveFull({
+      screenshotId,
+      clientId: input.clientId,
+      taskId: input.taskId,
+      screenshot: input.screenshot,
+      retentionPolicy: retention
+    });
+    const candidateMasks = [
+      ...(input.includeDefaultMasks === false ? [] : defaultSensitiveMasks(input.screenshot.width, input.screenshot.height)),
+      ...(input.sensitiveRegions ?? [])
+    ].map((mask) => ScreenshotMask.parse(mask));
+    const appliedMasks = candidateMasks.filter((mask) => intersection(mask.region, roi) !== undefined);
+    const baseAudit = {
+      auditId: randomUUID(),
+      clientId: input.clientId,
+      taskId: input.taskId,
+      purpose: input.purpose,
+      modelProvider: model.provider,
+      modelId: model.modelId,
+      screenshotId,
+      screenshotSha256: fullArtifact.sha256,
+      sentRoi: roi,
+      masks: appliedMasks,
+      leftLocal: model.location === "remote",
+      fullScreenshotLocalOnly: true as const,
+      privacyMode,
+      dataRetentionPolicy: model.retentionPolicy,
+      createdAt: this.now().toISOString()
+    };
+    if (privacyMode === "local-only" && model.location === "remote") {
+      const audit = ScreenshotModelCallAudit.parse({ ...baseAudit, leftLocal: false, outcome: "blocked" });
+      await this.audits.append(audit);
+      throw new PrivacyModeRemoteProviderError(audit);
+    }
+    if (model.location === "remote" && isFullWindow(roi, input.screenshot.width, input.screenshot.height)) {
+      const audit = ScreenshotModelCallAudit.parse({ ...baseAudit, leftLocal: false, outcome: "blocked" });
+      await this.audits.append(audit);
+      throw new ScreenshotMinimizationError("remote providers may not receive an uncropped full-window screenshot");
+    }
+    const image = await Jimp.fromBuffer(screenshotBuffer(input.screenshot.base64));
+    if (image.width !== input.screenshot.width || image.height !== input.screenshot.height) {
+      throw new Error(`screenshot metadata does not match PNG dimensions (${input.screenshot.width}x${input.screenshot.height} vs ${image.width}x${image.height})`);
+    }
+    image.crop({ x: roi.x, y: roi.y, w: roi.width, h: roi.height });
+    for (const mask of appliedMasks) {
+      const clipped = intersection(mask.region, roi);
+      if (!clipped) continue;
+      const redaction = new Jimp({ width: clipped.width, height: clipped.height, color: 0x111111ff });
+      image.composite(redaction, clipped.x - roi.x, clipped.y - roi.y);
+    }
+    const buffer = await image.getBuffer("image/png");
+    const sanitized = sanitizedScreenshot(input.screenshot, buffer, roi);
+    const audit = ScreenshotModelCallAudit.parse({
+      ...baseAudit,
+      transmittedWidth: sanitized.width,
+      transmittedHeight: sanitized.height,
+      outcome: "prepared"
+    });
+    await this.audits.append(audit);
+    return { screenshot: sanitized, screenshotId, originalRoi: roi, masks: appliedMasks, fullArtifact, audit };
+  }
+}
+
+export type GroundingRoiSelector = (task: VisualMicroTask, screenshot: Screenshot, tier: ModelTier) => ScreenshotRegion | Promise<ScreenshotRegion>;
+export type GroundingMaskSelector = (task: VisualMicroTask, screenshot: Screenshot, tier: ModelTier) => ScreenshotMask[] | Promise<ScreenshotMask[]>;
+
+/** Forces grounding providers to see only a sanitized ROI and restores full-image coordinates. */
+export class PrivacyAwareGroundingProvider implements VisualGroundingProvider {
+  readonly id: string;
+  readonly kind: VisualGroundingProvider["kind"];
+
+  constructor(
+    private readonly underlying: VisualGroundingProvider,
+    private readonly privacy: ScreenshotPrivacyPipeline,
+    private readonly clientId: (task: VisualMicroTask) => string,
+    private readonly roi: GroundingRoiSelector,
+    private readonly model: (tier: ModelTier) => ModelPrivacyDescriptor,
+    private readonly privacyMode: () => ScreenshotPrivacyMode = () => "minimized",
+    private readonly masks: GroundingMaskSelector = () => []
+  ) {
+    this.id = underlying.id;
+    this.kind = underlying.kind;
+  }
+
+  async ground(task: VisualMicroTask, screenshot: Screenshot, tier: ModelTier): Promise<VisualAction> {
+    const prepared = await this.privacy.prepareForModel({
+      clientId: this.clientId(task),
+      taskId: task.taskId ?? privacyTaskId(task),
+      purpose: "grounding",
+      screenshot,
+      roi: await this.roi(task, screenshot, tier),
+      sensitiveRegions: await this.masks(task, screenshot, tier),
+      model: this.model(tier),
+      privacyMode: this.privacyMode()
+    });
+    const action = await this.underlying.ground(task, prepared.screenshot, tier);
+    return restoreFullScreenshotCoordinates(action, prepared.originalRoi);
+  }
+}
+
+export type VerificationRoiSelector = (
+  expectedResult: string,
+  before: Screenshot,
+  after: Screenshot
+) => { before: ScreenshotRegion; after: ScreenshotRegion } | Promise<{ before: ScreenshotRegion; after: ScreenshotRegion }>;
+
+/** Forces verification providers to compare sanitized ROIs rather than complete captures. */
+export class PrivacyAwareVisualVerifier implements VisualVerifier {
+  constructor(
+    private readonly underlying: VisualVerifier,
+    private readonly privacy: ScreenshotPrivacyPipeline,
+    private readonly context: (expectedResult: string) => { clientId: string; taskId: string },
+    private readonly roi: VerificationRoiSelector,
+    private readonly model: ModelPrivacyDescriptor,
+    private readonly privacyMode: () => ScreenshotPrivacyMode = () => "minimized",
+    private readonly masks: (expectedResult: string, screenshot: Screenshot, phase: "before" | "after") => ScreenshotMask[] | Promise<ScreenshotMask[]> = () => []
+  ) {}
+
+  async verify(expectedResult: string, before: Screenshot, after: Screenshot): Promise<{ matched: boolean; confidence: number; reason: string }> {
+    const context = this.context(expectedResult);
+    const regions = await this.roi(expectedResult, before, after);
+    const [privateBefore, privateAfter] = await Promise.all([
+      this.privacy.prepareForModel({
+        ...context,
+        purpose: "verification",
+        screenshot: before,
+        roi: regions.before,
+        sensitiveRegions: await this.masks(expectedResult, before, "before"),
+        model: this.model,
+        privacyMode: this.privacyMode()
+      }),
+      this.privacy.prepareForModel({
+        ...context,
+        purpose: "verification",
+        screenshot: after,
+        roi: regions.after,
+        sensitiveRegions: await this.masks(expectedResult, after, "after"),
+        model: this.model,
+        privacyMode: this.privacyMode()
+      })
+    ]);
+    return this.underlying.verify(expectedResult, privateBefore.screenshot, privateAfter.screenshot);
+  }
+}
+
+/** Conservative browser-content ROI when a task has not supplied a tighter region. */
+export function defaultBrowserContentRoi(width: number, height: number): ScreenshotRegion {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2) throw new Error("valid screenshot dimensions are required");
+  const top = Math.min(height - 1, Math.max(1, Math.round(height * 0.12)));
+  return { x: 0, y: top, width, height: height - top };
+}
+
+export function defaultSensitiveMasks(width: number, height: number): ScreenshotMask[] {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) throw new Error("valid screenshot dimensions are required");
+  const topBar = Math.max(1, Math.round(height * 0.1));
+  const personalWidth = Math.max(1, Math.round(width * 0.28));
+  const personalHeight = Math.max(1, Math.round(height * 0.16));
+  const notificationHeight = Math.max(1, Math.round(height * 0.18));
+  const notificationY = Math.min(height - 1, personalHeight);
+  return [
+    { category: "browser_tabs", region: { x: 0, y: 0, width, height: topBar }, reason: "hide unrelated browser tabs and browser chrome" },
+    { category: "system_menu_bar", region: { x: 0, y: 0, width, height: Math.max(1, Math.round(height * 0.025)) }, reason: "hide system menu and status details" },
+    { category: "top_personal_info", region: { x: width - personalWidth, y: 0, width: personalWidth, height: personalHeight }, reason: "hide avatar, email, and top personal information" },
+    { category: "notification", region: { x: width - personalWidth, y: notificationY, width: personalWidth, height: Math.min(notificationHeight, height - notificationY) }, reason: "hide unrelated notifications" }
+  ].map((mask) => ScreenshotMask.parse(mask));
+}
+
+export function restoreFullScreenshotCoordinates(action: VisualAction, roi: ScreenshotRegion): VisualAction {
+  if (!("x" in action) || action.x === undefined || !("y" in action) || action.y === undefined) return action;
+  if (action.action === "drag") {
+    return { ...action, x: action.x + roi.x, y: action.y + roi.y, end_x: action.end_x + roi.x, end_y: action.end_y + roi.y };
+  }
+  return { ...action, x: action.x + roi.x, y: action.y + roi.y };
+}
+
+function sanitizedScreenshot(original: Screenshot, buffer: Buffer, roi: ScreenshotRegion): Screenshot {
+  return {
+    base64: buffer.toString("base64"),
+    width: roi.width,
+    height: roi.height,
+    scaleFactor: original.scaleFactor,
+    capturedAt: original.capturedAt,
+    sha256: createHash("sha256").update(buffer).digest("hex"),
+    ...(original.surface ? { surface: original.surface } : {}),
+    ...(original.surfaceFingerprint ? { surfaceFingerprint: original.surfaceFingerprint } : {})
+  };
+}
+
+function validateRegionWithin(region: ScreenshotRegion, width: number, height: number, label: string): ScreenshotRegion {
+  if (region.x + region.width > width || region.y + region.height > height) {
+    throw new Error(`${label} is outside screenshot bounds`);
+  }
+  return region;
+}
+
+function intersection(left: ScreenshotRegion, right: ScreenshotRegion): ScreenshotRegion | undefined {
+  const x = Math.max(left.x, right.x);
+  const y = Math.max(left.y, right.y);
+  const endX = Math.min(left.x + left.width, right.x + right.width);
+  const endY = Math.min(left.y + left.height, right.y + right.height);
+  if (endX <= x || endY <= y) return undefined;
+  return { x, y, width: endX - x, height: endY - y };
+}
+
+function isFullWindow(region: ScreenshotRegion, width: number, height: number): boolean {
+  return region.x === 0 && region.y === 0 && region.width === width && region.height === height;
+}
+
+function screenshotBuffer(base64: string): Buffer {
+  const cleaned = base64.replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, "");
+  const buffer = Buffer.from(cleaned, "base64");
+  if (!buffer.length) throw new Error("screenshot contains no image bytes");
+  return buffer;
+}
+
+function privacyTaskId(task: VisualMicroTask): string {
+  return `visual_${createHash("sha256").update(`${task.instruction}\u0000${task.target}\u0000${task.expectedResult}`).digest("hex").slice(0, 24)}`;
+}

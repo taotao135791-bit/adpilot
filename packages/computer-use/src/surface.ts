@@ -44,6 +44,8 @@ export interface NativeWindowCapture {
 /** Cross-platform contract. Platform implementations must identify and capture the same active surface. */
 export interface NativeSurfaceIdentity {
   identifyActiveSurface(): Promise<NativeSurface>;
+  /** Resolve a managed window without requiring it to be foreground. */
+  identifySurfaceByProcess?(processId: number): Promise<NativeSurface | undefined>;
   captureActiveWindow(expected?: NativeSurface): Promise<NativeWindowCapture>;
 }
 
@@ -71,7 +73,8 @@ export class NativeSurfaceUnavailableError extends Error {
 export class MacOSNativeSurfaceIdentity implements NativeSurfaceIdentity {
   constructor(
     private readonly runNativeProbe: () => Promise<NativeSurface> = probeMacSurfaceNative,
-    private readonly runAppleScriptProbe: () => Promise<NativeSurface> = probeMacSurfaceAppleScript
+    private readonly runAppleScriptProbe: () => Promise<NativeSurface> = probeMacSurfaceAppleScript,
+    private readonly runProcessProbe: (processId: number) => Promise<NativeSurface | undefined> = probeMacSurfaceForProcess
   ) {
     if (process.platform !== "darwin" && runNativeProbe === probeMacSurfaceNative) {
       throw new NativeSurfaceUnavailableError("macOS surface identity is only available on darwin");
@@ -90,6 +93,12 @@ export class MacOSNativeSurfaceIdentity implements NativeSurfaceIdentity {
         throw new NativeSurfaceUnavailableError(`unable to identify the active macOS window (native: ${nativeMessage}; fallback: ${fallbackMessage})`);
       }
     }
+  }
+
+  async identifySurfaceByProcess(processId: number): Promise<NativeSurface | undefined> {
+    if (!Number.isInteger(processId) || processId <= 0) throw new Error("processId must be a positive integer");
+    const surface = await this.runProcessProbe(processId);
+    return surface ? enrichBrowserProfile(NativeSurface.parse(surface)) : undefined;
   }
 
   async captureActiveWindow(expected?: NativeSurface): Promise<NativeWindowCapture> {
@@ -126,11 +135,20 @@ async function enrichBrowserProfile(surface: NativeSurface): Promise<NativeSurfa
     const { stdout } = await execFileAsync("/bin/ps", ["-ww", "-p", String(surface.pid), "-o", "command="], { timeout: 2_000, maxBuffer: 128 * 1024 });
     const profile = stdout.match(/--profile-directory=(?:"([^"]+)"|'([^']+)'|([^\s]+))/)?.slice(1).find(Boolean);
     const userData = stdout.match(/--user-data-dir=(?:"([^"]+)"|'([^']+)'|([^\s]+))/)?.slice(1).find(Boolean);
-    const browserProfile = profile ?? (userData ? `user-data:${createHash("sha256").update(userData).digest("hex").slice(0, 16)}` : undefined);
+    const browserProfile = userData
+      ? `${profile ?? "Default"}@${createHash("sha256").update(userData).digest("hex").slice(0, 16)}`
+      : profile;
     return browserProfile ? NativeSurface.parse({ ...surface, browserProfile }) : surface;
   } catch {
     return surface;
   }
+}
+
+/** Stable, non-reversible native Profile proof used by managed browser sessions. */
+export function browserProfileFingerprint(profileDirectory: string, profileName = "Default"): string {
+  if (!profileDirectory) throw new Error("profileDirectory is required");
+  if (!profileName) throw new Error("profileName is required");
+  return `${profileName}@${createHash("sha256").update(profileDirectory).digest("hex").slice(0, 16)}`;
 }
 
 export class SurfaceCaptureChangedError extends Error {
@@ -207,6 +225,74 @@ async function probeMacSurfaceNative(): Promise<NativeSurface> {
     maxBuffer: 1024 * 1024
   });
   return NativeSurface.parse(JSON.parse(stdout));
+}
+
+const MAC_PROCESS_SURFACE_SWIFT = String.raw`
+import AppKit
+import CoreGraphics
+import Foundation
+
+func rectDictionary(_ rect: CGRect) -> [String: Double] {
+  return ["x": rect.origin.x, "y": rect.origin.y, "width": rect.size.width, "height": rect.size.height]
+}
+
+guard let targetPid = ProcessInfo.processInfo.environment["ADPILOT_TARGET_PID"],
+      let rawPid = Int32(targetPid),
+      let app = NSRunningApplication(processIdentifier: rawPid) else {
+  fputs("invalid or unavailable process\n", stderr)
+  exit(2)
+}
+let entries = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+guard let entry = entries.first(where: { item in
+  let owner = (item[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? -1
+  let layer = (item[kCGWindowLayer as String] as? NSNumber)?.intValue ?? -1
+  guard owner == rawPid && layer == 0,
+        let rawBounds = item[kCGWindowBounds as String] as? NSDictionary,
+        let bounds = CGRect(dictionaryRepresentation: rawBounds) else { return false }
+  return bounds.width > 1 && bounds.height > 1
+}), let rawBounds = entry[kCGWindowBounds as String] as? NSDictionary,
+    let bounds = CGRect(dictionaryRepresentation: rawBounds) else {
+  exit(3)
+}
+
+var count: UInt32 = 0
+CGGetActiveDisplayList(0, nil, &count)
+var displays = Array(repeating: CGDirectDisplayID(0), count: Int(count))
+CGGetActiveDisplayList(count, &displays, &count)
+let center = CGPoint(x: bounds.midX, y: bounds.midY)
+let display = displays.first(where: { CGDisplayBounds($0).contains(center) }) ?? CGMainDisplayID()
+let displayBounds = CGDisplayBounds(display)
+let nativeScreen = NSScreen.screens.first(where: { screen in
+  guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return false }
+  return number.uint32Value == display
+})
+let payload: [String: Any] = [
+  "platform": "darwin",
+  "app": app.localizedName ?? "Unknown",
+  "bundleId": app.bundleIdentifier ?? "unknown",
+  "pid": Int(rawPid),
+  "title": (entry[kCGWindowName as String] as? String) ?? "",
+  "windowId": String((entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value ?? 0),
+  "bounds": rectDictionary(bounds),
+  "screenId": String(display),
+  "screenBounds": rectDictionary(displayBounds),
+  "scaleFactor": nativeScreen?.backingScaleFactor ?? 1.0
+]
+let data = try JSONSerialization.data(withJSONObject: payload, options: [])
+FileHandle.standardOutput.write(data)
+`;
+
+async function probeMacSurfaceForProcess(processId: number): Promise<NativeSurface | undefined> {
+  try {
+    const { stdout } = await execFileAsync("/usr/bin/swift", ["-e", MAC_PROCESS_SURFACE_SWIFT], {
+      timeout: 12_000,
+      maxBuffer: 1024 * 1024,
+      env: { ...process.env, ADPILOT_TARGET_PID: String(processId) }
+    });
+    return NativeSurface.parse(JSON.parse(stdout));
+  } catch {
+    return undefined;
+  }
 }
 
 const MAC_SURFACE_APPLESCRIPT = String.raw`
