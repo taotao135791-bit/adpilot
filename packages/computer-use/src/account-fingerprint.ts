@@ -125,6 +125,8 @@ export class VisualIdentityError extends Error {
 export interface ConfirmedVisualIdentity {
   fingerprint: VisualAccountFingerprint;
   fingerprintHash: string;
+  /** Union of the two sufficiently-overlapping target observations. */
+  targetRegion: VisualIdentityRegion;
   reviewers: [
     { id: string; confidence: number; reason: string },
     { id: string; confidence: number; reason: string }
@@ -226,6 +228,7 @@ export class DualVisualIdentityVerifier {
     return {
       fingerprint,
       fingerprintHash: visualAccountFingerprintHash(fingerprint),
+      targetRegion: unionRegion(gui.regions.target, deep.regions.target),
       reviewers: [
         { id: this.guiVerifier.id, confidence: gui.confidence, reason: gui.reason },
         { id: this.deepVisionReviewer.id, confidence: deep.confidence, reason: deep.reason }
@@ -408,6 +411,14 @@ function intersect(left: VisualIdentityRegion, right: VisualIdentityRegion): Vis
   const endY = Math.min(left.y + left.height, right.y + right.height);
   if (endX <= x || endY <= y) return undefined;
   return { x, y, width: endX - x, height: endY - y };
+}
+
+function unionRegion(left: VisualIdentityRegion, right: VisualIdentityRegion): VisualIdentityRegion {
+  const x = Math.min(left.x, right.x);
+  const y = Math.min(left.y, right.y);
+  const endX = Math.max(left.x + left.width, right.x + right.width);
+  const endY = Math.max(left.y + left.height, right.y + right.height);
+  return VisualIdentityRegion.parse({ x, y, width: endX - x, height: endY - y });
 }
 
 function intersectionOverUnion(left: VisualIdentityRegion, right: VisualIdentityRegion): number {

@@ -58,7 +58,6 @@ const draft: VisualApprovalPlanDraft = {
   instruction: "Click the visible Save budget button",
   target: "Save budget button",
   expectedResult: "Daily budget visibly reads 110 USD",
-  allowedRegion: { x: 70, y: 50, width: 40, height: 30, coordinateSpace: "screenshot_pixels" },
   riskLevel: "mutate",
   experiment: {
     hypothesis: "budget adds volume",
@@ -202,6 +201,7 @@ describe("production visual approval tools", () => {
       accountFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
       surfaceFingerprint: "f".repeat(64)
     });
+    expect(fixture.approval.executionPlan?.allowedRegion).toEqual({ x: 72, y: 54, width: 34, height: 22, coordinateSpace: "screenshot_pixels" });
     await expect(fixture.tools.commitApprovedVisualAction(fixture.context, fixture.approval.id, fixture.token, operation, fixture.task))
       .resolves.toMatchObject({ status: "done" });
     expect(fixture.runMicroTask).toHaveBeenCalledTimes(1);
@@ -226,6 +226,24 @@ describe("production visual approval tools", () => {
     fixture.setObservation({ ...observed, currentValue: 120 });
     await expect(fixture.tools.commitApprovedVisualAction(fixture.context, fixture.approval.id, fixture.token, operation, fixture.task))
       .rejects.toMatchObject({ code: "CURRENT_VALUE_CHANGED" });
+    expect(fixture.runMicroTask).not.toHaveBeenCalled();
+    await expect(fixture.approvals.get("client-a", fixture.approval.id)).resolves.toMatchObject({ status: "cancelled" });
+  });
+
+  it("rejects a caller-supplied region that is broader than the dual-reviewed target", async () => {
+    const fixture = await setup();
+    await expect(fixture.tools.createApproval(
+      { clientId: "client-a", taskId, actor: "adpilot_agent", permission: "OBSERVE" },
+      operation,
+      { ...draft, allowedRegion: { x: 0, y: 0, width: 120, height: 100, coordinateSpace: "screenshot_pixels" } }
+    )).rejects.toThrow("not tightly bound");
+  });
+
+  it("cancels before consuming the token when the dual-reviewed target control moves", async () => {
+    const fixture = await approved();
+    fixture.setObservation({ ...observed, regions: { ...observed.regions, target: { x: 8, y: 62, width: 34, height: 22 } } });
+    await expect(fixture.tools.commitApprovedVisualAction(fixture.context, fixture.approval.id, fixture.token, operation, fixture.task))
+      .rejects.toThrow("target moved outside");
     expect(fixture.runMicroTask).not.toHaveBeenCalled();
     await expect(fixture.approvals.get("client-a", fixture.approval.id)).resolves.toMatchObject({ status: "cancelled" });
   });

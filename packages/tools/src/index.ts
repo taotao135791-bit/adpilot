@@ -68,7 +68,7 @@ export const VisualApprovalPlanDraft = z.object({
   instruction: z.string().min(1),
   target: z.string().min(1),
   expectedResult: z.string().min(1),
-  allowedRegion: VisualAllowedRegion,
+  allowedRegion: VisualAllowedRegion.optional(),
   riskLevel: RiskLevel,
   expiresAt: z.string().datetime().optional(),
   experiment: ApprovalExperiment
@@ -426,6 +426,9 @@ export class AdPilotTools {
       if (confirmed.fingerprintHash !== boundTask.accountFingerprint) {
         throw new Error("current visual account fingerprint differs from the approved task binding");
       }
+      if (!boundTask.allowedRegion || !regionAgreementWithApprovedTarget(confirmed.targetRegion, boundTask.allowedRegion, screenshot.scaleFactor)) {
+        throw new Error("current visual target moved outside the approved control region");
+      }
       await this.workspace.writeJson(context.clientId, `identity/${context.taskId}-${Date.now()}.json`, {
         approvalId,
         planId: boundTask.planId,
@@ -512,7 +515,7 @@ export class AdPilotTools {
       expectedResult: intent.expectedResult,
       riskLevel: intent.riskLevel,
       permission: "OBSERVE",
-      allowedRegion: intent.allowedRegion,
+      ...(intent.allowedRegion ? { allowedRegion: intent.allowedRegion } : {}),
       identity: {
         accountName: intent.accountName,
         accountId: intent.accountId,
@@ -540,6 +543,8 @@ export class AdPilotTools {
     if (!screenshot.surface) throw new Error("approval screenshot has no native surface identity");
     const expected = expectedIdentityFromTask(context, provisionalTask, screenshot);
     const confirmed = await this.visualIdentity.confirm(expected, screenshot);
+    const allowedRegion = deriveTargetAllowedRegion(confirmed.targetRegion, screenshot);
+    if (intent.allowedRegion) assertRequestedRegionIsTight(intent.allowedRegion, allowedRegion, screenshot.scaleFactor);
     const createdAt = new Date().toISOString();
     const expiresAt = intent.expiresAt ?? new Date(Date.parse(createdAt) + 10 * 60_000).toISOString();
     const bound = ApprovalExecutionPlan.parse({
@@ -566,7 +571,7 @@ export class AdPilotTools {
       instruction: intent.instruction,
       target: intent.target,
       expectedResult: intent.expectedResult,
-      allowedRegion: intent.allowedRegion,
+      allowedRegion,
       riskLevel: intent.riskLevel,
       surfaceFingerprint: screenshot.surfaceFingerprint ?? fingerprintSurface(screenshot.surface),
       accountFingerprint: confirmed.fingerprintHash,
@@ -873,6 +878,58 @@ function screenshotMetadata(screenshot: Screenshot) {
     surfaceFingerprint: screenshot.surfaceFingerprint,
     surface: screenshot.surface
   };
+}
+
+function deriveTargetAllowedRegion(
+  targetRegion: { x: number; y: number; width: number; height: number } | undefined,
+  screenshot: Screenshot
+): z.infer<typeof VisualAllowedRegion> {
+  if (!targetRegion) throw new Error("dual visual identity review did not return a target control region");
+  const parsed = VisualTableRoi.parse({ ...targetRegion, coordinateSpace: "screenshot_pixels" });
+  if (parsed.x + parsed.width > screenshot.width || parsed.y + parsed.height > screenshot.height) {
+    throw new Error("dual-reviewed target control region exceeds the current screenshot");
+  }
+  return VisualAllowedRegion.parse(parsed);
+}
+
+function assertRequestedRegionIsTight(
+  requested: z.infer<typeof VisualAllowedRegion>,
+  derived: z.infer<typeof VisualAllowedRegion>,
+  scaleFactor: number
+): void {
+  const normalized = requested.coordinateSpace === "screen_points"
+    ? { x: requested.x * scaleFactor, y: requested.y * scaleFactor, width: requested.width * scaleFactor, height: requested.height * scaleFactor }
+    : requested;
+  const overlap = regionIntersectionArea(normalized, derived);
+  const derivedArea = derived.width * derived.height;
+  const requestedArea = normalized.width * normalized.height;
+  if (overlap / derivedArea < 0.9 || requestedArea > derivedArea * 1.5) {
+    throw new Error("requested allowed region is not tightly bound to the dual-reviewed target control");
+  }
+}
+
+function regionAgreementWithApprovedTarget(
+  current: { x: number; y: number; width: number; height: number } | undefined,
+  approved: z.infer<typeof VisualAllowedRegion>,
+  scaleFactor: number
+): boolean {
+  if (!current) return false;
+  const normalized = approved.coordinateSpace === "screen_points"
+    ? { x: approved.x * scaleFactor, y: approved.y * scaleFactor, width: approved.width * scaleFactor, height: approved.height * scaleFactor }
+    : approved;
+  const overlap = regionIntersectionArea(current, normalized);
+  if (!overlap) return false;
+  const union = current.width * current.height + normalized.width * normalized.height - overlap;
+  return overlap / union >= 0.5;
+}
+
+function regionIntersectionArea(
+  left: { x: number; y: number; width: number; height: number },
+  right: { x: number; y: number; width: number; height: number }
+): number {
+  const width = Math.min(left.x + left.width, right.x + right.width) - Math.max(left.x, right.x);
+  const height = Math.min(left.y + left.height, right.y + right.height) - Math.max(left.y, right.y);
+  return width > 0 && height > 0 ? width * height : 0;
 }
 
 /** Canonical server/operator projection; no execution field is reconstructed from defaults. */

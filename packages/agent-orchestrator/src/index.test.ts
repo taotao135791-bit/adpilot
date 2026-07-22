@@ -79,7 +79,6 @@ describe("AdPilotAgent integration", () => {
           instruction: "Set the daily budget to 110",
           target: "Save budget",
           expectedResult: "Daily budget shows 110",
-          allowedRegion: { x: 0, y: 0, width: 100, height: 100, coordinateSpace: "screenshot_pixels" },
           riskLevel: "mutate",
           experiment: {
             hypothesis: "A staged budget increase will add volume without breaching CPA", variable: "daily_budget",
@@ -132,7 +131,9 @@ describe("AdPilotAgent integration", () => {
       assertActive: async () => session
     } as unknown as BrowserSessionManager;
     const visualIdentity = {
-      confirm: async () => ({ fingerprintHash: "b".repeat(64), fingerprint: {}, reviewers: [] })
+      confirm: async () => ({
+        fingerprintHash: "b".repeat(64), fingerprint: {}, targetRegion: { x: 60, y: 60, width: 30, height: 20 }, reviewers: []
+      })
     } as unknown as DualVisualIdentityVerifier;
     const tools = new AdPilotTools(
       workspace, new AuditLog(workspace), approvals, new ExperimentStore(workspace), computer,
