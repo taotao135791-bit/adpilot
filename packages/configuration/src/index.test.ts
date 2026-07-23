@@ -47,4 +47,110 @@ describe("SettingsStore", () => {
     await store.delete("openai-codex");
     expect(await store.read("openai-codex")).toBeUndefined();
   });
+
+  it("stores custom providers privately, exposes them in the catalog, and routes them via env", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-settings-"));
+    const store = new SettingsStore(root, {});
+    await store.save({
+      locale: "zh-CN", appearance: "dark",
+      models: { fast: { provider: "corp-gateway", model: "gpt-4o-internal" }, strong: { provider: "openai", model: "gpt-5.2" } },
+      env: {},
+      customProviders: [
+        { id: "corp-gateway", name: "Corp Gateway", baseUrl: "https://gateway.corp.example/v1", apiKey: "gateway-secret", models: [{ id: "gpt-4o-internal" }] },
+        { id: "local-llama", name: "Local llama.cpp", baseUrl: "http://127.0.0.1:8080/v1", models: [{ id: "qwen3-8b", vision: true }] }
+      ]
+    });
+    expect((await stat(store.path)).mode & 0o777).toBe(0o600);
+    expect(await readFile(store.path, "utf8")).toContain("gateway-secret");
+
+    const view = await store.publicView();
+    expect(JSON.stringify(view)).not.toContain("gateway-secret");
+    expect(JSON.stringify(view)).not.toContain("ADPILOT_CUSTOM_PROVIDERS");
+    expect(view.customProviders).toEqual([
+      { id: "corp-gateway", name: "Corp Gateway", baseUrl: "https://gateway.corp.example/v1", api: "openai-completions", hasApiKey: true, models: [{ id: "gpt-4o-internal", vision: false }] },
+      { id: "local-llama", name: "Local llama.cpp", baseUrl: "http://127.0.0.1:8080/v1", api: "openai-completions", hasApiKey: false, models: [{ id: "qwen3-8b", vision: true }] }
+    ]);
+    expect(view.models.fast).toEqual({ provider: "corp-gateway", model: "gpt-4o-internal" });
+    const catalogEntry = view.catalog.providers.find((provider) => provider.id === "local-llama");
+    expect(catalogEntry).toMatchObject({ name: "Local llama.cpp", baseUrl: "http://127.0.0.1:8080/v1", auth: { apiKey: true, oauth: false }, models: [{ id: "qwen3-8b", vision: true }] });
+
+    const effective = await store.effectiveEnv();
+    expect(effective.ADPILOT_FAST_PROVIDER).toBe("corp-gateway");
+    const routed = JSON.parse(effective.ADPILOT_CUSTOM_PROVIDERS ?? "[]") as Array<{ id: string; apiKey?: string }>;
+    expect(routed.map((provider) => provider.id)).toEqual(["corp-gateway", "local-llama"]);
+    expect(routed[0]?.apiKey).toBe("gateway-secret");
+  });
+
+  it("rejects invalid custom provider definitions", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-settings-"));
+    const store = new SettingsStore(root, {});
+    const base = {
+      locale: "zh-CN" as const, appearance: "dark" as const,
+      models: { fast: { provider: "openai", model: "gpt-5-mini" }, strong: { provider: "openai", model: "gpt-5.2" } },
+      env: {}
+    };
+    await expect(store.save({ ...base, customProviders: [{ id: "x", name: "X", baseUrl: "not-a-url", models: [{ id: "m" }] }] })).rejects.toThrow("baseUrl");
+    await expect(store.save({ ...base, customProviders: [{ id: "x", name: "X", baseUrl: "ftp://files.example/v1", models: [{ id: "m" }] }] })).rejects.toThrow("baseUrl");
+    await expect(store.save({ ...base, customProviders: [{ id: "openai", name: "X", baseUrl: "https://x.example/v1", models: [{ id: "m" }] }] })).rejects.toThrow("collides with built-in");
+    await expect(store.save({
+      ...base,
+      customProviders: [
+        { id: "x", name: "X", baseUrl: "https://x.example/v1", models: [{ id: "m" }] },
+        { id: "x", name: "Y", baseUrl: "https://y.example/v1", models: [{ id: "m" }] }
+      ]
+    })).rejects.toThrow("duplicate custom provider id");
+    await expect(store.save({ ...base, customProviders: [{ id: "x", name: "X", baseUrl: "https://x.example/v1", models: [{ id: "m" }, { id: "m" }] }] })).rejects.toThrow("duplicate model id");
+    await expect(store.save({ ...base, customProviders: [{ id: "x", name: "X", baseUrl: "https://x.example/v1", models: [] }] })).rejects.toThrow();
+    expect(await store.load()).toMatchObject({ customProviders: [] });
+  });
+
+  it("keeps the stored custom provider list when an update omits it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-settings-"));
+    const store = new SettingsStore(root, {});
+    const customProviders = [{ id: "corp-gateway", name: "Corp", baseUrl: "https://gateway.corp.example/v1", apiKey: "gw-secret", models: [{ id: "m1" }] }];
+    await store.save({
+      locale: "zh-CN", appearance: "dark",
+      models: { fast: { provider: "corp-gateway", model: "m1" }, strong: { provider: "openai", model: "gpt-5.2" } },
+      env: {}, customProviders
+    });
+    // A later update without customProviders must not drop the stored list, and the
+    // selection referencing the kept provider still validates.
+    await store.save({
+      locale: "en", appearance: "dark",
+      models: { fast: { provider: "corp-gateway", model: "m1" }, strong: { provider: "openai", model: "gpt-5.2" } },
+      env: {}
+    });
+    expect((await store.load()).customProviders.map((provider) => provider.id)).toEqual(["corp-gateway"]);
+    expect(JSON.parse((await store.effectiveEnv()).ADPILOT_CUSTOM_PROVIDERS ?? "[]")).toHaveLength(1);
+    // An explicit empty list is a real replacement and clears the stored providers.
+    await expect(store.save({
+      locale: "en", appearance: "dark",
+      models: { fast: { provider: "openai", model: "gpt-5-mini" }, strong: { provider: "openai", model: "gpt-5.2" } },
+      env: {}, customProviders: []
+    })).resolves.toBeUndefined();
+    expect((await store.load()).customProviders).toEqual([]);
+  });
+
+  it("validates fast/strong selections against the effective custom provider list", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-settings-"));
+    const store = new SettingsStore(root, {});
+    const customProviders = [{ id: "corp-gateway", name: "Corp", baseUrl: "https://gateway.corp.example/v1", models: [{ id: "m1" }] }];
+    await expect(store.save({
+      locale: "zh-CN", appearance: "dark",
+      models: { fast: { provider: "corp-gateway", model: "unknown" }, strong: { provider: "openai", model: "gpt-5.2" } },
+      env: {}, customProviders
+    })).rejects.toThrow("model not found");
+    await store.save({
+      locale: "zh-CN", appearance: "dark",
+      models: { fast: { provider: "corp-gateway", model: "m1" }, strong: { provider: "openai", model: "gpt-5.2" } },
+      env: {}, customProviders
+    });
+    // Removing the list invalidates the previously stored selection on the next save.
+    await expect(store.save({
+      locale: "zh-CN", appearance: "dark",
+      models: { fast: { provider: "corp-gateway", model: "m1" }, strong: { provider: "openai", model: "gpt-5.2" } },
+      env: {}, customProviders: []
+    })).rejects.toThrow("provider not found");
+    expect((await store.load()).customProviders.map((provider) => provider.id)).toEqual(["corp-gateway"]);
+  });
 });

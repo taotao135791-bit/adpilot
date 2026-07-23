@@ -1,14 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
   assertSafeIdentifier,
+  classifyToolCall,
+  CustomProviderConfig,
+  extractApprovalCredentials,
   InMemorySharedFactRepository,
+  isLocalHostname,
+  isLocalModelEndpoint,
   migrateLegacyFactDispatch,
   PermissionLevel,
   SharedFact,
   SharedFactLedger,
   SharedFactStatus,
   stableJson,
-  TaskState
+  TaskState,
+  TOOL_GATE_RULES
 } from "./index.js";
 
 describe("shared contracts", () => {
@@ -136,5 +142,93 @@ describe("shared contracts", () => {
     const stored = await ledger.list("client-a", { taskId });
     await expect(ledger.verify("client-a", stored[0]!.factId, { verifier: "reviewer", confidence: 0.9 })).rejects.toThrow("cannot enter");
     expect(await ledger.usable("client-a", { taskId })).toEqual([]);
+  });
+});
+
+describe("custom provider contracts", () => {
+  it("validates custom provider configs and applies defaults", () => {
+    const parsed = CustomProviderConfig.parse({
+      id: "corp-gateway", name: "Corp Gateway", baseUrl: "https://gateway.corp.example/v1",
+      models: [{ id: "gpt-4o-internal" }]
+    });
+    expect(parsed.api).toBe("openai-completions");
+    expect(parsed.models[0]).toEqual({ id: "gpt-4o-internal", vision: false });
+    expect(parsed.apiKey).toBeUndefined();
+  });
+
+  it("rejects invalid baseUrls, bad ids, and empty model lists", () => {
+    const base = { id: "corp-gateway", name: "Corp", models: [{ id: "m" }] };
+    expect(() => CustomProviderConfig.parse({ ...base, baseUrl: "not-a-url" })).toThrow("baseUrl");
+    expect(() => CustomProviderConfig.parse({ ...base, baseUrl: "ftp://files.example/v1" })).toThrow("baseUrl");
+    expect(() => CustomProviderConfig.parse({ ...base, baseUrl: "https://ok.example/v1", id: "Bad_Id" })).toThrow("slug");
+    expect(() => CustomProviderConfig.parse({ ...base, baseUrl: "https://ok.example/v1", models: [] })).toThrow();
+    expect(() => CustomProviderConfig.parse({ ...base, baseUrl: "https://ok.example/v1", apiKey: "" })).toThrow();
+  });
+
+  it("classifies loopback and private hosts as local", () => {
+    for (const host of ["localhost", "api.localhost", "127.0.0.1", "127.0.1.20", "[::1]", "[::ffff:127.0.0.1]", "0.0.0.0",
+      "10.0.0.8", "172.16.3.4", "172.31.255.255", "192.168.1.10", "169.254.1.1", "[fe80::1]", "[fd00::8]", "nas.local", "gateway.internal"]) {
+      expect(isLocalHostname(host), host).toBe(true);
+    }
+    for (const host of ["api.openai.com", "8.8.8.8", "172.15.0.1", "172.32.0.1", "193.168.1.1", "localhost.example.com", "[2001:4860:4860::8888]"]) {
+      expect(isLocalHostname(host), host).toBe(false);
+    }
+  });
+
+  it("classifies model endpoints by provider id or baseUrl, defaulting to remote", () => {
+    expect(isLocalModelEndpoint("ollama")).toBe(true);
+    expect(isLocalModelEndpoint("my-llama.cpp-box")).toBe(true);
+    expect(isLocalModelEndpoint("corp-gateway", "https://gateway.corp.example/v1")).toBe(false);
+    expect(isLocalModelEndpoint("corp-gateway", "http://192.168.20.5:8000/v1")).toBe(true);
+    expect(isLocalModelEndpoint("corp-gateway", "http://[::1]:8080/v1")).toBe(true);
+    expect(isLocalModelEndpoint("openai", "https://api.openai.com/v1")).toBe(false);
+    expect(isLocalModelEndpoint("openai")).toBe(false);
+    expect(isLocalModelEndpoint("broken", "://not a url")).toBe(false);
+  });
+});
+
+describe("tool permission gate table", () => {
+  it("classifies every read tool the specialists rely on as read", () => {
+    for (const name of ["read_workspace", "analyze_campaign_metrics", "evaluate_change_guardrail", "read_visual_table"]) {
+      expect(classifyToolCall(name, {}).class, name).toBe("read");
+    }
+    expect(classifyToolCall("dispatch_specialist", { role: "performance_analyst", input: {} }).class).toBe("read");
+    expect(classifyToolCall("dispatch_specialist", { role: "account_operator", input: { visualTask: { permission: "INTERACT" } } }).class).toBe("read");
+    for (const skill of ["detect-creative-fatigue", "daily-report", "weekly-report", "account-audit", "check-conversion-reliability"]) {
+      expect(classifyToolCall("execute_skill", { name: skill, input: {} }).class, skill).toBe("read");
+    }
+  });
+
+  it("escalates mutation-shaped calls to write or destructive", () => {
+    expect(classifyToolCall("dispatch_specialist", { role: "account_operator", input: { visualTask: { permission: "MUTATE" } } }).class).toBe("destructive");
+    expect(classifyToolCall("dispatch_specialist", { role: "account_operator", input: { visualTask: { permission: "DESTRUCTIVE" } } }).class).toBe("destructive");
+    expect(classifyToolCall("execute_skill", { name: "create-single-variable-experiment", input: {} }).class).toBe("write");
+    expect(classifyToolCall("execute_skill", { name: "not-a-real-skill", input: {} }).class).toBe("write");
+    expect(classifyToolCall("prepare_approval", {}).class).toBe("write");
+    expect(classifyToolCall("commit_approved_action", {}).class).toBe("destructive");
+  });
+
+  it("fails closed on unclassified tools: unknown names are approval-gated writes, never reads", () => {
+    const classification = classifyToolCall("brand_new_tool", {});
+    expect(classification.defaulted).toBe(true);
+    expect(classification.class).toBe("write");
+    expect(classification.rule.authority).toBe("approval_token");
+    expect(classifyToolCall("read_workspace", {}).defaulted).toBe(false);
+  });
+
+  it("covers every Pi tool name with a rule that has a reason", () => {
+    for (const name of ["read_workspace", "analyze_campaign_metrics", "evaluate_change_guardrail", "read_visual_table",
+      "dispatch_specialist", "prepare_approval", "execute_skill", "commit_approved_action"]) {
+      expect(TOOL_GATE_RULES[name]?.reason.length, name).toBeGreaterThan(0);
+    }
+  });
+
+  it("extracts approval credentials from top-level and execute_skill input arguments", () => {
+    const id = crypto.randomUUID();
+    expect(extractApprovalCredentials({ approvalId: id, approvalToken: "a.b.c" })).toEqual({ approvalId: id, approvalToken: "a.b.c" });
+    expect(extractApprovalCredentials({ name: "create-single-variable-experiment", input: { approvalId: id } })).toEqual({ approvalId: id });
+    expect(extractApprovalCredentials({ approvalId: "not-a-uuid" })).toBeNull();
+    expect(extractApprovalCredentials({})).toBeNull();
+    expect(extractApprovalCredentials(null)).toBeNull();
   });
 });

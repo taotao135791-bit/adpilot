@@ -37,9 +37,23 @@ export function redactSecrets(value: unknown): unknown {
 }
 
 export class AuditLog {
+  /**
+   * Internal serialization chain. append() reads the current tail hash before
+   * writing, so concurrent appends would otherwise read the same previousHash
+   * and fork the hash chain. Every call is queued behind the previous one; a
+   * rejected append rejects its own caller without poisoning the queue.
+   */
+  private queue: Promise<unknown> = Promise.resolve();
+
   constructor(private readonly workspace: WorkspaceStore) {}
 
-  async append(input: Omit<AuditEvent, "id" | "at" | "previousHash" | "hash">): Promise<AuditEvent> {
+  append(input: Omit<AuditEvent, "id" | "at" | "previousHash" | "hash">): Promise<AuditEvent> {
+    const appended = this.queue.then(() => this.appendSerialized(input));
+    this.queue = appended.catch(() => undefined);
+    return appended;
+  }
+
+  private async appendSerialized(input: Omit<AuditEvent, "id" | "at" | "previousHash" | "hash">): Promise<AuditEvent> {
     const existing = await this.list(input.clientId);
     const previousHash = existing.at(-1)?.hash ?? null;
     const base = {

@@ -36,7 +36,7 @@ import {
 } from "@adpilot/computer-use";
 import { ExperimentStore } from "@adpilot/experiments";
 import { createPiModels, modelRouterFromEnv, resolvePiModel } from "@adpilot/model-router";
-import { PiAgentRuntime } from "@adpilot/runtime";
+import { PiAgentRuntime, AuditRuntimeExtension } from "@adpilot/runtime";
 import { SkillRegistry } from "@adpilot/skills";
 import { AccountOperator, CreativeStrategist, MediaBuyer, MeasurementReviewer, PerformanceAnalyst, ReportingAnalyst, RiskReviewer, SpecialistCoordinator } from "@adpilot/specialist-agents";
 import { AdPilotTools } from "@adpilot/tools";
@@ -305,10 +305,13 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     : undefined;
   const tools = new AdPilotTools(workspace, audit, approvals, experiments, computer, visualIdentity, browserSessions, visualTableTools, sharedFacts);
   const skills = new SkillRegistry();
-  const runtime = new PiAgentRuntime(models, router, workspace, skills, tools, [{
-    name: "product-events",
-    onError: (error) => events.publish({ type: "error", message: error.message, retryable: true })
-  }]);
+  const runtime = new PiAgentRuntime(models, router, workspace, skills, tools, [
+    {
+      name: "product-events",
+      onError: (error) => events.publish({ type: "error", message: error.message, retryable: true })
+    },
+    new AuditRuntimeExtension(audit)
+  ]);
   const specialists = new SpecialistCoordinator([
     new AccountOperator(tools),
     new PerformanceAnalyst(runtime),

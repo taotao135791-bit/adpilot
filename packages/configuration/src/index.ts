@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
+import { CUSTOM_PROVIDER_DEFAULT_CONTEXT_WINDOW, CUSTOM_PROVIDERS_ENV, CustomProviderConfig } from "@adpilot/shared";
 import { z } from "zod";
 
 export type Locale = "zh-CN" | "en";
@@ -120,7 +121,9 @@ export const SettingsUpdate = z.object({
   locale: z.enum(["zh-CN", "en"]),
   appearance: z.enum(["dark", "light", "system"]),
   models: z.object({ fast: ModelSelection, strong: ModelSelection }),
-  env: z.record(z.string(), z.string().nullable()).default({})
+  env: z.record(z.string(), z.string().nullable()).default({}),
+  /** Full replacement of the custom provider list when present; omitted keeps the stored list. */
+  customProviders: z.array(CustomProviderConfig).optional()
 });
 export type SettingsUpdateInput = z.infer<typeof SettingsUpdate>;
 
@@ -129,7 +132,8 @@ const StoredSettings = z.object({
   locale: z.enum(["zh-CN", "en"]).default("zh-CN"),
   appearance: z.enum(["dark", "light", "system"]).default("dark"),
   models: z.object({ fast: ModelSelection, strong: ModelSelection }).optional(),
-  env: z.record(z.string(), z.string()).default({})
+  env: z.record(z.string(), z.string()).default({}),
+  customProviders: z.array(CustomProviderConfig).default([])
 });
 type StoredSettingsData = z.infer<typeof StoredSettings>;
 
@@ -151,7 +155,7 @@ export interface ModelCatalog {
   computerFields: SettingsField[];
 }
 
-export function getModelCatalog(): ModelCatalog {
+export function getModelCatalog(customProviders: CustomProviderConfig[] = []): ModelCatalog {
   return {
     providers: builtinProviders().map((provider) => ({
       id: provider.id,
@@ -166,7 +170,20 @@ export function getModelCatalog(): ModelCatalog {
         vision: model.input.includes("image"),
         contextWindow: model.contextWindow
       }))
-    })),
+    })).concat(customProviders.map((custom) => ({
+      id: custom.id,
+      name: custom.name,
+      baseUrl: custom.baseUrl,
+      auth: { apiKey: true, oauth: false },
+      fields: [],
+      models: custom.models.map((model) => ({
+        id: model.id,
+        name: model.id,
+        reasoning: false,
+        vision: model.vision,
+        contextWindow: CUSTOM_PROVIDER_DEFAULT_CONTEXT_WINDOW
+      }))
+    }))),
     computerFields
   };
 }
@@ -200,13 +217,16 @@ export class SettingsStore {
       env.ADPILOT_STRONG_PROVIDER = data.models.strong.provider;
       env.ADPILOT_STRONG_MODEL = data.models.strong.model;
     }
+    if (data.customProviders.length > 0) {
+      env[CUSTOM_PROVIDERS_ENV] = JSON.stringify(data.customProviders);
+    }
     return env;
   }
 
   async publicView() {
     const data = await this.load();
     const env = await this.effectiveEnv();
-    const catalog = getModelCatalog();
+    const catalog = getModelCatalog(data.customProviders);
     const fields = catalog.providers.flatMap((provider) => provider.fields).concat(catalog.computerFields);
     return {
       locale: data.locale,
@@ -217,15 +237,25 @@ export class SettingsStore {
       },
       values: Object.fromEntries(fields.filter((item) => !item.secret).map((item) => [item.env, env[item.env] ?? ""])),
       configured: Object.fromEntries(fields.map((item) => [item.env, Boolean(env[item.env])])),
+      customProviders: data.customProviders.map((custom) => ({
+        id: custom.id,
+        name: custom.name,
+        baseUrl: custom.baseUrl,
+        api: custom.api,
+        hasApiKey: Boolean(custom.apiKey),
+        models: custom.models
+      })),
       catalog
     };
   }
 
-  async save(input: SettingsUpdateInput): Promise<void> {
+  async save(input: z.input<typeof SettingsUpdate>): Promise<void> {
     const update = SettingsUpdate.parse(input);
-    validateSelection(update.models.fast);
-    validateSelection(update.models.strong);
     const current = await this.load();
+    const customProviders = update.customProviders ?? current.customProviders;
+    validateCustomProviders(customProviders);
+    validateSelection(update.models.fast, customProviders);
+    validateSelection(update.models.strong, customProviders);
     const nextEnv = Object.fromEntries(Object.entries(current.env).filter(([name]) => allowedEnv.has(name)));
     for (const [name, value] of Object.entries(update.env)) {
       if (!allowedEnv.has(name)) throw new Error(`unsupported setting: ${name}`);
@@ -233,7 +263,7 @@ export class SettingsStore {
       else nextEnv[name] = value.trim();
     }
     validateComputerSettings(nextEnv);
-    this.data = StoredSettings.parse({ version: 1, locale: update.locale, appearance: update.appearance, models: update.models, env: nextEnv });
+    this.data = StoredSettings.parse({ version: 1, locale: update.locale, appearance: update.appearance, models: update.models, env: nextEnv, customProviders });
     await mkdir(resolve(this.workspaceRoot, ".adpilot"), { recursive: true, mode: 0o700 });
     const temporary = `${this.path}.${randomUUID()}.tmp`;
     await writeFile(temporary, `${JSON.stringify(this.data, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
@@ -332,8 +362,21 @@ export class WorkspaceCredentialStore implements CredentialStore {
   }
 }
 
-function validateSelection(selection: { provider: string; model: string }): void {
-  const provider = getModelCatalog().providers.find((item) => item.id === selection.provider);
+function validateCustomProviders(customProviders: CustomProviderConfig[]): void {
+  const builtinIds = new Set(builtinProviders().map((provider) => provider.id));
+  const seen = new Set<string>();
+  for (const custom of customProviders) {
+    if (builtinIds.has(custom.id)) throw new Error(`custom provider id collides with built-in provider: ${custom.id}`);
+    if (seen.has(custom.id)) throw new Error(`duplicate custom provider id: ${custom.id}`);
+    seen.add(custom.id);
+    if (new Set(custom.models.map((model) => model.id)).size !== custom.models.length) {
+      throw new Error(`duplicate model id in custom provider: ${custom.id}`);
+    }
+  }
+}
+
+function validateSelection(selection: { provider: string; model: string }, customProviders: CustomProviderConfig[]): void {
+  const provider = getModelCatalog(customProviders).providers.find((item) => item.id === selection.provider);
   if (!provider) throw new Error(`provider not found: ${selection.provider}`);
   if (!provider.models.some((model) => model.id === selection.model)) throw new Error(`model not found: ${selection.provider}/${selection.model}`);
 }

@@ -574,3 +574,252 @@ export function stableJson(value: unknown): string {
   }
   return JSON.stringify(value);
 }
+
+/* ------------------------------------------------------------------------ */
+/* Declarative tool permission gate (single source of truth)                */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Side-effect class of one model-initiated tool call.
+ * - read: observes or computes; persists only compliance/evidence records.
+ * - write: persists operational state or exercises a previously granted
+ *   approval; never touches the ad account directly.
+ * - destructive: mutates the advertising account or executes an approved plan.
+ */
+export const ToolPermissionClass = z.enum(["read", "write", "destructive"]);
+export type ToolPermissionClass = z.infer<typeof ToolPermissionClass>;
+
+/**
+ * How the runtime gate validates authority for a write/destructive call.
+ * - approval_token: the call must carry `approvalId` + `approvalToken` bound to
+ *   an approved, unexpired, single-use token (same semantics as
+ *   ApprovalService.consume, minus the final consume).
+ * - approval_reference: the call must carry `approvalId` pointing at an
+ *   approval of the same client and task in one of `referenceStatuses`.
+ * - self_gated: the tool is itself the authority-request pipeline; its internal
+ *   deterministic guardrails are the gate (no token can exist yet).
+ */
+export const ToolGateAuthority = z.enum(["approval_token", "approval_reference", "self_gated"]);
+export type ToolGateAuthority = z.infer<typeof ToolGateAuthority>;
+
+export interface ToolGateRule {
+  /** Fixed class, or an argument-aware classifier. */
+  classify: ToolPermissionClass | ((args: unknown) => ToolPermissionClass);
+  /** Authority check applied when the effective class is not read. */
+  authority: ToolGateAuthority;
+  /** Approval statuses that authorize an approval_reference call. */
+  referenceStatuses?: readonly string[];
+  /** Human- and auditor-facing rationale for the classification. */
+  reason: string;
+}
+
+function recordAt(value: unknown, key: string): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return (value as Record<string, unknown>)[key];
+}
+
+/** Skills whose execution only reads or deterministically computes. */
+const READ_SKILL_NAMES: readonly string[] = [
+  "check-conversion-reliability",
+  "evaluate-budget-change",
+  "evaluate-bid-change",
+  "detect-creative-fatigue",
+  "assess-campaign-launch",
+  "generate-client-report",
+  "review-attribution-consistency",
+  "daily-report",
+  "weekly-report",
+  "account-audit"
+];
+
+function classifyExecuteSkill(args: unknown): ToolPermissionClass {
+  const name = recordAt(args, "name");
+  if (typeof name === "string" && READ_SKILL_NAMES.includes(name)) return "read";
+  // Unknown skills and ledger-writing skills fail closed to write.
+  return "write";
+}
+
+function classifyDispatchSpecialist(args: unknown): ToolPermissionClass {
+  const permission = recordAt(recordAt(recordAt(args, "input"), "visualTask"), "permission");
+  if (permission === "MUTATE" || permission === "DESTRUCTIVE") return "destructive";
+  return "read";
+}
+
+/**
+ * Every tool a model can invoke through PiAgentRuntime, classified.
+ * Names must stay in sync with AdPilotTools.toPiTools, the execute_skill tool,
+ * and the orchestrator tools; unlisted names fall back to DEFAULT_TOOL_GATE_RULE.
+ */
+export const TOOL_GATE_RULES: Readonly<Record<string, ToolGateRule>> = {
+  read_workspace: {
+    classify: "read",
+    authority: "self_gated",
+    reason: "Reads the client workspace; persists only its compliance audit record."
+  },
+  analyze_campaign_metrics: {
+    classify: "read",
+    authority: "self_gated",
+    reason: "Pure deterministic metric calculation."
+  },
+  evaluate_change_guardrail: {
+    classify: "read",
+    authority: "self_gated",
+    reason: "Pure deterministic guardrail evaluation; the decision is advisory until an approval binds it."
+  },
+  read_visual_table: {
+    classify: "read",
+    authority: "self_gated",
+    reason: "Managed observation of a visible table; scrolling is INTERACT-capped inside the tool and no account state changes."
+  },
+  dispatch_specialist: {
+    classify: classifyDispatchSpecialist,
+    authority: "approval_token",
+    reason: "Specialists run OBSERVE/INTERACT-capped; a mutate or destructive visualTask is rejected at the gate before the orchestrator sees it."
+  },
+  prepare_approval: {
+    classify: "write",
+    authority: "self_gated",
+    reason: "The authority-request path itself: persists a pending approval under deterministic guardrail binding. Risk review and user approval mint the token later, so no token can exist yet."
+  },
+  execute_skill: {
+    classify: classifyExecuteSkill,
+    authority: "approval_reference",
+    referenceStatuses: ["executed"],
+    reason: "Read skills are pure calculations. Ledger-writing skills (create-single-variable-experiment) must reference the executed approval of the same client and task they belong to."
+  },
+  commit_approved_action: {
+    classify: "destructive",
+    authority: "approval_token",
+    reason: "Executes an approved account mutation; additionally hard-blocked for the model because tokens never enter the model context."
+  }
+};
+
+/**
+ * Fail-closed default: an unclassified tool has unknown side effects, so it is
+ * treated as write requiring a valid approval token. Classifying it as read
+ * would silently wave any future destructive tool through the gate.
+ */
+export const DEFAULT_TOOL_GATE_RULE: ToolGateRule = {
+  classify: "write",
+  authority: "approval_token",
+  reason: "Unclassified tool; fail-closed default treats unknown side effects as an approval-gated write."
+};
+
+export interface ToolGateClassification {
+  rule: ToolGateRule;
+  class: ToolPermissionClass;
+  defaulted: boolean;
+}
+
+export function classifyToolCall(toolName: string, args: unknown): ToolGateClassification {
+  const rule = TOOL_GATE_RULES[toolName] ?? DEFAULT_TOOL_GATE_RULE;
+  const classification = typeof rule.classify === "function" ? rule.classify(args) : rule.classify;
+  return { rule, class: classification, defaulted: !(toolName in TOOL_GATE_RULES) };
+}
+
+export interface ApprovalCredentials {
+  approvalId: string;
+  approvalToken?: string;
+}
+
+/**
+ * Extracts approval credentials from tool arguments, checking the top level
+ * and one nested `input` object (the execute_skill payload shape).
+ */
+export function extractApprovalCredentials(args: unknown): ApprovalCredentials | null {
+  const candidates = [args, recordAt(args, "input")];
+  for (const candidate of candidates) {
+    const approvalId = recordAt(candidate, "approvalId");
+    if (typeof approvalId !== "string" || !z.string().uuid().safeParse(approvalId).success) continue;
+    const token = recordAt(candidate, "approvalToken");
+    return { approvalId, ...(typeof token === "string" && token ? { approvalToken: token } : {}) };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Custom OpenAI/Anthropic-compatible providers (enterprise gateways, local inference)
+// ---------------------------------------------------------------------------
+
+/** Env var carrying the JSON-serialized CustomProviderConfig list from settings to the model layer. */
+export const CUSTOM_PROVIDERS_ENV = "ADPILOT_CUSTOM_PROVIDERS";
+
+/** Defaults applied to custom provider models; unknown until the endpoint reports them. */
+export const CUSTOM_PROVIDER_DEFAULT_CONTEXT_WINDOW = 128_000;
+export const CUSTOM_PROVIDER_DEFAULT_MAX_TOKENS = 32_000;
+
+/** Wire protocol spoken by a custom provider endpoint. */
+export const CustomProviderApi = z.enum(["openai-completions", "anthropic-messages"]);
+export type CustomProviderApi = z.infer<typeof CustomProviderApi>;
+
+export const CustomProviderModel = z.object({
+  id: z.string().min(1),
+  /** True when this model accepts image inputs (screenshots); gates entry into vision routes. */
+  vision: z.boolean().default(false)
+});
+export type CustomProviderModel = z.infer<typeof CustomProviderModel>;
+
+/**
+ * A user-defined OpenAI/Anthropic-compatible endpoint: an enterprise proxy/gateway or a
+ * local inference server (llama.cpp, Ollama, vLLM). `apiKey` is a secret — it is persisted
+ * only inside the 0600 settings file and is never exposed through public views. Keyless
+ * local servers may omit it; the model layer then sends a placeholder bearer token.
+ */
+export const CustomProviderConfig = z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/, "custom provider id must be a lowercase slug (letters, numbers, hyphens)"),
+  name: z.string().min(1),
+  baseUrl: z.string().min(1).refine((value) => {
+    try {
+      const url = new URL(value);
+      return url.protocol === "http:" || url.protocol === "https:";
+    } catch {
+      return false;
+    }
+  }, "custom provider baseUrl must be a valid http(s) URL"),
+  api: CustomProviderApi.default("openai-completions"),
+  apiKey: z.string().min(1).optional(),
+  models: z.array(CustomProviderModel).min(1)
+});
+export type CustomProviderConfig = z.infer<typeof CustomProviderConfig>;
+
+/** Provider ids that run models on this machine even without a URL to classify. */
+const LOCAL_PROVIDER_ID_PATTERN = /(?:^|[-_.])(ollama|lmstudio|llama\.cpp|local|mlx)(?:$|[-_.])/i;
+
+/**
+ * True when a hostname is loopback or a private/internal network address:
+ * loopback (localhost, 127.0.0.0/8, ::1), RFC 1918 (10/8, 172.16/12, 192.168/16),
+ * link-local (169.254/16, fe80::/10), IPv6 ULA (fc00::/7), and .local/.internal names.
+ */
+export function isLocalHostname(hostname: string): boolean {
+  let host = hostname.trim().toLowerCase();
+  if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1); // IPv6 literal from URL.hostname
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return true;
+  if (host.startsWith("::ffff:")) host = host.slice("::ffff:".length); // IPv4-mapped IPv6
+  if (host === "::" || host === "::1") return true;
+  if (host.startsWith("fe80:")) return true; // IPv6 link-local
+  if (/^f[cd][0-9a-f]{0,2}:/.test(host)) return true; // IPv6 ULA fc00::/7
+  const parts = host.split(".");
+  if (parts.length !== 4 || !parts.every((part) => /^\d{1,3}$/.test(part))) return false;
+  const [a = 0, b = 0] = parts.map(Number);
+  return a === 0 || a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+}
+
+/**
+ * Decide whether traffic to a model stays on this machine or the internal network.
+ * An explicit baseUrl is the authoritative evidence of where bytes actually go:
+ * a local-sounding provider id pointing at a public host is remote. The provider-id
+ * heuristic (ollama/lmstudio/llama.cpp are local, matching the computer-use
+ * screenshot-side rule) only applies when no baseUrl is known. Loopback and
+ * private/intranet addresses qualify, so custom on-prem gateways and LAN inference
+ * servers pass. Anything unparseable or unknown is treated as remote.
+ */
+export function isLocalModelEndpoint(providerId: string, baseUrl?: string): boolean {
+  if (baseUrl) {
+    try {
+      return isLocalHostname(new URL(baseUrl).hostname);
+    } catch {
+      return false;
+    }
+  }
+  return LOCAL_PROVIDER_ID_PATTERN.test(providerId);
+}

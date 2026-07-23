@@ -6,9 +6,12 @@ import { SkillRegistry, formatSkillContract } from "@adpilot/skills";
 import type { ToolContext, AdPilotTools } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
 import { AdPilotSessionStorage, resolvePiSessionId } from "./session-storage.js";
+import { ToolPermissionGate } from "./tool-gate.js";
 
 export { AdPilotSessionStorage, resolvePiSessionId } from "./session-storage.js";
 export type { AdPilotSessionMetadata } from "./session-storage.js";
+export { ToolPermissionGate } from "./tool-gate.js";
+export { AuditRuntimeExtension, sanitizeForAudit } from "./audit-extension.js";
 
 export interface RuntimeExtension {
   name: string;
@@ -93,6 +96,7 @@ export class PiAgentRuntime {
   private readonly compactionSettings: CompactionSettings;
   private readonly compactionInstructions: string;
   private readonly sessionLocks = new Map<string, Promise<void>>();
+  private readonly toolGate: ToolPermissionGate;
 
   constructor(
     private readonly models: Models,
@@ -105,6 +109,7 @@ export class PiAgentRuntime {
   ) {
     this.compactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, ...options.compaction };
     this.compactionInstructions = options.compactionInstructions ?? DEFAULT_ADPILOT_COMPACTION_INSTRUCTIONS;
+    this.toolGate = new ToolPermissionGate(tools.approvals, tools.audit);
   }
 
   async run(request: RuntimeRequest): Promise<RuntimeResult> {
@@ -210,8 +215,10 @@ export class PiAgentRuntime {
       sessionId: request.context.sessionId,
       toolExecution: "sequential",
       maxRetryDelayMs: 30_000,
-      beforeToolCall: async ({ toolCall }) => {
+      beforeToolCall: async ({ toolCall, args }) => {
         if (toolCall.name === "commit_approved_action") return { block: true, reason: "Approval tokens are never exposed to the model; commit through the approval API." };
+        const denial = await this.toolGate.check(toolCall.name, args, request.context);
+        if (denial) return { block: true, reason: denial };
         return undefined;
       }
     });

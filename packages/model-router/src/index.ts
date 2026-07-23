@@ -1,7 +1,27 @@
 import { access } from "node:fs/promises";
-import { createModels, type Model, type Api, type CredentialStore, type Models } from "@earendil-works/pi-ai";
+import {
+  createModels,
+  createProvider,
+  type Api,
+  type Context,
+  type CredentialStore,
+  type Model,
+  type Models,
+  type ModelsApiStreamOptions,
+  type Provider
+} from "@earendil-works/pi-ai";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-import { ModelTier } from "@adpilot/shared";
+import {
+  CUSTOM_PROVIDER_DEFAULT_CONTEXT_WINDOW,
+  CUSTOM_PROVIDER_DEFAULT_MAX_TOKENS,
+  CUSTOM_PROVIDERS_ENV,
+  CustomProviderConfig,
+  isLocalModelEndpoint,
+  ModelTier
+} from "@adpilot/shared";
+import { z } from "zod";
 
 export interface ModelRef {
   provider: string;
@@ -82,7 +102,128 @@ export class ModelRouter {
   }
 }
 
-export function createPiModels(env: NodeJS.ProcessEnv = process.env, credentials?: CredentialStore): Models {
+export interface CreatePiModelsOptions {
+  /**
+   * Custom OpenAI/Anthropic-compatible providers registered after the built-in catalog.
+   * Defaults to the JSON list in env[ADPILOT_CUSTOM_PROVIDERS], which
+   * SettingsStore.effectiveEnv() writes from the stored settings.
+   */
+  customProviders?: z.input<typeof CustomProviderConfig>[];
+}
+
+/** Placeholder bearer token for keyless local servers (llama.cpp, Ollama, vLLM) whose API ignores auth. */
+const KEYLESS_API_KEY = "adpilot-keyless-local";
+
+/** Build a pi-ai Provider from a stored custom provider config (gateway or local inference server). */
+export function createCustomProvider(config: z.input<typeof CustomProviderConfig>): Provider {
+  const parsed = CustomProviderConfig.parse(config);
+  return createProvider({
+    id: parsed.id,
+    name: parsed.name,
+    baseUrl: parsed.baseUrl,
+    auth: {
+      apiKey: {
+        name: `${parsed.name} API key`,
+        resolve: async ({ credential }) => ({
+          auth: { apiKey: credential?.key ?? parsed.apiKey ?? KEYLESS_API_KEY },
+          source: credential?.key ? "stored credential" : parsed.apiKey ? "settings" : "keyless placeholder"
+        })
+      }
+    },
+    models: parsed.models.map((model): Model<Api> => ({
+      id: model.id,
+      name: model.id,
+      api: parsed.api,
+      provider: parsed.id,
+      baseUrl: parsed.baseUrl,
+      reasoning: false,
+      input: model.vision ? ["text", "image"] : ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: CUSTOM_PROVIDER_DEFAULT_CONTEXT_WINDOW,
+      maxTokens: CUSTOM_PROVIDER_DEFAULT_MAX_TOKENS
+    })),
+    api: parsed.api === "anthropic-messages" ? anthropicMessagesApi() : openAICompletionsApi()
+  });
+}
+
+function customProvidersFromEnv(env: NodeJS.ProcessEnv, options: CreatePiModelsOptions): CustomProviderConfig[] {
+  if (options.customProviders) return options.customProviders.map((config) => CustomProviderConfig.parse(config));
+  const raw = env[CUSTOM_PROVIDERS_ENV];
+  if (!raw || raw.trim() === "") return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`${CUSTOM_PROVIDERS_ENV} contains invalid JSON`);
+  }
+  const result = z.array(CustomProviderConfig).safeParse(parsed);
+  if (!result.success) throw new Error(`${CUSTOM_PROVIDERS_ENV} is invalid: ${result.error.issues[0]?.message ?? "malformed custom provider list"}`);
+  const seen = new Set<string>();
+  for (const config of result.data) {
+    if (seen.has(config.id)) throw new Error(`duplicate custom provider id: ${config.id}`);
+    seen.add(config.id);
+  }
+  return result.data;
+}
+
+/**
+ * Thrown when local-only privacy mode blocks a chat/planning call to a remote model.
+ * Carries the same code as the computer-use screenshot-side block so callers can
+ * handle both paths uniformly.
+ */
+export class PrivacyModeRemoteModelError extends Error {
+  readonly code = "PRIVACY_MODE_REMOTE_PROVIDER_BLOCKED" as const;
+  constructor(readonly provider: string, readonly modelId: string) {
+    super(`local-only privacy mode blocked remote model ${provider}/${modelId}`);
+    this.name = "PrivacyModeRemoteModelError";
+  }
+}
+
+/**
+ * Wrap a Models registry with the router-side local-only privacy guard. Every model call
+ * (stream/complete/streamSimple/completeSimple) is checked synchronously before dispatch:
+ * with ADPILOT_PRIVACY_MODE=local-only, calls to models that are not local (provider id like
+ * ollama/lmstudio/llama.cpp, or a loopback/private baseUrl host) throw PrivacyModeRemoteModelError
+ * before any request leaves the machine. In standard mode the wrapper is a pure pass-through.
+ */
+export function withLocalOnlyGuard(models: Models, env: NodeJS.ProcessEnv = process.env): Models {
+  const assertLocal = (model: Model<Api>): void => {
+    if (env.ADPILOT_PRIVACY_MODE === "local-only" && !isLocalModelEndpoint(model.provider, model.baseUrl)) {
+      throw new PrivacyModeRemoteModelError(model.provider, model.id);
+    }
+  };
+  return {
+    getProviders: () => models.getProviders(),
+    getProvider: (id) => models.getProvider(id),
+    getModels: (provider) => models.getModels(provider),
+    getModel: (provider, id) => models.getModel(provider, id),
+    refresh: (options) => models.refresh(options),
+    checkAuth: (providerId) => models.checkAuth(providerId),
+    getAvailable: (providerId) => models.getAvailable(providerId),
+    getAuth: ((target: string | Model<Api>, overrides?: Parameters<Models["getAuth"]>[1]) =>
+      typeof target === "string" ? models.getAuth(target, overrides) : models.getAuth(target, overrides)) as Models["getAuth"],
+    login: (providerId, type, interaction) => models.login(providerId, type, interaction),
+    logout: (providerId) => models.logout(providerId),
+    stream: <TApi extends Api>(model: Model<TApi>, context: Context, options?: ModelsApiStreamOptions<TApi>) => {
+      assertLocal(model);
+      return models.stream(model, context, options);
+    },
+    complete: <TApi extends Api>(model: Model<TApi>, context: Context, options?: ModelsApiStreamOptions<TApi>) => {
+      assertLocal(model);
+      return models.complete(model, context, options);
+    },
+    streamSimple: (model, context, options) => {
+      assertLocal(model);
+      return models.streamSimple(model, context, options);
+    },
+    completeSimple: (model, context, options) => {
+      assertLocal(model);
+      return models.completeSimple(model, context, options);
+    }
+  };
+}
+
+export function createPiModels(env: NodeJS.ProcessEnv = process.env, credentials?: CredentialStore, options: CreatePiModelsOptions = {}): Models {
   const models = createModels({
     ...(credentials ? { credentials } : {}),
     authContext: {
@@ -91,7 +232,11 @@ export function createPiModels(env: NodeJS.ProcessEnv = process.env, credentials
     }
   });
   for (const provider of builtinProviders()) models.setProvider(provider);
-  return models;
+  for (const config of customProvidersFromEnv(env, options)) {
+    if (models.getProvider(config.id)) throw new Error(`custom provider id collides with registered provider: ${config.id}`);
+    models.setProvider(createCustomProvider(config));
+  }
+  return withLocalOnlyGuard(models, env);
 }
 
 export function resolvePiModel(models: Models, ref: ModelRef): Model<Api> {
