@@ -14,3 +14,4 @@ workspace/clients/*/traces/*
 workspace/clients/*/memory/*
 workspace/.adpilot/
 !workspace/clients/.gitkeep
+workspace/clients/
