@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { AuditLog } from "@adpilot/audit";
@@ -184,5 +185,172 @@ describe("PiAgentRuntime", () => {
 
     faux.setResponses([fauxAssistantMessage("{}"), fauxAssistantMessage("{}"), fauxAssistantMessage("{}")]);
     await expect(runtime.runStructuredDetailed({ ...request, context: { ...request.context, conversationId: "blocked-repair", sessionId: "blocked-repair" } }, schema)).rejects.toBeInstanceOf(StructuredOutputBlocker);
+  });
+});
+
+describe("PiAgentRuntime session injection", () => {
+  function deferred() {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => { release = resolve; });
+    return { promise, release };
+  }
+
+  async function waitFor(condition: () => boolean, label: string): Promise<void> {
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      if (condition()) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error(`timed out waiting for ${label}`);
+  }
+
+  async function setup() {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-runtime-inject-"));
+    const workspace = new WorkspaceStore(root);
+    await workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
+    const faux = fauxProvider({ provider: "test", models: [{ id: "fast" }, { id: "strong", reasoning: true }] });
+    const models = createModels(); models.setProvider(faux.provider);
+    const router = new ModelRouter({ fast: { provider: "test", model: "fast" }, strong: { provider: "test", model: "strong" }, gui: { provider: "test", model: "fast" } });
+    const tools = new AdPilotTools(workspace, new AuditLog(workspace), new ApprovalService(workspace, "0123456789abcdef0123456789abcdef"), new ExperimentStore(workspace));
+    const runtime = new PiAgentRuntime(models, router, workspace, new SkillRegistry(), tools);
+    return { workspace, faux, runtime };
+  }
+
+  /** Read-classified test double (TOOL_GATE_RULES passes it) that blocks mid-execution until released. */
+  function slowMetricsTool(onStart: () => void, hold: Promise<void>): AgentTool {
+    return {
+      name: "analyze_campaign_metrics",
+      label: "Analyze campaign metrics",
+      description: "test double",
+      parameters: { type: "object", properties: {} },
+      executionMode: "sequential",
+      execute: async () => {
+        onStart();
+        await hold;
+        return { content: [{ type: "text", text: "metrics ok" }], details: { ok: true } };
+      }
+    } as AgentTool;
+  }
+
+  const baseContext = { clientId: "client-a", taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE" as const, role: "adpilot_agent" };
+
+  async function messageRoles(workspace: WorkspaceStore, conversationId: string): Promise<string[]> {
+    const storage = await AdPilotSessionStorage.openOrCreate(workspace, "client-a", conversationId);
+    return (await storage.getEntries())
+      .filter((entry) => entry.type === "message")
+      .map((entry) => entry.message.role);
+  }
+
+  it("queues a follow-up message into a running session without interrupting tool execution", async () => {
+    const { workspace, faux, runtime } = await setup();
+    let toolStarted = false;
+    const hold = deferred();
+    let mainTurnContext = "";
+    let alertTurnContext = "";
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("analyze_campaign_metrics", {}), { stopReason: "toolUse" }),
+      (context) => { mainTurnContext = JSON.stringify(context.messages); return fauxAssistantMessage("main answer"); },
+      (context) => { alertTurnContext = JSON.stringify(context.messages); return fauxAssistantMessage("alert handled"); }
+    ]);
+    const conversationId = "live-conversation";
+    const running = runtime.run({
+      context: { ...baseContext, sessionId: crypto.randomUUID(), conversationId },
+      systemPrompt: "You are AdPilot.", prompt: "Review my account.", signals: { task: "conversation" },
+      tools: [slowMetricsTool(() => { toolStarted = true; }, hold.promise)]
+    });
+    await waitFor(() => toolStarted, "tool execution to be mid-flight");
+
+    const outcome = await runtime.injectUserMessage({
+      context: { ...baseContext, sessionId: crypto.randomUUID(), conversationId },
+      systemPrompt: "unused while queued", prompt: "ALERT: budget overspend on campaign-42", signals: { task: "conversation" }
+    }, "followUp");
+    expect(outcome).toEqual({ status: "queued", sessionId: resolvePiSessionId("client-a", conversationId), mode: "followUp" });
+    expect(runtime.isSessionActive("client-a", conversationId)).toBe(true);
+    expect(runtime.activeConversations("client-a").map((session) => session.conversationId)).toEqual([conversationId]);
+
+    hold.release();
+    const result = await running;
+    expect(result.text).toBe("alert handled");
+    // followUp semantics: the main line completes first; the alert turn sees it.
+    expect(mainTurnContext).not.toContain("ALERT: budget overspend");
+    expect(alertTurnContext).toContain("ALERT: budget overspend");
+    expect(alertTurnContext).toContain("main answer");
+    // The tool ran to completion before the alert entered the transcript.
+    expect(await messageRoles(workspace, conversationId)).toEqual(["user", "assistant", "toolResult", "assistant", "user", "assistant"]);
+    expect(runtime.isSessionActive("client-a", conversationId)).toBe(false);
+  });
+
+  it("steers a message into the next turn boundary of a running session", async () => {
+    const { workspace, faux, runtime } = await setup();
+    let toolStarted = false;
+    const hold = deferred();
+    let nextTurnContext = "";
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("analyze_campaign_metrics", {}), { stopReason: "toolUse" }),
+      (context) => { nextTurnContext = JSON.stringify(context.messages); return fauxAssistantMessage("final answer"); }
+    ]);
+    const conversationId = "steer-conversation";
+    const running = runtime.run({
+      context: { ...baseContext, sessionId: crypto.randomUUID(), conversationId },
+      systemPrompt: "You are AdPilot.", prompt: "Review my account.", signals: { task: "conversation" },
+      tools: [slowMetricsTool(() => { toolStarted = true; }, hold.promise)]
+    });
+    await waitFor(() => toolStarted, "tool execution to be mid-flight");
+
+    const outcome = await runtime.injectUserMessage({
+      context: { ...baseContext, sessionId: crypto.randomUUID(), conversationId },
+      systemPrompt: "unused while queued", prompt: "ALERT: learning phase complete", signals: { task: "conversation" }
+    }, "steer");
+    expect(outcome.status).toBe("queued");
+
+    hold.release();
+    const result = await running;
+    expect(result.text).toBe("final answer");
+    // steer semantics: the alert is injected before the very next assistant response.
+    expect(nextTurnContext).toContain("ALERT: learning phase complete");
+    expect(nextTurnContext).toContain("metrics ok");
+    expect(faux.state.callCount).toBe(2);
+    expect(await messageRoles(workspace, conversationId)).toEqual(["user", "assistant", "toolResult", "user", "assistant"]);
+  });
+
+  it("starts a fresh turn for an idle session under the same system prompt and guardrail context", async () => {
+    const { workspace, faux, runtime } = await setup();
+    let capturedSystemPrompt = "";
+    faux.setResponses([(context) => { capturedSystemPrompt = context.systemPrompt ?? ""; return fauxAssistantMessage("idle answer"); }]);
+    const outcome = await runtime.injectUserMessage({
+      context: { ...baseContext, sessionId: crypto.randomUUID(), conversationId: "idle-conversation" },
+      systemPrompt: "You are the AdPilot alert handler.", prompt: "ALERT: KPI anomaly on campaign-42", signals: { task: "conversation" }
+    });
+    expect(outcome.status).toBe("started");
+    if (outcome.status === "started") expect(outcome.result.text).toBe("idle answer");
+    expect(capturedSystemPrompt).toContain("You are the AdPilot alert handler.");
+    expect(await messageRoles(workspace, "idle-conversation")).toEqual(["user", "assistant"]);
+
+    // An alert-triggered turn carries no approval authority: commit_approved_action stays hard-blocked.
+    let executed = false;
+    const commitSpy = {
+      name: "commit_approved_action",
+      label: "Commit an approved action",
+      description: "test double",
+      parameters: { type: "object", properties: {} },
+      executionMode: "sequential",
+      execute: async () => {
+        executed = true;
+        return { content: [{ type: "text", text: "committed" }], details: {} };
+      }
+    } as AgentTool;
+    let blockedContext = "";
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("commit_approved_action", { approvalId: crypto.randomUUID(), approvalToken: "stolen" }), { stopReason: "toolUse" }),
+      (context) => { blockedContext = JSON.stringify(context.messages); return fauxAssistantMessage("cannot commit without user approval"); }
+    ]);
+    const second = await runtime.injectUserMessage({
+      context: { ...baseContext, sessionId: crypto.randomUUID(), conversationId: "idle-guardrail" },
+      systemPrompt: "You are the AdPilot alert handler.", prompt: "ALERT: pause campaign-42 immediately", signals: { task: "conversation" },
+      tools: [commitSpy]
+    });
+    expect(second.status).toBe("started");
+    expect(executed).toBe(false);
+    expect(blockedContext).toContain("Approval tokens are never exposed to the model");
+    if (second.status === "started") expect(second.result.text).toBe("cannot commit without user approval");
   });
 });

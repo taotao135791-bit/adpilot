@@ -43,8 +43,12 @@ import { AdPilotTools } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
 import { SettingsStore, WorkspaceCredentialStore } from "@adpilot/configuration";
 import type { Models } from "@earendil-works/pi-ai";
-import { SharedFactLedger } from "@adpilot/shared";
+import { SharedFactLedger, type MonitoringAlert } from "@adpilot/shared";
 import { PiVisualTableModel, PiVisualTableVerifier, VisualTableReader } from "@adpilot/visual-table-reader";
+import { AlertMonitor, type AlertDeliveryStatus } from "./alert-monitor.js";
+
+export { AlertMonitor, renderAlertMessage } from "./alert-monitor.js";
+export type { AlertDeliveryStatus, AlertMonitorOptions, PendingAlertRecord } from "./alert-monitor.js";
 
 export interface PublicVisualRuntimeEvent {
   type: VisualRuntimeEvent["type"];
@@ -65,6 +69,7 @@ export type ProductEvent =
   | { type: "task"; clientId: string; status: string; taskId?: string; message: string }
   | { type: "computer"; clientId: string; taskId?: string; event: PublicVisualRuntimeEvent }
   | { type: "approval"; clientId: string; approvalId: string; status: string }
+  | { type: "alert"; clientId: string; status: AlertDeliveryStatus; alert: MonitoringAlert; conversationId?: string }
   | { type: "error"; clientId?: string; message: string; retryable: boolean };
 
 export class ProductEventBus {
@@ -92,6 +97,7 @@ export interface AdPilotSystem {
   runtime: PiAgentRuntime;
   specialists: SpecialistCoordinator;
   agent: AdPilotAgent;
+  alerts: AlertMonitor;
   computer: VisualComputerRuntime | undefined;
   browserSessions: BrowserSessionManager;
   screenshotAudits: FileScreenshotModelCallAuditStore;
@@ -312,6 +318,8 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     },
     new AuditRuntimeExtension(audit)
   ]);
+  const alertMonitor = new AlertMonitor({ workspace, runtime, audit, events });
+  runtime.registerExtension(alertMonitor.extension);
   const specialists = new SpecialistCoordinator([
     new AccountOperator(tools),
     new PerformanceAnalyst(runtime),
@@ -327,7 +335,8 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   }), sharedFacts);
   const connectedSessions = (await browserSessions.list()).filter((session) => session.sessionStatus === "connected");
   return {
-    workspace, settings, credentials, models, audit, approvals, experiments, tools, skills, runtime, specialists, agent, computer,
+    workspace, settings, credentials, models, audit, approvals, experiments, tools, skills, runtime, specialists, agent,
+    alerts: alertMonitor, computer,
     browserSessions, screenshotAudits, visualTableReader, events,
     approvalTokens: new Map(),
     modelStatus: {

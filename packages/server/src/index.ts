@@ -9,7 +9,7 @@ import type { AdPilotSystem } from "@adpilot/application";
 import { ApprovalOperation } from "@adpilot/approvals";
 import { StartBrowserSessionInput, type BrowserSession } from "@adpilot/computer-use";
 import { SettingsUpdate } from "@adpilot/configuration";
-import { ConversationMessage, Platform } from "@adpilot/shared";
+import { ConversationMessage, MonitoringAlert, MonitoringAlertInput, Platform } from "@adpilot/shared";
 import { ApprovalGuardrailEvidenceInput, VisualApprovalPlanInput, visualTaskFromExecutionPlan } from "@adpilot/tools";
 
 const BrowserSessionStartRequest = z.object({
@@ -349,6 +349,27 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const result = await system.tools.commitApprovedVisualAction({ clientId: body.clientId, taskId: approval.taskId, actor: "account_operator", permission: visualTask.permission }, params.id, token, approval.operation, visualTask);
     system.events.publish({ type: "approval", clientId: body.clientId, approvalId: params.id, status: result.status === "done" ? "executed" : "failed" });
     return result;
+  });
+
+  app.post("/api/clients/:id/alerts", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = MonitoringAlertInput.parse(request.body);
+    await system.workspace.readClient(params.id);
+    const alert = MonitoringAlert.parse({
+      ...body,
+      alertId: crypto.randomUUID(),
+      clientId: params.id,
+      createdAt: new Date().toISOString()
+    });
+    const result = await system.alerts.submit(alert);
+    reply.code(201);
+    return result;
+  });
+
+  app.get("/api/clients/:id/alerts/pending", async (request) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    await system.workspace.readClient(params.id);
+    return { clientId: params.id, pending: await system.alerts.pending(params.id) };
   });
 
   app.setErrorHandler((error, _request, reply) => {

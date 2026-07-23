@@ -823,3 +823,64 @@ export function isLocalModelEndpoint(providerId: string, baseUrl?: string): bool
   }
   return LOCAL_PROVIDER_ID_PATTERN.test(providerId);
 }
+
+/* ------------------------------------------------------------------------ */
+/* Monitoring alerts (proactive, advisory-only session injection)           */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Extensible alert taxonomy. New kinds append to the enum; producers must
+ * prefer a specific kind over "other" whenever one fits.
+ */
+export const MonitoringAlertKind = z.enum([
+  "budget_overspend",
+  "kpi_anomaly",
+  "learning_phase_complete",
+  "measurement_broken",
+  "creative_fatigue",
+  "pacing_anomaly",
+  "tracking_outage",
+  "other"
+]);
+export type MonitoringAlertKind = z.infer<typeof MonitoringAlertKind>;
+
+export const MonitoringAlertSeverity = z.enum(["info", "warning", "critical"]);
+export type MonitoringAlertSeverity = z.infer<typeof MonitoringAlertSeverity>;
+
+/**
+ * One numeric observation carried by an alert. The same binding discipline as
+ * specialist numerical inputs applies: every number must name the verified
+ * Shared Fact id it was read from, so the agent can cite and re-verify it
+ * instead of trusting producer prose.
+ */
+export const MonitoringMetricSnapshot = z.object({
+  metric: z.string().min(1),
+  value: z.number().finite(),
+  unit: z.string().default(""),
+  factId: z.string().min(1),
+  observedAt: z.string().datetime().optional()
+});
+export type MonitoringMetricSnapshot = z.infer<typeof MonitoringMetricSnapshot>;
+
+/**
+ * A monitoring observation routed into a client's conversation. Alerts only
+ * ever request analysis and recommendations: they carry no approval authority
+ * and every account mutation must still traverse the standard approval chain.
+ * `dedupeKey` scopes producer-side suppression (same key inside the dedupe
+ * window is recorded once).
+ */
+export const MonitoringAlert = z.object({
+  alertId: z.string().uuid(),
+  clientId: z.string().min(1),
+  kind: MonitoringAlertKind,
+  severity: MonitoringAlertSeverity,
+  metrics: z.array(MonitoringMetricSnapshot).default([]),
+  message: z.string().min(1).max(2000),
+  dedupeKey: z.string().min(1).max(200),
+  createdAt: z.string().datetime()
+});
+export type MonitoringAlert = z.infer<typeof MonitoringAlert>;
+
+/** Producer payload accepted by the alert endpoint; the server stamps identity and receipt time. */
+export const MonitoringAlertInput = MonitoringAlert.omit({ alertId: true, clientId: true, createdAt: true });
+export type MonitoringAlertInput = z.infer<typeof MonitoringAlertInput>;

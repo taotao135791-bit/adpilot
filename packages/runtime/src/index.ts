@@ -47,6 +47,29 @@ export interface RuntimeResult {
   compacted?: boolean;
 }
 
+/**
+ * Steering semantics for session message injection, mapped one-to-one onto
+ * pi-agent-core: "steer" injects at the next turn boundary (after the current
+ * assistant turn and its tool calls finish), "followUp" runs the message once
+ * the agent would otherwise stop. Neither interrupts in-flight tool execution.
+ */
+export type SessionInjectionMode = "steer" | "followUp";
+
+export type SessionInjectionOutcome =
+  | { status: "queued"; sessionId: string; mode: SessionInjectionMode }
+  | { status: "started"; sessionId: string; result: RuntimeResult };
+
+export interface ActiveSessionInfo {
+  conversationId: string;
+  sessionId: string;
+  startedAt: string;
+}
+
+interface TrackedSession extends ActiveSessionInfo {
+  agent: Agent;
+  clientId: string;
+}
+
 export class StructuredOutputBlocker extends Error {
   readonly code = "STRUCTURED_OUTPUT_INVALID";
   constructor(readonly attempts: number, readonly issues: string[]) {
@@ -96,6 +119,7 @@ export class PiAgentRuntime {
   private readonly compactionSettings: CompactionSettings;
   private readonly compactionInstructions: string;
   private readonly sessionLocks = new Map<string, Promise<void>>();
+  private readonly activeSessions = new Map<string, TrackedSession>();
   private readonly toolGate: ToolPermissionGate;
 
   constructor(
@@ -167,6 +191,59 @@ export class PiAgentRuntime {
     throw new StructuredOutputBlocker(3, thirdParsed.issues);
   }
 
+  /**
+   * Attaches an additional extension after construction. The composition root
+   * uses this for services that themselves depend on the runtime instance (for
+   * example the alert monitor) and therefore cannot be constructor arguments.
+   */
+  registerExtension(extension: RuntimeExtension): void {
+    this.extensions.push(extension);
+  }
+
+  /** Conversations with an in-flight run for one client, most recently started first. */
+  activeConversations(clientId: string): ActiveSessionInfo[] {
+    return [...this.activeSessions.values()]
+      .filter((session) => session.clientId === clientId)
+      .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
+      .map(({ conversationId, sessionId, startedAt }) => ({ conversationId, sessionId, startedAt }));
+  }
+
+  isSessionActive(clientId: string, conversationId: string): boolean {
+    return this.activeSessions.has(resolvePiSessionId(clientId, conversationId));
+  }
+
+  /**
+   * Queues a user message into a running session through pi-agent-core
+   * steering. The injected turn inherits the active run's system prompt,
+   * tools, and tool-permission gate, and is persisted through the normal
+   * message pipeline. Returns false when no run is active for the session;
+   * the caller then decides whether to start a fresh turn or defer.
+   */
+  queueSessionMessage(clientId: string, conversationId: string, text: string, mode: SessionInjectionMode = "followUp"): boolean {
+    const active = this.activeSessions.get(resolvePiSessionId(clientId, conversationId));
+    if (!active) return false;
+    const message: AgentMessage = { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
+    if (mode === "steer") active.agent.steer(message);
+    else active.agent.followUp(message);
+    return true;
+  }
+
+  /**
+   * Full session-injection entry point. While a run is active for the
+   * request's client+conversation the prompt text is queued with the given
+   * steering semantics; an idle session starts a fresh turn through the
+   * normal run pipeline with the request's own system prompt, signals, tools,
+   * and guardrail context.
+   */
+  async injectUserMessage(request: RuntimeRequest, mode: SessionInjectionMode = "followUp"): Promise<SessionInjectionOutcome> {
+    const resolved = this.resolveRequest(request);
+    if (this.queueSessionMessage(resolved.context.clientId, resolved.context.conversationId, resolved.prompt, mode)) {
+      return { status: "queued", sessionId: resolved.context.sessionId, mode };
+    }
+    const result = await this.run(request);
+    return { status: "started", sessionId: result.sessionId ?? resolved.context.sessionId, result };
+  }
+
   createSkillTool(context: ToolContext, allowedSkills: string[]): AgentTool {
     const contracts = allowedSkills.map((name) => formatSkillContract(this.skills.get(name))).join("\n\n");
     return {
@@ -223,6 +300,13 @@ export class PiAgentRuntime {
       }
     });
     await this.writeCheckpoint(session, request.context, "running");
+    this.activeSessions.set(request.context.sessionId, {
+      agent,
+      clientId: request.context.clientId,
+      conversationId: request.context.conversationId,
+      sessionId: request.context.sessionId,
+      startedAt: new Date().toISOString()
+    });
     try {
       agent.subscribe(async (event) => {
         events.push(event);
@@ -243,6 +327,8 @@ export class PiAgentRuntime {
     } catch (error) {
       await this.writeCheckpoint(session, request.context, "failed", { error: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
       throw error;
+    } finally {
+      this.activeSessions.delete(request.context.sessionId);
     }
   }
 
