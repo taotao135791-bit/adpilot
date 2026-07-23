@@ -1,5 +1,5 @@
 import { Agent, DEFAULT_COMPACTION_SETTINGS, Session, estimateContextTokens, prepareCompaction, compact, shouldCompact, type AgentEvent, type AgentMessage, type AgentTool, type CompactionSettings } from "@earendil-works/pi-agent-core";
-import type { Api, Model, Models } from "@earendil-works/pi-ai";
+import type { Api, Message, Model, Models } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import { ModelRouter, resolvePiModel, type RoutingSignals } from "@adpilot/model-router";
 import { SkillRegistry, formatSkillContract } from "@adpilot/skills";
@@ -7,11 +7,14 @@ import type { ToolContext, AdPilotTools } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
 import { AdPilotSessionStorage, resolvePiSessionId } from "./session-storage.js";
 import { ToolPermissionGate } from "./tool-gate.js";
+import { conversationMessageLabel, forkConversationStorage, type ConversationForkResult } from "./conversation-fork.js";
 
 export { AdPilotSessionStorage, resolvePiSessionId } from "./session-storage.js";
 export type { AdPilotSessionMetadata } from "./session-storage.js";
 export { ToolPermissionGate } from "./tool-gate.js";
 export { AuditRuntimeExtension, sanitizeForAudit } from "./audit-extension.js";
+export { FORK_CUSTOM_ENTRY_TYPE, conversationMessageLabel, forkConversationStorage, resolveForkLeafId } from "./conversation-fork.js";
+export type { ConversationForkResult } from "./conversation-fork.js";
 
 export interface RuntimeExtension {
   name: string;
@@ -25,6 +28,12 @@ export interface RuntimeRunContext extends ToolContext {
   sessionId: string;
   conversationId?: string;
   role: string;
+  /**
+   * conversation.jsonl id of the user message that started this run. When
+   * present, the run labels its user-message session entry so the message can
+   * later serve as an exact conversation-fork point.
+   */
+  userMessageId?: string;
 }
 
 export interface RuntimeRequest {
@@ -244,6 +253,68 @@ export class PiAgentRuntime {
     return { status: "started", sessionId: result.sessionId ?? resolved.context.sessionId, result };
   }
 
+  /**
+   * Forks a conversation at one persisted conversation message. The new
+   * conversation shares the session history and transcript up to the fork
+   * point and evolves independently afterwards. The source session lock
+   * serializes the copy against any in-flight run; the fork is chained into
+   * the audit log and the new session receives an idle recovery checkpoint so
+   * the existing restart/compaction machinery treats it like any other
+   * session.
+   */
+  async forkConversation(
+    clientId: string,
+    conversationId: string,
+    atMessageId: string,
+    options: { actor?: string } = {}
+  ): Promise<ConversationForkResult> {
+    const actor = options.actor ?? "workspace-owner";
+    return this.withSessionLock(resolvePiSessionId(clientId, conversationId), async () => {
+      const result = await forkConversationStorage(this.workspace, clientId, conversationId, atMessageId);
+      const targetSession = new Session(await AdPilotSessionStorage.openOrCreate(this.workspace, clientId, result.conversationId));
+      await this.writeCheckpoint(targetSession, {
+        clientId,
+        conversationId: result.conversationId,
+        sessionId: result.sessionId,
+        taskId: crypto.randomUUID(),
+        actor,
+        permission: "OBSERVE",
+        role: actor
+      }, "idle");
+      await this.tools.audit.append({
+        clientId,
+        actor,
+        action: "fork_conversation",
+        status: "succeeded",
+        details: {
+          sourceConversationId: result.sourceConversationId,
+          sourceMessageId: result.sourceMessageId,
+          sourceEntryId: result.sourceEntryId,
+          newConversationId: result.conversationId,
+          newSessionId: result.sessionId,
+          copiedEntries: result.copiedEntries,
+          copiedMessages: result.copiedMessages
+        }
+      });
+      return result;
+    });
+  }
+
+  /**
+   * Binds this run's user-message session entry to its conversation.jsonl
+   * message id through a Pi label entry, giving conversation forking an exact,
+   * compaction-proof anchor. A missing entry (for example a run that failed
+   * before persisting its prompt) is tolerated: the message then simply
+   * cannot serve as a fork point.
+   */
+  private async labelConversationMessage(session: Session, prompt: string, messageId: string): Promise<void> {
+    const entry = (await session.getEntries())
+      .reverse()
+      .find((candidate) => candidate.type === "message" && candidate.message.role === "user" && agentMessageText(candidate.message) === prompt);
+    if (!entry) return;
+    await session.appendLabel(entry.id, conversationMessageLabel(messageId));
+  }
+
   createSkillTool(context: ToolContext, allowedSkills: string[]): AgentTool {
     const contracts = allowedSkills.map((name) => formatSkillContract(this.skills.get(name))).join("\n\n");
     return {
@@ -288,6 +359,7 @@ export class PiAgentRuntime {
         tools,
         messages: persistedContext.messages
       },
+      convertToLlm: adpilotConvertToLlm,
       streamFn: (selectedModel, context, options) => this.models.streamSimple(selectedModel, context, options),
       sessionId: request.context.sessionId,
       toolExecution: "sequential",
@@ -319,6 +391,9 @@ export class PiAgentRuntime {
       await agent.prompt(request.prompt);
       await agent.waitForIdle();
       const text = lastAssistantText(agent.state.messages);
+      if (request.context.userMessageId) {
+        await this.labelConversationMessage(session, request.prompt, request.context.userMessageId);
+      }
       const compactionEntryId = await this.compactAtThreshold(session, model, request.context);
       lastCompactionEntryId = compactionEntryId ?? lastCompactionEntryId;
       compacted = compacted || Boolean(compactionEntryId);
@@ -449,6 +524,53 @@ function lastAssistantText(messages: AgentMessage[]): string {
   const message = [...messages].reverse().find((item) => item.role === "assistant");
   if (!message || message.role !== "assistant") throw new Error("agent produced no assistant response");
   return message.content.filter((item) => item.type === "text").map((item) => item.text).join("\n").trim();
+}
+
+function agentMessageText(message: AgentMessage & { role: "user" }): string {
+  if (typeof message.content === "string") return message.content;
+  return message.content.filter((item) => item.type === "text").map((item) => item.text).join("\n");
+}
+
+// Mirrors pi-agent-core's harness convertToLlm prefixes (not re-exported by
+// the published package) so compacted and branched history reaches the model.
+const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:\n\n<summary>\n`;
+const COMPACTION_SUMMARY_SUFFIX = `\n</summary>`;
+const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this conversation came back from:\n\n<summary>\n`;
+const BRANCH_SUMMARY_SUFFIX = `</summary>`;
+
+/**
+ * The plain Pi Agent's default LLM projection drops every message that is not
+ * user/assistant/toolResult, which silently discards compaction and branch
+ * summaries from the model context (the Pi AgentHarness wires its own
+ * projection internally; AdPilot drives Agent directly). This mirrors
+ * pi-agent-core's convertToLlm so summaries keep reaching the model as user
+ * messages after a compaction — in the source conversation and in any fork
+ * that carries the compaction entry.
+ */
+function adpilotConvertToLlm(messages: AgentMessage[]): Message[] {
+  const projected: Message[] = [];
+  for (const message of messages) {
+    if (message.role === "user" || message.role === "assistant" || message.role === "toolResult") {
+      projected.push(message as Message);
+    } else if (message.role === "compactionSummary") {
+      projected.push({
+        role: "user",
+        content: [{ type: "text", text: `${COMPACTION_SUMMARY_PREFIX}${message.summary}${COMPACTION_SUMMARY_SUFFIX}` }],
+        timestamp: message.timestamp
+      } as Message);
+    } else if (message.role === "branchSummary") {
+      projected.push({
+        role: "user",
+        content: [{ type: "text", text: `${BRANCH_SUMMARY_PREFIX}${message.summary}${BRANCH_SUMMARY_SUFFIX}` }],
+        timestamp: message.timestamp
+      } as Message);
+    } else if (message.role === "custom") {
+      const custom = message as AgentMessage & { role: "custom" };
+      const content = typeof custom.content === "string" ? [{ type: "text" as const, text: custom.content }] : custom.content;
+      projected.push({ role: "user", content, timestamp: custom.timestamp } as Message);
+    }
+  }
+  return projected;
 }
 
 function parseJsonObject(text: string): unknown {

@@ -11,11 +11,15 @@ import {
   webLightTheme
 } from "@fluentui/react-components";
 import {
+  AlertUrgent24Regular,
   Bot24Regular,
+  BranchFork24Regular,
   Chat24Regular,
   DataUsage24Regular,
   Desktop24Regular,
   ErrorCircle24Regular,
+  History24Regular,
+  Info24Regular,
   Pause24Regular,
   PersonArrowLeft24Regular,
   Play24Regular,
@@ -26,6 +30,8 @@ import {
 } from "@fluentui/react-icons";
 import { getCopy, starterGoals, type AppLocale } from "./i18n.js";
 import { approvalDisclosure, type Approval } from "./approvalDisclosure.js";
+import { matchSlashCompletions, type SlashCompletion } from "./slashCommands.js";
+import { mergeConversationTimeline, type TimelineAlert } from "./conversationTimeline.js";
 import { SettingsPanel, type SettingsData, type SettingsTab } from "./SettingsPanel.js";
 import "./styles.css";
 
@@ -34,9 +40,9 @@ type Task = { id: string; goal: string; phase: string; completedSteps: string[];
 type Experiment = { id: string; hypothesis: string; variable: string; status: string; reviewAt: string };
 type Audit = { id: string; actor: string; action: string; status: string; at: string };
 type ConversationMessage = { id: string; clientId: string; conversationId: string; role: "user" | "assistant" | "system"; content: string; status: "complete" | "error"; taskId?: string; at: string };
-type ProductEvent = { type: string; status?: string; message?: string; approvalId?: string; event?: { type: string; phase?: string; attempt?: number; screenshot?: { width: number; height: number; capturedAt: string; sha256: string }; action?: { action: string; target: string; reason: string }; reason?: string } };
+type ProductEvent = { type: string; status?: string; message?: string; approvalId?: string; conversationId?: string; alert?: { alertId: string; kind: string; severity: string; message: string; createdAt: string; metrics?: unknown[] }; event?: { type: string; phase?: string; attempt?: number; screenshot?: { width: number; height: number; capturedAt: string; sha256: string }; action?: { action: string; target: string; reason: string }; reason?: string } };
 type ComputerExecutionStatus = "running" | "paused" | "cancelled" | "unavailable";
-type State = { clients: Client[]; selectedClientId?: string; tasks: Task[]; approvals: Approval[]; experiments: Experiment[]; audit: Audit[]; messages: ConversationMessage[]; events: ProductEvent[]; computerUse?: { executionStatus?: ComputerExecutionStatus }; models: { fast: string; strong: string; gui: string; guiStrong: string; chatConfigured: boolean; guiConfigured: boolean; browserSession?: string; route?: string; privacyMode?: "standard" | "local-only"; permission?: "OBSERVE" | "INTERACT" | "MUTATE" | "DESTRUCTIVE" } };
+type State = { clients: Client[]; selectedClientId?: string; selectedConversationId?: string; conversations?: string[]; tasks: Task[]; approvals: Approval[]; experiments: Experiment[]; audit: Audit[]; messages: ConversationMessage[]; events: ProductEvent[]; computerUse?: { executionStatus?: ComputerExecutionStatus }; models: { fast: string; strong: string; gui: string; guiStrong: string; chatConfigured: boolean; guiConfigured: boolean; browserSession?: string; route?: string; privacyMode?: "standard" | "local-only"; permission?: "OBSERVE" | "INTERACT" | "MUTATE" | "DESTRUCTIVE" } };
 
 const emptyState: State = { clients: [], tasks: [], approvals: [], experiments: [], audit: [], messages: [], events: [], models: { fast: "", strong: "", gui: "", guiStrong: "", chatConfigured: false, guiConfigured: false } };
 function App() {
@@ -48,7 +54,10 @@ function App() {
   });
   const [state, setState] = useState<State>(emptyState);
   const [clientId, setClientId] = useState("");
+  const [conversationId, setConversationId] = useState("primary");
   const [goal, setGoal] = useState("");
+  const [completionIndex, setCompletionIndex] = useState(0);
+  const [completionsDismissed, setCompletionsDismissed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -58,10 +67,15 @@ function App() {
   const [settingsError, setSettingsError] = useState("");
   const copy = getCopy(locale);
 
-  const loadState = useCallback(async (requestedClientId?: string) => {
+  const loadState = useCallback(async (requestedClientId?: string, requestedConversationId?: string) => {
     try {
       const selected = requestedClientId ?? clientId;
-      const response = await fetch(`/api/state${selected ? `?clientId=${encodeURIComponent(selected)}` : ""}`);
+      const conversation = requestedConversationId ?? conversationId;
+      const params = new URLSearchParams();
+      if (selected) params.set("clientId", selected);
+      if (conversation) params.set("conversationId", conversation);
+      const query = params.toString();
+      const response = await fetch(`/api/state${query ? `?${query}` : ""}`);
       if (!response.ok) throw new Error(getCopy(locale).loadError);
       const data = await response.json() as State;
       setState(data);
@@ -69,7 +83,7 @@ function App() {
       setError("");
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setLoading(false); }
-  }, [clientId, locale]);
+  }, [clientId, conversationId, locale]);
 
   const loadSettings = useCallback(async () => {
     try {
@@ -97,6 +111,8 @@ function App() {
   const currentTask = state.tasks[0];
   const latestComputer = [...state.events].reverse().find((item) => item.type === "computer")?.event;
   const latestShot = [...state.events].reverse().find((item) => item.type === "computer" && item.event?.type === "screenshot")?.event?.screenshot;
+  const timeline = useMemo(() => mergeConversationTimeline(state.messages, state.events, conversationId), [state.messages, state.events, conversationId]);
+  const conversationOptions = useMemo(() => [...new Set([...(state.conversations ?? []), conversationId])], [state.conversations, conversationId]);
   const activeAgents = useMemo(() => {
     const roles = new Set(state.tasks.map((task) => task.owner).filter(Boolean) as string[]);
     if (currentTask && !["completed", "blocked", "cancelled"].includes(currentTask.phase)) roles.add("adpilot_agent");
@@ -122,18 +138,57 @@ function App() {
   }
 
   async function submitGoal() {
-    if (!state.models.chatConfigured) { setSettingsTab("models"); setSettingsOpen(true); return; }
+    const isSlashCommand = goal.trim().startsWith("/");
+    if (!state.models.chatConfigured && !isSlashCommand) { setSettingsTab("models"); setSettingsOpen(true); return; }
     if (!goal.trim()) return;
     const message = goal.trim();
     setSubmitting(true); setError("");
     setGoal("");
-    setState((current) => ({ ...current, messages: [...current.messages, { id: `local-${Date.now()}`, clientId: clientId || "personal", conversationId: "primary", role: "user", content: message, status: "complete", at: new Date().toISOString() }] }));
+    setState((current) => ({ ...current, messages: [...current.messages, { id: `local-${Date.now()}`, clientId: clientId || "personal", conversationId, role: "user", content: message, status: "complete", at: new Date().toISOString() }] }));
     try {
-      const response = await fetch("/api/messages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...(clientId ? { clientId } : {}), message, locale }) });
+      const response = await fetch("/api/messages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...(clientId ? { clientId } : {}), conversationId, message, locale }) });
       const body = await response.json(); if (!response.ok) throw new Error(copy.taskError);
       await loadState(clientId || body.message?.clientId);
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); await loadState(clientId); }
     finally { setSubmitting(false); }
+  }
+
+  async function forkMessage(messageId: string) {
+    try {
+      const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/conversations/${encodeURIComponent(conversationId)}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ atMessageId: messageId }) });
+      const body = await response.json() as { conversationId?: string; error?: string };
+      if (!response.ok || !body.conversationId) throw new Error(body.error ?? copy.forkError);
+      setConversationId(body.conversationId);
+      await loadState(clientId, body.conversationId);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  const slashCompletions = useMemo(() => matchSlashCompletions(goal, locale), [goal, locale]);
+  const visibleCompletions = completionsDismissed ? [] : slashCompletions;
+  useEffect(() => { setCompletionIndex(0); setCompletionsDismissed(false); }, [goal]);
+
+  function applyCompletion(item: SlashCompletion) {
+    setGoal(item.apply(goal));
+    setCompletionIndex(0);
+  }
+
+  function handleComposerKeyDown(event: React.KeyboardEvent) {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { void submitGoal(); return; }
+    if (visibleCompletions.length === 0) return;
+    if (event.key === "Tab" || (event.key === "Enter" && visibleCompletions[completionIndex])) {
+      event.preventDefault();
+      applyCompletion(visibleCompletions[Math.min(completionIndex, visibleCompletions.length - 1)]!);
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setCompletionIndex((index) => (index + 1) % visibleCompletions.length);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setCompletionIndex((index) => (index - 1 + visibleCompletions.length) % visibleCompletions.length);
+    } else if (event.key === "Escape") {
+      setCompletionsDismissed(true);
+    }
   }
 
   async function computerControl(action: "pause" | "resume" | "takeover") {
@@ -182,7 +237,7 @@ function App() {
             <span className="status-orbit" data-live={Boolean(clientId)} />
             <label htmlFor="client-select">{copy.workspace}</label>
             {state.clients.length ? (
-              <select id="client-select" value={clientId} onChange={(event) => { setClientId(event.target.value); void loadState(event.target.value); }}>
+              <select id="client-select" value={clientId} onChange={(event) => { setClientId(event.target.value); setConversationId("primary"); void loadState(event.target.value, "primary"); }}>
                 {state.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
               </select>
             ) : <strong>{copy.noWorkspace}</strong>}
@@ -223,19 +278,43 @@ function App() {
           ) : state.messages.length === 0 ? <MissionZero onPick={setGoal} guiReady={state.models.guiConfigured} clients={state.clients.length} locale={locale} /> : null}
 
           {(state.messages.length > 0 || submitting) && <section className="conversation" aria-label={copy.mission}>
-            {state.messages.map((item) => (
-              <article className={`message ${item.role} ${item.status}`} key={item.id}>
-                <div className="message-avatar">{item.role === "system" ? <ErrorCircle24Regular /> : item.role === "assistant" ? <Bot24Regular /> : <span>{locale === "zh-CN" ? "你" : "Y"}</span>}</div>
-                <div><strong>{item.role === "user" ? copy.you : item.role === "system" ? copy.system : copy.agent}</strong><MessageBody content={item.content} /><time>{formatTime(item.at, locale)}</time></div>
+            {conversationOptions.length > 1 && (
+              <div className="conversation-bar">
+                <History24Regular />
+                <select value={conversationId} aria-label={copy.conversation} onChange={(event) => { setConversationId(event.target.value); void loadState(clientId, event.target.value); }}>
+                  {conversationOptions.map((id) => <option key={id} value={id}>{id}</option>)}
+                </select>
+              </div>
+            )}
+            {timeline.map((item) => item.kind === "alert" ? (
+              <AlertCard alert={item.alert} locale={locale} key={item.id} />
+            ) : (
+              <article className={`message ${item.message.role} ${item.message.status}${item.message.role === "system" && item.message.status === "complete" ? " notice" : ""}`} key={item.id}>
+                <div className="message-avatar">{item.message.role === "system" ? (item.message.status === "error" ? <ErrorCircle24Regular /> : <Info24Regular />) : item.message.role === "assistant" ? <Bot24Regular /> : <span>{locale === "zh-CN" ? "你" : "Y"}</span>}</div>
+                <div>
+                  <strong>{item.message.role === "user" ? copy.you : item.message.role === "system" ? copy.system : copy.agent}</strong>
+                  <MessageBody content={item.message.content} />
+                  <time>{formatTime(item.message.at, locale)}</time>
+                  <Tooltip content={copy.forkHere} relationship="label"><button className="message-fork" aria-label={copy.forkHere} onClick={() => void forkMessage(item.message.id)}><BranchFork24Regular /></button></Tooltip>
+                </div>
               </article>
             ))}
             {submitting && <div className="thinking"><span className="thinking-pulse" /><span>{copy.investigating}</span></div>}
           </section>}
 
           <div className="composer-shell">
+            {visibleCompletions.length > 0 && (
+              <div className="slash-suggestions" role="listbox" aria-label={copy.commands}>
+                {visibleCompletions.map((item, index) => (
+                  <button key={item.label} role="option" aria-selected={index === completionIndex} className={index === completionIndex ? "active" : ""} onMouseDown={(event) => { event.preventDefault(); applyCompletion(item); }}>
+                    <strong>{item.label}</strong><span>{item.hint}</span>
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="composer">
               <div className="composer-copy"><span>{copy.directive}</span><small>{copy.launchHint}</small></div>
-              <Textarea resize="vertical" value={goal} onChange={(_, data) => setGoal(data.value)} placeholder={copy.goalPlaceholder} aria-label={copy.goalLabel} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void submitGoal(); }} />
+              <Textarea resize="vertical" value={goal} onChange={(_, data) => setGoal(data.value)} placeholder={copy.goalPlaceholder} aria-label={copy.goalLabel} onKeyDown={handleComposerKeyDown} />
               <Button className="launch-button" appearance="primary" icon={<Send24Regular />} disabled={state.models.chatConfigured && (!goal.trim() || submitting)} onClick={() => void submitGoal()}>{!state.models.chatConfigured ? copy.configureModel : submitting ? copy.investigatingShort : copy.send}</Button>
             </div>
           </div>
@@ -357,6 +436,44 @@ function MessageBody({ content }: { content: string }) {
     if (/^#{1,3}\s+/.test(block)) return <h4 key={index}>{block.replace(/^#{1,3}\s+/, "")}</h4>;
     return <p key={index}>{block}</p>;
   })}</div>;
+}
+
+/** Monitoring-alert card rendered inside the conversation feed for SSE alert events. */
+function AlertCard({ alert, locale }: { alert: TimelineAlert; locale: AppLocale }) {
+  const copy = getCopy(locale);
+  const color = alert.severity === "critical" ? "danger" : alert.severity === "warning" ? "warning" : "brand";
+  return (
+    <article className={`alert-card ${alert.severity}`}>
+      <div className="message-avatar alert-avatar"><AlertUrgent24Regular /></div>
+      <div>
+        <strong>{copy.alert}</strong>
+        <div className="alert-head">
+          <Badge appearance="filled" color={color}>{alertSeverityLabel(alert.severity, locale)}</Badge>
+          <span className="alert-kind">{alertKindLabel(alert.kind, locale)}</span>
+          <span className="alert-status">{alertDeliveryLabel(alert.status, locale)}</span>
+        </div>
+        <p className="alert-message">{alert.message}</p>
+        {alert.metricCount > 0 && <small className="alert-metrics">{copy.alertMetrics.replace("{count}", String(alert.metricCount))}</small>}
+        <time>{formatTime(alert.createdAt, locale)}</time>
+      </div>
+    </article>
+  );
+}
+
+function alertSeverityLabel(severity: string, locale: AppLocale) {
+  const zh = { info: "提示", warning: "警告", critical: "严重" } as Record<string, string>;
+  const en = { info: "Info", warning: "Warning", critical: "Critical" } as Record<string, string>;
+  return (locale === "zh-CN" ? zh : en)[severity] ?? humanize(severity);
+}
+function alertKindLabel(kind: string, locale: AppLocale) {
+  const zh = { budget_overspend: "预算超支", kpi_anomaly: "KPI 异常", learning_phase_complete: "学习期结束", measurement_broken: "测量中断", creative_fatigue: "素材疲劳", pacing_anomaly: "消耗节奏异常", tracking_outage: "追踪中断", other: "其他" } as Record<string, string>;
+  const en = { budget_overspend: "Budget overspend", kpi_anomaly: "KPI anomaly", learning_phase_complete: "Learning phase complete", measurement_broken: "Measurement broken", creative_fatigue: "Creative fatigue", pacing_anomaly: "Pacing anomaly", tracking_outage: "Tracking outage", other: "Other" } as Record<string, string>;
+  return (locale === "zh-CN" ? zh : en)[kind] ?? humanize(kind);
+}
+function alertDeliveryLabel(status: string, locale: AppLocale) {
+  const zh = { injected: "已注入会话", pending: "待投递", rate_limited: "已限流", deduplicated: "已去重", delivered: "已投递", requeued: "已重新排队" } as Record<string, string>;
+  const en = { injected: "Injected", pending: "Pending", rate_limited: "Rate limited", deduplicated: "Deduplicated", delivered: "Delivered", requeued: "Requeued" } as Record<string, string>;
+  return (locale === "zh-CN" ? zh : en)[status] ?? humanize(status);
 }
 function formatTime(value: string, locale: AppLocale) { return new Intl.DateTimeFormat(locale, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
 function roleLabel(role: string, locale: AppLocale) {

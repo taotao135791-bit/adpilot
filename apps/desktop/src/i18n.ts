@@ -34,7 +34,7 @@ const zh = {
   agent: "AdPilot 智能体",
   investigating: "正在调查账户事实并调度专业智能体",
   directive: "任务指令",
-  launchHint: "⌘ + Enter 启动",
+  launchHint: "⌘ + Enter 启动 · 输入 / 用命令",
   goalPlaceholder: "描述目标、症状和不可改变的业务约束…",
   goalLabel: "任务目标",
   investigatingShort: "调查中",
@@ -157,7 +157,13 @@ const zh = {
   ready: "已就绪",
   offline: "离线",
   safetyGate: "安全门",
-  enforced: "已启用"
+  enforced: "已启用",
+  conversation: "会话",
+  forkHere: "从此分叉",
+  forkError: "会话分叉失败",
+  commands: "斜杠命令",
+  alert: "监控告警",
+  alertMetrics: "绑定 {count} 个已验证指标"
 } as const;
 
 const en: Record<keyof typeof zh, string> = {
@@ -194,7 +200,7 @@ const en: Record<keyof typeof zh, string> = {
   agent: "AdPilot agent",
   investigating: "Investigating account facts and assigning specialists",
   directive: "Directive",
-  launchHint: "⌘ + Enter to launch",
+  launchHint: "⌘ + Enter to launch · type / for commands",
   goalPlaceholder: "Describe the goal, symptoms, and fixed business constraints…",
   goalLabel: "Mission directive",
   investigatingShort: "Investigating",
@@ -317,7 +323,13 @@ const en: Record<keyof typeof zh, string> = {
   ready: "Ready",
   offline: "Offline",
   safetyGate: "Safety gate",
-  enforced: "Enforced"
+  enforced: "Enforced",
+  conversation: "Conversation",
+  forkHere: "Fork from here",
+  forkError: "Could not fork the conversation",
+  commands: "Slash commands",
+  alert: "Monitoring alert",
+  alertMetrics: "{count} verified metric(s) bound"
 };
 
 export function getCopy(locale: AppLocale) { return locale === "zh-CN" ? zh : en; }

@@ -415,3 +415,41 @@ button { -webkit-tap-highlight-color: transparent; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Conversation switching (forks) */
+.conversation-bar { display: flex; align-items: center; gap: 8px; margin: -18px 0 4px; color: var(--faint); }
+.conversation-bar svg { width: 14px; }
+.conversation-bar select { max-width: 240px; padding: 4px 8px; color: var(--ink); background: var(--surface-raised); border: 1px solid var(--line); border-radius: 8px; font-size: 10px; }
+
+/* Per-message fork entry */
+.message-fork { display: inline-grid; place-items: center; width: 22px; height: 22px; margin-top: 6px; margin-left: 8px; padding: 0; color: var(--faint); background: transparent; border: 1px solid transparent; border-radius: 7px; cursor: pointer; opacity: 0; transition: opacity .16s ease, color .16s ease, border-color .16s ease; vertical-align: middle; }
+.message-fork svg { width: 13px; }
+.message:hover .message-fork, .message-fork:focus-visible { opacity: 1; }
+.message-fork:hover { color: var(--accent); border-color: var(--line); }
+
+/* System notice cards (direct slash answers) — distinct from model messages and errors */
+.message.notice .message-avatar { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: color-mix(in srgb, var(--accent) 8%, var(--surface-raised)); }
+.message.notice .message-body { color: var(--ink); }
+
+/* Monitoring alert cards inside the conversation feed */
+.alert-card { display: grid; grid-template-columns: 36px 1fr; gap: 13px; max-width: 800px; padding: 12px 0; }
+.alert-card > div:last-child { padding: 10px 14px; background: color-mix(in srgb, var(--surface-raised) 82%, transparent); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 11px; }
+.alert-card.warning > div:last-child { border-left-color: #d97706; }
+.alert-card.critical > div:last-child { border-left-color: var(--danger); }
+.alert-avatar { color: var(--accent); }
+.alert-card.warning .alert-avatar { color: #d97706; }
+.alert-card.critical .alert-avatar { color: var(--danger); }
+.alert-card strong { color: var(--faint); font-size: 8px; letter-spacing: .13em; }
+.alert-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.alert-kind { color: var(--ink); font-size: 11px; font-weight: 700; }
+.alert-status { color: var(--faint); font-size: 8px; letter-spacing: .08em; text-transform: uppercase; }
+.alert-message { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.65; white-space: pre-wrap; }
+.alert-metrics { display: block; margin-top: 6px; color: var(--faint); font-size: 9px; }
+.alert-card time { display: block; margin-top: 7px; color: var(--faint); font: 6px/1 "SFMono-Regular", Consolas, monospace; }
+
+/* Slash command completions above the composer */
+.slash-suggestions { display: grid; gap: 2px; margin: 0 4px 8px; padding: 6px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+.slash-suggestions button { display: grid; grid-template-columns: minmax(90px, auto) 1fr; align-items: baseline; gap: 10px; padding: 7px 9px; text-align: left; background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
+.slash-suggestions button strong { color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .04em; }
+.slash-suggestions button span { color: var(--muted); font-size: 10px; }
+.slash-suggestions button.active, .slash-suggestions button:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }

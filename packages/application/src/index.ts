@@ -70,6 +70,7 @@ export type ProductEvent =
   | { type: "computer"; clientId: string; taskId?: string; event: PublicVisualRuntimeEvent }
   | { type: "approval"; clientId: string; approvalId: string; status: string }
   | { type: "alert"; clientId: string; status: AlertDeliveryStatus; alert: MonitoringAlert; conversationId?: string }
+  | { type: "conversation"; clientId: string; conversationId: string; status: string; forkedFrom?: string }
   | { type: "error"; clientId?: string; message: string; retryable: boolean };
 
 export class ProductEventBus {

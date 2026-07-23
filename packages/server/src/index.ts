@@ -5,12 +5,23 @@ import fastifyStatic from "@fastify/static";
 import Fastify from "fastify";
 import { z } from "zod";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
+import { SessionError } from "@earendil-works/pi-agent-core";
 import type { AdPilotSystem } from "@adpilot/application";
 import { ApprovalOperation } from "@adpilot/approvals";
+import { listKnowledgeSkills } from "@adpilot/advertising-core";
 import { StartBrowserSessionInput, type BrowserSession } from "@adpilot/computer-use";
 import { SettingsUpdate } from "@adpilot/configuration";
 import { ConversationMessage, MonitoringAlert, MonitoringAlertInput, Platform } from "@adpilot/shared";
 import { ApprovalGuardrailEvidenceInput, VisualApprovalPlanInput, visualTaskFromExecutionPlan } from "@adpilot/tools";
+import {
+  expandSlashCommand,
+  isDirectSlashCommand,
+  parseSlashCommand,
+  renderApprovalsHistory,
+  renderSkillsCatalog,
+  renderSlashHelp,
+  renderSlashParseError
+} from "./slash-commands.js";
 
 const BrowserSessionStartRequest = z.object({
   clientId: z.string().min(1),
@@ -121,6 +132,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       approvals,
       experiments,
       audit,
+      conversations: [...new Set(messages.map((message) => message.conversationId))],
       messages: messages.filter((message) => message.conversationId === query.conversationId).map((message) => sanitizeLegacyConversationError(message, settings.locale)),
       browserSessions: computerUse.sessions,
       computerUse,
@@ -166,9 +178,30 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const existing = (await system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage)).filter((message) => message.conversationId === body.conversationId);
     const userMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "user", content: body.message, at: new Date().toISOString() });
     await system.workspace.appendJsonl(clientId, "conversation.jsonl", userMessage);
+    const slash = parseSlashCommand(body.message);
+    const directAnswer = async (markdown: string, commandName: string) => {
+      const systemMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "system", content: markdown, status: "complete", at: new Date().toISOString() });
+      await system.workspace.appendJsonl(clientId, "conversation.jsonl", systemMessage);
+      system.events.publish({ type: "task", clientId, status: "completed", message: markdown });
+      reply.code(201);
+      return { message: systemMessage, task: null, command: commandName };
+    };
+    if (slash && !slash.ok) return directAnswer(renderSlashParseError(slash.error, body.locale), "error");
+    const slashCommand = slash?.command;
+    if (slashCommand && isDirectSlashCommand(slashCommand)) {
+      const markdown = slashCommand.name === "approvals"
+        ? renderApprovalsHistory(await system.approvals.list(clientId), body.locale)
+        : slashCommand.name === "skills"
+          ? renderSkillsCatalog(system.skills.list(), listKnowledgeSkills(), body.locale)
+          : renderSlashHelp(body.locale);
+      return directAnswer(markdown, slashCommand.name);
+    }
+    // Slash investigation commands (/report, /audit) travel the normal
+    // pipeline with an explicit advisory expansion; plain chat passes through.
+    const prompt = slashCommand ? expandSlashCommand(slashCommand, body.locale) : body.message;
     system.events.publish({ type: "task", clientId, status: "running", message: body.message });
     try {
-      const response = await system.agent.respond(clientId, body.message, { conversationId: body.conversationId, interfaceLocale: body.locale, recentConversation: existing.slice(-12).map((item) => sanitizeLegacyConversationError(item, body.locale)).map(({ role, content }) => ({ role, content })) });
+      const response = await system.agent.respond(clientId, prompt, { conversationId: body.conversationId, interfaceLocale: body.locale, userMessageId: userMessage.id, recentConversation: existing.slice(-12).map((item) => sanitizeLegacyConversationError(item, body.locale)).map(({ role, content }) => ({ role, content })) });
       const assistantMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "assistant", content: response.reply, ...(response.task ? { taskId: response.task.id } : {}), at: new Date().toISOString() });
       await system.workspace.appendJsonl(clientId, "conversation.jsonl", assistantMessage);
       system.events.publish({ type: "task", clientId, status: response.task?.phase ?? "completed", ...(response.task ? { taskId: response.task.id } : {}), message: response.reply });
@@ -349,6 +382,24 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const result = await system.tools.commitApprovedVisualAction({ clientId: body.clientId, taskId: approval.taskId, actor: "account_operator", permission: visualTask.permission }, params.id, token, approval.operation, visualTask);
     system.events.publish({ type: "approval", clientId: body.clientId, approvalId: params.id, status: result.status === "done" ? "executed" : "failed" });
     return result;
+  });
+
+  app.post("/api/clients/:id/conversations/:cid/fork", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1), cid: z.string().trim().min(1).max(120) }).parse(request.params);
+    const body = z.object({ atMessageId: z.string().uuid(), actor: z.string().trim().min(1).max(120).default("workspace-owner") }).parse(request.body);
+    await system.workspace.readClient(params.id);
+    try {
+      const result = await system.runtime.forkConversation(params.id, params.cid, body.atMessageId, { actor: body.actor });
+      system.events.publish({ type: "conversation", clientId: params.id, conversationId: result.conversationId, status: "forked", forkedFrom: params.cid });
+      reply.code(201);
+      return result;
+    } catch (error) {
+      if (error instanceof SessionError) {
+        const statusCode = error.code === "not_found" ? 404 : 409;
+        return reply.code(statusCode).send({ error: error.message, code: error.code === "not_found" ? "FORK_TARGET_NOT_FOUND" : "FORK_TARGET_UNAVAILABLE" });
+      }
+      throw error;
+    }
   });
 
   app.post("/api/clients/:id/alerts", async (request, reply) => {

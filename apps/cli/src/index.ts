@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { createInterface, type Interface } from "node:readline";
 import open from "open";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
+import { listKnowledgeSkills } from "@adpilot/advertising-core";
 import { createAdPilotSystem } from "@adpilot/application";
 import { createServer } from "@adpilot/server";
 
@@ -44,6 +45,18 @@ if (command === "serve") {
   for (const provider of system.models.getProviders()) {
     const auth = [provider.auth.apiKey ? "api-key" : "", provider.auth.oauth ? "oauth" : ""].filter(Boolean).join(",");
     console.log(`${provider.id.padEnd(27)} ${String(provider.getModels().length).padStart(3)} models  ${auth}`);
+  }
+} else if (command === "skills") {
+  const system = await createAdPilotSystem();
+  console.log("Typed skills (validated code paths executed through the execute_skill tool; every run is audited):");
+  for (const skill of system.skills.list()) {
+    console.log(`  ${skill.name.padEnd(34)} ${skill.description}`);
+    if (skill.prerequisites.length) console.log(`  ${"".padEnd(34)} requires: ${skill.prerequisites.join("; ")}`);
+  }
+  console.log("");
+  console.log("Advertising playbooks (reference knowledge only; they never grant tools, permissions, or execution authority):");
+  for (const entry of listKnowledgeSkills()) {
+    console.log(`  ${entry.name.padEnd(34)} ${entry.description.replace(/\s+/g, " ")}`);
   }
 } else if (command === "login") {
   const system = await createAdPilotSystem();
@@ -118,7 +131,7 @@ async function runBrowserCommand(): Promise<void> {
 function usage(): string {
   return [
     "Usage:",
-    "  adpilot [serve|doctor|providers]",
+    "  adpilot [serve|doctor|providers|skills]",
     "  adpilot login <provider>",
     "  adpilot logout <provider>",
     "  adpilot init <client-id> --name <name> --kpi CPA --target 20 [--currency USD]",

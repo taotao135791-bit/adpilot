@@ -36,6 +36,8 @@ export type MainAgentOutput = z.infer<typeof MainAgentOutput>;
 export interface AgentConversationContext extends Record<string, unknown> {
   conversationId?: string;
   interfaceLocale?: string;
+  /** conversation.jsonl id of the user message being answered; threaded into the decision run for fork labeling. */
+  userMessageId?: string;
 }
 const ConversationDecision = z.object({
   mode: z.enum(["answer", "investigate"]),
@@ -63,7 +65,7 @@ export class AdPilotAgent {
     const verifiedFacts = await this.sharedFacts.usable(clientId);
     const knowledgeMatches = matchKnowledgeSkills(message);
     const decisionResult = await this.runtime.run({
-      context: { clientId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", sessionId: conversationId, conversationId, role: "adpilot_agent" },
+      context: { clientId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", sessionId: conversationId, conversationId, role: "adpilot_agent", ...(typeof context.userMessageId === "string" && context.userMessageId.trim() ? { userMessageId: context.userMessageId.trim() } : {}) },
       systemPrompt: [
         "You are AdPilot, the user's persistent advertising operator. Natural conversation is the primary interface.",
         "Choose answer for greetings, product usage, definitions, clarifying questions, and requests that do not require account evidence.",
