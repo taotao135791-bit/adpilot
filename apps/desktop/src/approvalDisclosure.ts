@@ -1,4 +1,4 @@
-import { getCopy, type AppLocale } from "./i18n.js";
+import { getCopy, type AppLocale } from "./labels.js";
 
 type ApprovalValue = string | number | boolean | null;
 

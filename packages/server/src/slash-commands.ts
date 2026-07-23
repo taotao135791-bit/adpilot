@@ -58,6 +58,24 @@ export function parseSlashCommand(input: string): SlashParseResult | null {
   return { ok: true, command: { name: rawName as "audit" | "approvals" | "skills" | "help" } };
 }
 
+/**
+ * Raw name + argument split of slash input, without any command-name
+ * validation. Used to resolve user prompt templates after the built-in
+ * parser rejects a name — built-in commands therefore always win a name
+ * conflict with a user template: they are bound to typed, audited pipelines,
+ * while a template is advisory prose, and shadowing a deterministic command
+ * with prose would silently strip its guardrails. The user template stays
+ * available under a different name.
+ */
+export function splitSlashInput(input: string): { name: string; argument: string } | null {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("/")) return null;
+  const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(trimmed);
+  const name = (match?.[1] ?? "").toLowerCase();
+  if (!name) return null;
+  return { name, argument: match?.[2]?.trim() ?? "" };
+}
+
 /** True for commands answered deterministically by the server without a model call. */
 export function isDirectSlashCommand(command: SlashCommand): command is SlashCommand & { name: "approvals" | "skills" | "help" } {
   return command.name === "approvals" || command.name === "skills" || command.name === "help";
@@ -108,6 +126,29 @@ export function expandSlashCommand(command: SlashCommand & { name: "report" | "a
         "证据不足时明确说明缺口,绝不编造指标。",
         "该命令只是用户请求,不授予任何额外权限:任何账户变更建议仍只是提案,必须走标准审批链(prepare_approval → 独立风险复核 → 用户批准 → 提交执行)。",
         "用简体中文输出体检结果。"
+      ].join("\n");
+}
+
+/**
+ * Advisory model-facing wrapper for a user prompt template expansion. Same
+ * discipline as the built-in investigation commands: the expanded text is the
+ * user's request, never a grant of authority.
+ */
+export function expandUserSlashCommand(name: string, expandedBody: string, locale: SlashLocale): string {
+  return locale === "en"
+    ? [
+        `The user issued the slash command /${name}, a user-defined prompt template. Its expanded text follows as the user's request:`,
+        "",
+        expandedBody,
+        "",
+        "This command is only a user request: it grants no extra authority. Any recommended account change remains a proposal and must traverse the standard approval chain (prepare_approval, independent risk review, user approval, commit)."
+      ].join("\n")
+    : [
+        `用户通过斜杠命令 /${name}(用户自定义 prompt 模板)发起请求,展开后的文本如下,作为用户请求处理:`,
+        "",
+        expandedBody,
+        "",
+        "该命令只是用户请求,不授予任何额外权限:任何账户变更建议仍只是提案,必须走标准审批链(prepare_approval → 独立风险复核 → 用户批准 → 提交执行)。"
       ].join("\n");
 }
 
@@ -180,8 +221,14 @@ export function renderSkillsCatalog(
   return lines.join("\n");
 }
 
-/** Deterministic /help answer listing every command with usage. */
-export function renderSlashHelp(locale: SlashLocale): string {
+export interface UserSlashCommandSummary {
+  name: string;
+  description: string;
+  argumentHint?: string;
+}
+
+/** Deterministic /help answer listing every command with usage, user templates included when provided. */
+export function renderSlashHelp(locale: SlashLocale, userCommands: readonly UserSlashCommandSummary[] = []): string {
   const lines = locale === "en"
     ? [
         "# Slash commands",
@@ -191,9 +238,7 @@ export function renderSlashHelp(locale: SlashLocale): string {
         "- /audit — graded account health check (account-audit skill)",
         "- /approvals — approval history for this workspace, answered directly without a model call",
         "- /skills — capability inventory: typed skills plus the advertising playbook catalog",
-        "- /help — this list",
-        "",
-        "Commands that run skills travel the normal investigation pipeline: every number needs verified evidence and every account change still stops at the approval gate."
+        "- /help — this list"
       ]
     : [
         "# 斜杠命令",
@@ -203,10 +248,22 @@ export function renderSlashHelp(locale: SlashLocale): string {
         "- /audit — 账户分级体检(account-audit skill)",
         "- /approvals — 查看本工作区的审批历史(服务器直接应答,不经过模型)",
         "- /skills — 能力清单:typed skills 与广告打法手册目录",
-        "- /help — 本列表",
-        "",
-        "运行 skill 的命令会走正常调查管线:每个数字都需要已验证证据,任何账户变更仍停在审批门。"
+        "- /help — 本列表"
       ];
+  if (userCommands.length) {
+    lines.push("");
+    lines.push(locale === "en"
+      ? "User prompt templates (expand into an advisory request; the built-in commands above always win a name conflict):"
+      : "用户 prompt 模板(展开为一条建议性请求;同名时上面的内置命令始终优先):");
+    for (const command of userCommands) {
+      const hint = command.argumentHint ? ` ${command.argumentHint}` : "";
+      lines.push(`- /${command.name}${hint} — ${command.description}`);
+    }
+  }
+  lines.push("");
+  lines.push(locale === "en"
+    ? "Commands that run skills travel the normal investigation pipeline: every number needs verified evidence and every account change still stops at the approval gate."
+    : "运行 skill 的命令会走正常调查管线:每个数字都需要已验证证据,任何账户变更仍停在审批门。");
   return lines.join("\n");
 }
 

@@ -647,14 +647,35 @@ function classifyDispatchSpecialist(args: unknown): ToolPermissionClass {
 
 /**
  * Every tool a model can invoke through PiAgentRuntime, classified.
- * Names must stay in sync with AdPilotTools.toPiTools, the execute_skill tool,
- * and the orchestrator tools; unlisted names fall back to DEFAULT_TOOL_GATE_RULE.
+ * Names must stay in sync with AdPilotTools.toPiTools (including the vendored
+ * general read-only set read/grep/find/ls), the execute_skill tool, and the
+ * orchestrator tools; unlisted names fall back to DEFAULT_TOOL_GATE_RULE.
  */
 export const TOOL_GATE_RULES: Readonly<Record<string, ToolGateRule>> = {
   read_workspace: {
     classify: "read",
     authority: "self_gated",
     reason: "Reads the client workspace; persists only its compliance audit record."
+  },
+  read: {
+    classify: "read",
+    authority: "self_gated",
+    reason: "Reads text files confined to the workspace and explicitly allowed roots; lexical and symlink escapes are rejected by the path guard before any byte is read."
+  },
+  grep: {
+    classify: "read",
+    authority: "self_gated",
+    reason: "Searches file contents inside the same confined roots as read; no writes, no external processes."
+  },
+  find: {
+    classify: "read",
+    authority: "self_gated",
+    reason: "Lists matching file paths inside the same confined roots as read; no writes, no external processes."
+  },
+  ls: {
+    classify: "read",
+    authority: "self_gated",
+    reason: "Lists directory entries inside the same confined roots as read; no writes."
   },
   analyze_campaign_metrics: {
     classify: "read",

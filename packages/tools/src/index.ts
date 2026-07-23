@@ -49,6 +49,10 @@ import {
   type VisualTableImagePreparer,
   type VisualTableSurface
 } from "@adpilot/visual-table-reader";
+import { createGeneralReadTools, workspaceReadPolicy } from "./general/index.js";
+
+export { createGeneralReadTools, workspaceReadPolicy, GENERAL_READ_TOOL_NAMES, PATH_ESCAPE_MESSAGE } from "./general/index.js";
+export type { GeneralReadToolsOptions, ReadAccessPolicy, ReadPathGuard } from "./general/index.js";
 
 const ExecutionValue = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
 
@@ -159,6 +163,8 @@ export interface VisualTableToolsRuntime {
 }
 
 export class AdPilotTools {
+  private generalTools: AgentTool[] | undefined;
+
   constructor(
     readonly workspace: WorkspaceStore,
     readonly audit: AuditLog,
@@ -168,8 +174,27 @@ export class AdPilotTools {
     readonly visualIdentity?: DualVisualIdentityVerifier,
     readonly browserSessions?: BrowserSessionManager,
     readonly visualTables?: VisualTableToolsRuntime,
-    readonly sharedFacts?: SharedFactLedger
+    readonly sharedFacts?: SharedFactLedger,
+    /**
+     * Extra readable roots for the general read-only tools beyond the
+     * workspace root (for example the user and workspace skill/prompt
+     * directories). The workspace-private `.adpilot` subtree stays denied.
+     */
+    readonly generalReadRoots: readonly string[] = []
   ) {}
+
+  /**
+   * The vendored read/grep/find/ls set, confined to the workspace root plus
+   * `generalReadRoots` (the workspace `.adpilot` private subtree excluded).
+   * Tool instances are context-free: confinement is bound at construction and
+   * every call is still classified by the runtime tool gate.
+   */
+  generalReadTools(): AgentTool[] {
+    if (!this.generalTools) {
+      this.generalTools = createGeneralReadTools({ policy: workspaceReadPolicy(this.workspace.root, this.generalReadRoots) });
+    }
+    return this.generalTools;
+  }
 
   async readWorkspace(context: ToolContext) {
     const client = await this.workspace.readClient(context.clientId);
@@ -1021,6 +1046,9 @@ export class AdPilotTools {
         execute: async (_id, params) => textResult(await this.readVisualTable(context, VisualTableReadToolInput.parse(params)))
       });
     }
+    // The workspace-confined general read-only set travels with the domain
+    // tools so every Pi tool name stays covered by TOOL_GATE_RULES.
+    tools.push(...this.generalReadTools());
     return tools;
   }
 }

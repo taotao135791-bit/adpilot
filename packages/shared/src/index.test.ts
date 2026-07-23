@@ -199,6 +199,15 @@ describe("tool permission gate table", () => {
     }
   });
 
+  it("classifies the vendored general read-only tools as read, never defaulted", () => {
+    for (const name of ["read", "grep", "find", "ls"]) {
+      const classification = classifyToolCall(name, {});
+      expect(classification.class, name).toBe("read");
+      expect(classification.defaulted, name).toBe(false);
+      expect(classification.rule.authority, name).toBe("self_gated");
+    }
+  });
+
   it("escalates mutation-shaped calls to write or destructive", () => {
     expect(classifyToolCall("dispatch_specialist", { role: "account_operator", input: { visualTask: { permission: "MUTATE" } } }).class).toBe("destructive");
     expect(classifyToolCall("dispatch_specialist", { role: "account_operator", input: { visualTask: { permission: "DESTRUCTIVE" } } }).class).toBe("destructive");
@@ -218,6 +227,7 @@ describe("tool permission gate table", () => {
 
   it("covers every Pi tool name with a rule that has a reason", () => {
     for (const name of ["read_workspace", "analyze_campaign_metrics", "evaluate_change_guardrail", "read_visual_table",
+      "read", "grep", "find", "ls",
       "dispatch_specialist", "prepare_approval", "execute_skill", "commit_approved_action"]) {
       expect(TOOL_GATE_RULES[name]?.reason.length, name).toBeGreaterThan(0);
     }

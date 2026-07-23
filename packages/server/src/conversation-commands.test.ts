@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
@@ -15,6 +15,8 @@ async function setup() {
   const models = createModels(); models.setProvider(faux.provider);
   const system = await createAdPilotSystem({
     workspaceRoot: root,
+    // Hermetic user-extension home: real ~/.adpilot content never leaks into tests.
+    adpilotHome: join(root, "home"),
     env: { ADPILOT_FAST_PROVIDER: "test", ADPILOT_FAST_MODEL: "code", ADPILOT_STRONG_PROVIDER: "test", ADPILOT_STRONG_MODEL: "code" },
     models
   });
@@ -124,6 +126,71 @@ describe("slash commands over HTTP", () => {
     const log = await conversationLog(system, "primary");
     expect(log.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(log[0]?.content).toBe("/report daily");
+    await server.close();
+  });
+
+  it("expands a user prompt template through the same advisory pipeline and lists it in /help", async () => {
+    const { root, faux, system, server } = await setup();
+    await mkdir(join(root, "home", "prompts"), { recursive: true });
+    await writeFile(join(root, "home", "prompts", "review.md"), [
+      "---",
+      "description: 复核一份客户报表",
+      "argument-hint: \"<name>\"",
+      "---",
+      "复核 $1 这份报表,先核对指标再核对格式。",
+      ""
+    ].join("\n"));
+
+    let decisionContext = "";
+    faux.setResponses([(context) => {
+      decisionContext = JSON.stringify(context.messages);
+      return fauxAssistantMessage('{"mode":"answer","reply":"复核完成。","goal":null}');
+    }]);
+    const response = await server.inject({ method: "POST", url: "/api/messages", payload: { message: "/review 周报" } });
+    expect(response.statusCode).toBe(201);
+    expect(response.json().message).toMatchObject({ role: "assistant", content: "复核完成。" });
+
+    // The model received the expanded template wrapped in the advisory framing…
+    expect(decisionContext).toContain("用户自定义 prompt 模板");
+    expect(decisionContext).toContain("复核 周报 这份报表,先核对指标再核对格式。");
+    expect(decisionContext).toContain("不授予任何额外权限");
+    // …while the transcript preserves exactly what the user typed.
+    const log = await conversationLog(system, "primary");
+    expect(log.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(log[0]?.content).toBe("/review 周报");
+
+    // /help merges the user command with its argument hint, without a model call.
+    const callsBeforeHelp = faux.state.callCount;
+    const help = await server.inject({ method: "POST", url: "/api/messages", payload: { message: "/help" } });
+    expect(help.json().message.content).toContain("用户 prompt 模板");
+    expect(help.json().message.content).toContain("- /review <name> — 复核一份客户报表");
+    expect(faux.state.callCount).toBe(callsBeforeHelp);
+    await server.close();
+  });
+
+  it("keeps the built-in command ahead of a conflicting user template", async () => {
+    const { root, faux, server } = await setup();
+    await mkdir(join(root, "home", "prompts"), { recursive: true });
+    await writeFile(join(root, "home", "prompts", "report.md"), "---\ndescription: 用户自定义 report 模板\n---\nUSER_TEMPLATE_MARKER $1\n");
+
+    let decisionContext = "";
+    faux.setResponses([
+      (context) => {
+        decisionContext = JSON.stringify(context.messages);
+        return fauxAssistantMessage('{"mode":"investigate","reply":"Generating.","goal":"Produce the daily report"}');
+      },
+      fauxAssistantMessage(JSON.stringify({
+        summary: "Daily report ready.",
+        investigationTree: [{ question: "Collect verified metrics", specialist: "reporting_analyst", status: "complete", conclusion: "done" }],
+        evidence: [], hypotheses: [], nextStep: "Review", proposedApprovalIds: [], reviewAt: null
+      }))
+    ]);
+    const response = await server.inject({ method: "POST", url: "/api/messages", payload: { message: "/report daily", locale: "en" } });
+    expect(response.statusCode).toBe(201);
+
+    // The built-in expansion runs; the user template body never reaches the model.
+    expect(decisionContext).toContain("daily-report");
+    expect(decisionContext).not.toContain("USER_TEMPLATE_MARKER");
     await server.close();
   });
 });

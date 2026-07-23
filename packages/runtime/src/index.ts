@@ -97,6 +97,14 @@ export interface StructuredRuntimeResult<S extends z.ZodTypeAny> {
 export interface PiAgentRuntimeOptions {
   compaction?: Partial<CompactionSettings>;
   compactionInstructions?: string;
+  /**
+   * Workspace-confined general read-only tools (AdPilotTools.generalReadTools).
+   * They are appended to runs that carry executable skills — the specialist
+   * runs — so bounded experts can ground themselves in workspace artifacts.
+   * Runs with an explicit tool whitelist (including the empty repair-pass
+   * whitelist) and skill-less conversational decision runs are untouched.
+   */
+  generalReadTools?: AgentTool[];
 }
 
 export interface RuntimeRecoveryCheckpoint {
@@ -127,6 +135,7 @@ const DEFAULT_ADPILOT_COMPACTION_INSTRUCTIONS = [
 export class PiAgentRuntime {
   private readonly compactionSettings: CompactionSettings;
   private readonly compactionInstructions: string;
+  private readonly generalReadTools: AgentTool[];
   private readonly sessionLocks = new Map<string, Promise<void>>();
   private readonly activeSessions = new Map<string, TrackedSession>();
   private readonly toolGate: ToolPermissionGate;
@@ -142,6 +151,7 @@ export class PiAgentRuntime {
   ) {
     this.compactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, ...options.compaction };
     this.compactionInstructions = options.compactionInstructions ?? DEFAULT_ADPILOT_COMPACTION_INSTRUCTIONS;
+    this.generalReadTools = options.generalReadTools ?? [];
     this.toolGate = new ToolPermissionGate(tools.approvals, tools.audit);
   }
 
@@ -351,7 +361,12 @@ export class PiAgentRuntime {
     const persistedContext = await session.buildContext();
     const events: AgentEvent[] = [];
     const tools = [...(request.tools ?? [])];
-    if ((request.allowedSkills?.length ?? 0) > 0) tools.push(this.createSkillTool(request.context, request.allowedSkills ?? []));
+    if ((request.allowedSkills?.length ?? 0) > 0) {
+      tools.push(this.createSkillTool(request.context, request.allowedSkills ?? []));
+      // Skill-bearing runs (the specialists) also receive the confined general
+      // read-only tools; explicit whitelists and skill-less runs never do.
+      tools.push(...this.generalReadTools);
+    }
     const agent = new Agent({
       initialState: {
         systemPrompt: `${request.systemPrompt}\n\n${skillsPrompt}`,

@@ -1,9 +1,10 @@
 import { EventEmitter } from "node:events";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { AuditLog } from "@adpilot/audit";
 import { ApprovalService } from "@adpilot/approvals";
-import { AdPilotAgent, WorkspaceSharedFactRepository } from "@adpilot/agent-orchestrator";
+import { AdPilotAgent, WorkspaceSharedFactRepository, type AgentKnowledge } from "@adpilot/agent-orchestrator";
 import {
   BrowserSessionBoundOperator,
   BrowserSessionManager,
@@ -46,9 +47,20 @@ import type { Models } from "@earendil-works/pi-ai";
 import { SharedFactLedger, type MonitoringAlert } from "@adpilot/shared";
 import { PiVisualTableModel, PiVisualTableVerifier, VisualTableReader } from "@adpilot/visual-table-reader";
 import { AlertMonitor, type AlertDeliveryStatus } from "./alert-monitor.js";
+import { PromptTemplateStore } from "./prompt-templates.js";
+import { createMergedAgentKnowledge, UserSkillStore } from "./user-skills.js";
 
 export { AlertMonitor, renderAlertMessage } from "./alert-monitor.js";
 export type { AlertDeliveryStatus, AlertMonitorOptions, PendingAlertRecord } from "./alert-monitor.js";
+export {
+  expandPromptTemplateBody,
+  parsePromptTemplate,
+  PromptTemplateStore,
+  tokenizePromptArguments
+} from "./prompt-templates.js";
+export type { PromptTemplate, PromptTemplateSummary, PromptTemplateWarning } from "./prompt-templates.js";
+export { createMergedAgentKnowledge, matchSkillSummaries, parseSkillMarkdown, UserSkillStore } from "./user-skills.js";
+export type { UserSkill, UserSkillSource, UserSkillWarning } from "./user-skills.js";
 
 export interface PublicVisualRuntimeEvent {
   type: VisualRuntimeEvent["type"];
@@ -105,6 +117,12 @@ export interface AdPilotSystem {
   visualTableReader: VisualTableReader | undefined;
   events: ProductEventBus;
   approvalTokens: Map<string, string>;
+  /** Embedded playbooks merged with the discovered user skills (advisory knowledge only). */
+  knowledge: AgentKnowledge;
+  /** User skill discovery layer (~/.adpilot/skills and the workspace .adpilot/skills). */
+  userSkills: UserSkillStore;
+  /** User prompt templates backing custom slash commands. */
+  promptTemplates: PromptTemplateStore;
   modelStatus: {
     fast: string;
     strong: string;
@@ -119,7 +137,7 @@ export interface AdPilotSystem {
   };
 }
 
-export async function createAdPilotSystem(options: { workspaceRoot?: string; env?: NodeJS.ProcessEnv; models?: Models } = {}): Promise<AdPilotSystem> {
+export async function createAdPilotSystem(options: { workspaceRoot?: string; env?: NodeJS.ProcessEnv; models?: Models; adpilotHome?: string } = {}): Promise<AdPilotSystem> {
   const baseEnv = options.env ?? process.env;
   const workspaceRoot = options.workspaceRoot ?? baseEnv.ADPILOT_WORKSPACE ?? resolve(process.cwd(), "workspace");
   const settings = new SettingsStore(workspaceRoot, baseEnv);
@@ -127,6 +145,18 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   const env = await settings.effectiveEnv();
   const workspace = new WorkspaceStore(workspaceRoot);
   const events = new ProductEventBus();
+  // User-extension roots: the user-global AdPilot home and the per-workspace
+  // .adpilot directory. Both are optional and simply empty when missing.
+  const adpilotHome = resolve(options.adpilotHome ?? env.ADPILOT_HOME ?? join(homedir(), ".adpilot"));
+  const userSkills = new UserSkillStore([
+    { root: join(adpilotHome, "skills"), source: "user" },
+    { root: join(workspaceRoot, ".adpilot", "skills"), source: "workspace" }
+  ]);
+  const knowledge = createMergedAgentKnowledge(userSkills);
+  const promptTemplates = new PromptTemplateStore([
+    join(adpilotHome, "prompts"),
+    join(workspaceRoot, ".adpilot", "prompts")
+  ]);
   const secret = await loadApprovalSecret(workspaceRoot, env.ADPILOT_APPROVAL_SECRET);
   const audit = new AuditLog(workspace);
   const approvals = new ApprovalService(workspace, secret);
@@ -310,7 +340,17 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
         privacyMode
       }
     : undefined;
-  const tools = new AdPilotTools(workspace, audit, approvals, experiments, computer, visualIdentity, browserSessions, visualTableTools, sharedFacts);
+  // The general read-only tools may additionally read the skill/prompt
+  // directories so the agent can load skill bodies and templates on demand
+  // (progressive disclosure); the workspace .adpilot private subtree stays
+  // denied except those two public subdirectories.
+  const generalReadRoots = [
+    join(adpilotHome, "skills"),
+    join(adpilotHome, "prompts"),
+    join(workspaceRoot, ".adpilot", "skills"),
+    join(workspaceRoot, ".adpilot", "prompts")
+  ];
+  const tools = new AdPilotTools(workspace, audit, approvals, experiments, computer, visualIdentity, browserSessions, visualTableTools, sharedFacts, generalReadRoots);
   const skills = new SkillRegistry();
   const runtime = new PiAgentRuntime(models, router, workspace, skills, tools, [
     {
@@ -318,7 +358,7 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
       onError: (error) => events.publish({ type: "error", message: error.message, retryable: true })
     },
     new AuditRuntimeExtension(audit)
-  ]);
+  ], { generalReadTools: tools.generalReadTools() });
   const alertMonitor = new AlertMonitor({ workspace, runtime, audit, events });
   runtime.registerExtension(alertMonitor.extension);
   const specialists = new SpecialistCoordinator([
@@ -333,13 +373,14 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   const agent = new AdPilotAgent(runtime, specialists, workspace, tools, (task) => events.publish({
     type: "task", clientId: task.clientId, status: task.phase, taskId: task.id,
     message: task.owner ? `${task.owner} is working` : task.nextStep ?? task.goal
-  }), sharedFacts);
+  }), sharedFacts, knowledge);
   const connectedSessions = (await browserSessions.list()).filter((session) => session.sessionStatus === "connected");
   return {
     workspace, settings, credentials, models, audit, approvals, experiments, tools, skills, runtime, specialists, agent,
     alerts: alertMonitor, computer,
     browserSessions, screenshotAudits, visualTableReader, events,
     approvalTokens: new Map(),
+    knowledge, userSkills, promptTemplates,
     modelStatus: {
       fast: `${fastModel.provider}/${fastModel.id}`,
       strong: `${strongModel.provider}/${strongModel.id}`,

@@ -2,7 +2,13 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import { ApprovalOperation } from "@adpilot/approvals";
-import { formatKnowledgeCatalogForPrompt, formatKnowledgeSkillContext, matchKnowledgeSkills } from "@adpilot/advertising-core";
+import {
+  formatKnowledgeCatalogForPrompt,
+  formatKnowledgeSkillContext,
+  matchKnowledgeSkills,
+  listKnowledgeSkills,
+  type KnowledgeSkillSummary
+} from "@adpilot/advertising-core";
 import { PiAgentRuntime } from "@adpilot/runtime";
 import { SpecialistCoordinator } from "@adpilot/specialist-agents";
 import {
@@ -45,6 +51,36 @@ const ConversationDecision = z.object({
   goal: z.string().min(1).nullable()
 });
 
+/**
+ * Pluggable playbook knowledge for the agent's conversational catalog and
+ * on-demand skill injection. The default is the embedded advertising
+ * knowledge base; the composition root substitutes a merged catalog that adds
+ * user-discovered skills. Whatever the source, knowledge stays advisory
+ * markdown — it never grants tools, permissions, or execution authority.
+ */
+export interface AgentKnowledge {
+  list(): Promise<KnowledgeSkillSummary[]>;
+  match(message: string, limit?: number): Promise<KnowledgeSkillSummary[]>;
+  catalog(): Promise<string>;
+  context(matches: KnowledgeSkillSummary[]): Promise<string>;
+}
+
+/** Embedded-only knowledge source; identical to the pre-pluggable behavior. */
+export const embeddedAgentKnowledge: AgentKnowledge = {
+  async list() {
+    return listKnowledgeSkills();
+  },
+  async match(message, limit) {
+    return matchKnowledgeSkills(message, limit);
+  },
+  async catalog() {
+    return formatKnowledgeCatalogForPrompt();
+  },
+  async context(matches) {
+    return formatKnowledgeSkillContext(matches);
+  }
+};
+
 export class AdPilotAgent {
   readonly sharedFacts: SharedFactLedger;
 
@@ -54,7 +90,8 @@ export class AdPilotAgent {
     private readonly workspace: WorkspaceStore,
     private readonly tools: AdPilotTools,
     private readonly onTaskState: (task: Task) => void | Promise<void> = () => undefined,
-    sharedFacts?: SharedFactLedger
+    sharedFacts?: SharedFactLedger,
+    private readonly knowledge: AgentKnowledge = embeddedAgentKnowledge
   ) {
     this.sharedFacts = sharedFacts ?? new SharedFactLedger(new WorkspaceSharedFactRepository(workspace));
   }
@@ -63,7 +100,7 @@ export class AdPilotAgent {
     const client = await this.workspace.readClient(clientId);
     const conversationId = typeof context.conversationId === "string" && context.conversationId.trim() ? context.conversationId.trim() : "primary";
     const verifiedFacts = await this.sharedFacts.usable(clientId);
-    const knowledgeMatches = matchKnowledgeSkills(message);
+    const knowledgeMatches = await this.knowledge.match(message);
     const decisionResult = await this.runtime.run({
       context: { clientId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", sessionId: conversationId, conversationId, role: "adpilot_agent", ...(typeof context.userMessageId === "string" && context.userMessageId.trim() ? { userMessageId: context.userMessageId.trim() } : {}) },
       systemPrompt: [
@@ -75,7 +112,7 @@ export class AdPilotAgent {
         "When the request matches a playbook, name that capability in the reply and shape the investigation goal after its workflow. If a playbook step needs something AdPilot cannot do (ad-platform APIs, arbitrary local file writes, submitting account changes), say so honestly.",
         "Use context.interfaceLocale: Simplified Chinese for zh-CN and English for en. Keep the reply direct and useful.",
         'Return exactly one JSON object: {"mode":"answer"|"investigate","reply":"user-facing text","goal":"investigation goal"|null}. Do not rename these fields or wrap the object in markdown.',
-        formatKnowledgeCatalogForPrompt()
+        await this.knowledge.catalog()
       ].join("\n"),
       prompt: JSON.stringify({ message, client, context: sanitizeConversationContext(context), verifiedFacts, matchedKnowledge: knowledgeMatches.map((skill) => skill.name) }),
       signals: { task: "conversation" }
@@ -180,7 +217,7 @@ export class AdPilotAgent {
       }
     };
     let modelResult: MainAgentOutput;
-    const knowledgeContext = formatKnowledgeSkillContext(matchKnowledgeSkills(goal));
+    const knowledgeContext = await this.knowledge.context(await this.knowledge.match(goal));
     try {
       modelResult = await this.runtime.runStructured({
         context: { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE", sessionId: conversationId, conversationId, role: "adpilot_agent" },
@@ -201,7 +238,7 @@ export class AdPilotAgent {
           ...(knowledgeContext ? [knowledgeContext] : [])
         ].join("\n"),
         prompt: JSON.stringify({ goal, projectContext, currentTask: task }),
-        signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool]
+        signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool, ...this.tools.generalReadTools()]
       }, MainAgentOutput);
     } catch (error) {
       const blocker = error instanceof Error ? error.message : String(error);

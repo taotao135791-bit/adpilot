@@ -8,19 +8,20 @@ import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import { SessionError } from "@earendil-works/pi-agent-core";
 import type { AdPilotSystem } from "@adpilot/application";
 import { ApprovalOperation } from "@adpilot/approvals";
-import { listKnowledgeSkills } from "@adpilot/advertising-core";
 import { StartBrowserSessionInput, type BrowserSession } from "@adpilot/computer-use";
 import { SettingsUpdate } from "@adpilot/configuration";
 import { ConversationMessage, MonitoringAlert, MonitoringAlertInput, Platform } from "@adpilot/shared";
 import { ApprovalGuardrailEvidenceInput, VisualApprovalPlanInput, visualTaskFromExecutionPlan } from "@adpilot/tools";
 import {
   expandSlashCommand,
+  expandUserSlashCommand,
   isDirectSlashCommand,
   parseSlashCommand,
   renderApprovalsHistory,
   renderSkillsCatalog,
   renderSlashHelp,
-  renderSlashParseError
+  renderSlashParseError,
+  splitSlashInput
 } from "./slash-commands.js";
 
 const BrowserSessionStartRequest = z.object({
@@ -186,38 +187,54 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       reply.code(201);
       return { message: systemMessage, task: null, command: commandName };
     };
-    if (slash && !slash.ok) return directAnswer(renderSlashParseError(slash.error, body.locale), "error");
+    // Shared tail of this route: publish + model call + persistence, so
+    // built-in and user-template expansions take the identical path.
+    const runConversation = async (prompt: string) => {
+      system.events.publish({ type: "task", clientId, status: "running", message: body.message });
+      try {
+        const response = await system.agent.respond(clientId, prompt, { conversationId: body.conversationId, interfaceLocale: body.locale, userMessageId: userMessage.id, recentConversation: existing.slice(-12).map((item) => sanitizeLegacyConversationError(item, body.locale)).map(({ role, content }) => ({ role, content })) });
+        const assistantMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "assistant", content: response.reply, ...(response.task ? { taskId: response.task.id } : {}), at: new Date().toISOString() });
+        await system.workspace.appendJsonl(clientId, "conversation.jsonl", assistantMessage);
+        system.events.publish({ type: "task", clientId, status: response.task?.phase ?? "completed", ...(response.task ? { taskId: response.task.id } : {}), message: response.reply });
+        reply.code(201); return { message: assistantMessage, task: response.task };
+      } catch (error) {
+        const incidentId = crypto.randomUUID();
+        const detail = error instanceof Error ? error.message : String(error);
+        const content = conversationErrorMessage(body.locale, detail, incidentId);
+        await system.workspace.appendJsonl(clientId, "diagnostics/errors.jsonl", {
+          id: incidentId, at: new Date().toISOString(), route: "/api/messages",
+          error: { name: error instanceof Error ? error.name : "Error", message: detail }
+        });
+        await system.workspace.appendJsonl(clientId, "conversation.jsonl", ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "system", content, status: "error", at: new Date().toISOString() }));
+        system.events.publish({ type: "error", clientId, message: content, retryable: true });
+        return reply.code(502).send({ error: content, incidentId });
+      }
+    };
+    if (slash && !slash.ok) {
+      // A name the built-in parser rejects may still be a user prompt
+      // template; templates lose every conflict with a built-in command
+      // because the built-ins bind typed, audited pipelines.
+      const invocation = slash.error.code === "unknown_command" ? splitSlashInput(body.message) : null;
+      const template = invocation ? await system.promptTemplates.find(invocation.name) : undefined;
+      if (invocation && template) {
+        const expanded = await system.promptTemplates.expand(invocation.name, invocation.argument);
+        if (expanded) return runConversation(expandUserSlashCommand(template.name, expanded, body.locale));
+      }
+      return directAnswer(renderSlashParseError(slash.error, body.locale), "error");
+    }
     const slashCommand = slash?.command;
     if (slashCommand && isDirectSlashCommand(slashCommand)) {
       const markdown = slashCommand.name === "approvals"
         ? renderApprovalsHistory(await system.approvals.list(clientId), body.locale)
         : slashCommand.name === "skills"
-          ? renderSkillsCatalog(system.skills.list(), listKnowledgeSkills(), body.locale)
-          : renderSlashHelp(body.locale);
+          ? renderSkillsCatalog(system.skills.list(), await system.knowledge.list(), body.locale)
+          : renderSlashHelp(body.locale, await system.promptTemplates.list());
       return directAnswer(markdown, slashCommand.name);
     }
     // Slash investigation commands (/report, /audit) travel the normal
     // pipeline with an explicit advisory expansion; plain chat passes through.
     const prompt = slashCommand ? expandSlashCommand(slashCommand, body.locale) : body.message;
-    system.events.publish({ type: "task", clientId, status: "running", message: body.message });
-    try {
-      const response = await system.agent.respond(clientId, prompt, { conversationId: body.conversationId, interfaceLocale: body.locale, userMessageId: userMessage.id, recentConversation: existing.slice(-12).map((item) => sanitizeLegacyConversationError(item, body.locale)).map(({ role, content }) => ({ role, content })) });
-      const assistantMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "assistant", content: response.reply, ...(response.task ? { taskId: response.task.id } : {}), at: new Date().toISOString() });
-      await system.workspace.appendJsonl(clientId, "conversation.jsonl", assistantMessage);
-      system.events.publish({ type: "task", clientId, status: response.task?.phase ?? "completed", ...(response.task ? { taskId: response.task.id } : {}), message: response.reply });
-      reply.code(201); return { message: assistantMessage, task: response.task };
-    } catch (error) {
-      const incidentId = crypto.randomUUID();
-      const detail = error instanceof Error ? error.message : String(error);
-      const content = conversationErrorMessage(body.locale, detail, incidentId);
-      await system.workspace.appendJsonl(clientId, "diagnostics/errors.jsonl", {
-        id: incidentId, at: new Date().toISOString(), route: "/api/messages",
-        error: { name: error instanceof Error ? error.name : "Error", message: detail }
-      });
-      await system.workspace.appendJsonl(clientId, "conversation.jsonl", ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "system", content, status: "error", at: new Date().toISOString() }));
-      system.events.publish({ type: "error", clientId, message: content, retryable: true });
-      return reply.code(502).send({ error: content, incidentId });
-    }
+    return runConversation(prompt);
   });
 
   app.post("/api/computer/pause", async (_request, reply) => {

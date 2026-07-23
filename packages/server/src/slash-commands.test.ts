@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import type { Approval } from "@adpilot/approvals";
 import {
   expandSlashCommand,
+  expandUserSlashCommand,
   isDirectSlashCommand,
   parseSlashCommand,
   renderApprovalsHistory,
   renderSkillsCatalog,
   renderSlashHelp,
-  renderSlashParseError
+  renderSlashParseError,
+  splitSlashInput
 } from "./slash-commands.js";
 
 function approval(overrides: { id: string; status: Approval["status"]; createdAt: string; campaign?: string }): Approval {
@@ -154,5 +156,52 @@ describe("direct-answer renderers", () => {
     const unexpected = renderSlashParseError({ code: "unexpected_argument", command: "audit", argument: "now" }, "zh-CN");
     expect(unexpected).toContain("/audit 不接受参数");
     expect(unexpected).toContain("/help");
+  });
+});
+
+describe("user prompt template commands", () => {
+  it("splitSlashInput extracts the lowercased name and raw argument string", () => {
+    expect(splitSlashInput("/review weekly report")).toEqual({ name: "review", argument: "weekly report" });
+    expect(splitSlashInput("/REVIEW")).toEqual({ name: "review", argument: "" });
+    expect(splitSlashInput('  /note "quoted arg"  ')).toEqual({ name: "note", argument: '"quoted arg"' });
+    expect(splitSlashInput("plain chat")).toBeNull();
+    expect(splitSlashInput("/")).toBeNull();
+  });
+
+  it("renderSlashHelp merges user templates after the built-ins with conflict precedence noted", () => {
+    const en = renderSlashHelp("en", [
+      { name: "review", description: "Review a client report", argumentHint: "<name>" },
+      { name: "note", description: "Jot an observation" }
+    ]);
+    expect(en).toContain("User prompt templates");
+    expect(en).toContain("- /review <name> — Review a client report");
+    expect(en).toContain("- /note — Jot an observation");
+    expect(en).toContain("always win a name conflict");
+    const zh = renderSlashHelp("zh-CN", [{ name: "review", description: "复核甲方报表" }]);
+    expect(zh).toContain("用户 prompt 模板");
+    expect(zh).toContain("内置命令始终优先");
+    // Without user commands the catalog is byte-identical to the built-in-only form.
+    expect(renderSlashHelp("en", [])).toBe(renderSlashHelp("en"));
+  });
+
+  it("expandUserSlashCommand frames the expansion as an advisory request in both locales", () => {
+    const en = expandUserSlashCommand("review", "Review the weekly report.", "en");
+    expect(en).toContain("/review");
+    expect(en).toContain("user-defined prompt template");
+    expect(en).toContain("Review the weekly report.");
+    expect(en).toContain("grants no extra authority");
+    expect(en).toContain("prepare_approval");
+    const zh = expandUserSlashCommand("review", "复核本周报表。", "zh-CN");
+    expect(zh).toContain("用户自定义 prompt 模板");
+    expect(zh).toContain("复核本周报表。");
+    expect(zh).toContain("不授予任何额外权限");
+  });
+
+  it("built-in parsing still owns builtin names, so user templates never shadow them", () => {
+    // A user template named "report" exists or not, /report daily parses as the built-in.
+    expect(parseSlashCommand("/report daily")).toEqual({ ok: true, command: { name: "report", period: "daily" } });
+    expect(parseSlashCommand("/help")).toEqual({ ok: true, command: { name: "help" } });
+    // And unknown names fall through to template resolution with a clean error otherwise.
+    expect(parseSlashCommand("/review x")).toEqual({ ok: false, error: { code: "unknown_command", command: "review" } });
   });
 });

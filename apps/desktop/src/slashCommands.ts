@@ -1,4 +1,4 @@
-import type { AppLocale } from "./i18n.js";
+import type { AppLocale } from "./labels.js";
 
 /**
  * Client-side mirror of the server's slash-command grammar, used only for
