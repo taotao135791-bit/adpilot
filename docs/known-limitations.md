@@ -12,6 +12,10 @@ No known in-scope implementation item is intentionally left as a stub. The follo
 - If only one selected code model supports images, grounding, table reading and independent review use separately invoked roles on that model; escalation diversity is naturally lower than with two capable models.
 - Deterministic mutation guardrails intentionally require verified `measurement_status`, `campaign_mature` and `learning_phase` facts for the target Campaign. They may be read directly or deterministically derived from verified screenshot-backed raw metrics/status facts. If the UI cannot expose sufficient source evidence, the change is blocked rather than inferred from narrative, historical migration or a model claim.
 - The open-source macOS app is certificate-free ad-hoc signed (`identity: "-"`) so its sealed bundle can be checked for integrity, but it has no Developer ID, Team ID or notarization. Users may need macOS's explicit Open action. An Apple-trusted signing/notarization release requires separate credentials and authority.
+- Conversation fork anchors resolve only for messages written since fork support shipped. Forking at an older message — one with no linked session entry, or one answered directly without a model run — returns 409 (`invalid_fork_target`) instead of a fork.
+- Rate-limited monitoring alerts are not dropped: they persist like pending alerts and are delivered when the client's next session run starts, so an alert storm surfaces later rather than immediately.
+- Model and provider changes require a restart to take effect; the running server keeps the routing it started with.
+- Under `local-only` privacy mode the conversational path blocks remote providers, so a public enterprise gateway endpoint is rejected there even though it is a valid custom provider; loopback and private-network endpoints remain exempt.
 - A transitive UI-TARS dependency emits Node's `punycode` deprecation warning; it does not fail tests or execution.
 
 ## Next steps

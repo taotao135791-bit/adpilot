@@ -6,12 +6,18 @@ AdPilot 是一个可本地运行、可审批、可审计的原生广告优化 Ag
 
 ## 当前能力
 
-- 一个面向用户的 AdPilot Agent，按调查树调度 Account Operator、Performance Analyst、Media Buyer、Measurement Reviewer、Creative Strategist 和独立 Risk Reviewer。
+- 一个面向用户的 AdPilot Agent，按调查树调度 Account Operator、Performance Analyst、Media Buyer、Measurement Reviewer、Creative Strategist、Reporting Analyst 和独立 Risk Reviewer。
 - 客户隔离 Workspace，保存任务、证据、截图、审计链、审批、实验、报告和记忆。
 - 自然语言对话是主入口：首次启动自动建立本地 Workspace，用户可以直接提问、追问或下达调查任务；对话、任务和结果都会持久化。
 - 用户只需选择日常 / 深度代码模型；内置 Computer Use 会自动检测图像能力并组成定位、失败升级和独立复核链路。专用 UI-TARS / Verifier 端点只属于高级覆盖项。
-- 持久 Pi Session 按客户和对话恢复；长对话执行真实 compaction 并保留未完成任务、审批、实验、证据引用、恢复点与最后已验证动作。
+- 持久 Pi Session 按客户和对话恢复；长对话执行真实 compaction 并保留未完成任务、审批、实验、证据引用、恢复点与最后已验证动作，compaction 与 branch 摘要会真正投影回模型上下文。
 - 原生 Computer Use：产品为每个客户主动启动独立浏览器 Profile，并严格执行 `绑定 PID/窗口/Profile -> 截图 -> 单步 grounding -> 策略检查 -> 原生动作 -> 再截图 -> 独立结果验证`。窗口切换会立即返回 `BROWSER_SESSION_LOST`。
+- 11 个 typed skill 覆盖转化检查、改动评估、创意疲劳、发布检查、归因、报告与实验账本；`execute_skill` 向模型暴露由 zod 派生的输入/输出契约，每次执行校验两侧契约并把 denied/failed/succeeded 及输入输出指纹写入审计链。创建实验必须引用同客户同任务的已执行审批。
+- Runtime 写操作拦截门：模型发起的每次工具调用按声明式规则分为 read/write/destructive，统一在 `beforeToolCall` 拦截；写/破坏性调用必须携带同客户同任务的有效审批引用或令牌，未分类工具 fail-closed 按审批写处理；`commit_approved_action` 对模型保持硬阻断，最终验签仍在 `ApprovalService.consume`。
+- 27 篇广告知识 playbook 在构建期内嵌进产物（`scripts/build-knowledge-data.mjs`），决策轮注入压缩目录与触发匹配、规划轮按需注入全文；它们只是参考知识，不授予任何工具、权限或执行权。
+- 斜杠命令：`/report daily|weekly` 与 `/audit` 展开为 advisory 调查指令走正常对话管线；`/approvals`、`/skills`、`/help` 由服务端直接作答，零模型调用；desktop 提供自动补全与系统卡片。会话可从带锚点的消息 fork 为独立会话，审计留痕。
+- 监控告警：`POST /api/clients/:id/alerts` 提交的告警作为 advisory 用户消息注入运行中会话，无会话时持久化、下轮运行回放；带去重窗口、每客户限流与审计留痕，指标数值必须绑定已验证 Fact ID，告警不授予任何审批权。desktop 有对应告警卡片。
+- 自定义模型供应商：设置页可登记 OpenAI/Anthropic 兼容端点（企业网关或本地推理），密钥保存在本地 `0600` 设置存储且永不明文返回；`local-only` 隐私模式在对话主链路同样阻断远程 provider（回环/内网豁免）。`adpilot providers` 与 `adpilot skills` 可直接查看供应商与 typed skill 清单。
 - 真实修改必须经过可复算的确定性 guardrail、Risk Reviewer、用户批准和五分钟一次性令牌。预算/出价类修改可直接引用同一任务、同一 Campaign 的 `measurement_status`、`campaign_mature`、`learning_phase` 三项已验证截图事实，也可提交转化量、观察天数、学习状态、可见测量状态等原始视觉 Fact，由确定性内核派生并持久化三项最终事实。风险复核、用户批准和执行前都会复验完整来源链；任何缺失、过期、被替代、低置信度或不一致都会停止，不会由模型补全。
 - 审批页完整披露授权范围、原始指令、目标控件、期望结果、允许 ROI、浏览器/Profile/窗口/账户/Campaign 身份、有效期、计划/表面/账户/护栏指纹，以及护栏判定和证据 Fact ID；用户批准的是这份完整绑定，而不是摘要文本。
 - `VisualTableReader` 通过截图 ROI 读取表头、单元格和滚动重叠行，独立复核后才写入有截图与 Bounding Box 的 `SharedFact`；低置信度数值不会进入专家决策。

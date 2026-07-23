@@ -7,6 +7,7 @@
 3. The user talks to one AdPilot Agent. Specialists have isolated prompts, tool scopes and sessions; they return structured results to the main agent.
 4. Knowledge is evidence, Skill is a typed workflow, Tool is an executable capability. Markdown cannot grant authority.
 5. No mutation is authorized by model output. Approval state is persisted and verified outside the model.
+6. Every model-initiated tool call passes a declarative permission gate before the tool body runs. Write and destructive calls require a valid approval reference or token; unclassified tools fail closed.
 
 ## Runtime flow
 
@@ -16,6 +17,7 @@ User goal
     -> Specialist dispatch
       -> typed Skill
         -> deterministic Tool / read-only visual microtask
+    -> tool-permission gate on every tool call
     -> evidence synthesis
     -> deterministic guardrail from three verified status facts,
        supplied directly or derived from verified raw visual metrics/status facts
@@ -33,7 +35,7 @@ User goal
       -> one native NutJS action
       -> screenshot
       -> visual verification
-    -> audit + verified Shared Facts + experiment ledger + monitoring
+    -> audit + verified Shared Facts + experiment ledger + monitoring alerts
 ```
 
 ## Package ownership
@@ -41,9 +43,10 @@ User goal
 | Package | Responsibility | Forbidden responsibility |
 | --- | --- | --- |
 | `agent-orchestrator` | One user-facing task lifecycle and specialist dispatch | Direct account mutation |
-| `runtime` | Pi sessions, streaming, compaction, tool calls | GUI planning loop |
-| `specialist-agents` | Bounded expert roles | Sharing hidden session state |
-| `skills` | Typed prerequisites, outputs and failure rules | Direct native I/O |
+| `application` | Dependency composition, event bus and monitoring-alert delivery | Direct account mutation |
+| `runtime` | Pi sessions, streaming, compaction, tool-permission gate, audit extension, conversation fork | GUI planning loop |
+| `specialist-agents` | Seven bounded expert roles | Sharing hidden session state |
+| `skills` | Typed prerequisites, outputs and failure rules; audited execution with zod-derived contracts | Direct native I/O |
 | `tools` | Workspace, metrics, approvals, experiments, visual execution | Inventing policy |
 | `advertising-core` | Deterministic metrics, UAC policy and replay | Live account credentials |
 | `computer-use` | One-action visual protocol and verification | Overall task planning |
@@ -55,7 +58,7 @@ User goal
 
 ## Persistence
 
-Each client lives under `workspace/clients/<client-id>/`. Profile, KPI, accounts and constraints are YAML. Tasks, approvals and experiments are structured JSON; audit is JSONL with a SHA-256 chain. Main and specialist Pi sessions are JSONL under `sessions/`, keyed by client plus conversation or task plus role. Runtime checkpoints and compaction summaries restore conversation context, unresolved task state and evidence references after restart. Writes are atomic or append-only and private files use mode `0600` where supported.
+Each client lives under `workspace/clients/<client-id>/`. Profile, KPI, accounts and constraints are YAML. Tasks, approvals and experiments are structured JSON; audit is JSONL with a SHA-256 chain. Main and specialist Pi sessions are JSONL under `sessions/`, keyed by client plus conversation or task plus role. Runtime checkpoints and compaction summaries restore conversation context, unresolved task state and evidence references after restart, and compaction and branch summaries are explicitly projected back into the model context rather than dropped. Monitoring alerts awaiting delivery persist under `alerts/pending.json`. Writes are atomic or append-only and private files use mode `0600` where supported.
 
 ## Managed browser and model routing
 
@@ -67,7 +70,7 @@ Each client uses an AdPilot-launched browser with a dedicated on-disk Profile. D
 - Visual verification: a separately invoked advanced endpoint when configured; otherwise an independent Deep vision call.
 - Account identity: two separately invoked visual reviewers must agree at confidence `>= 0.85`; they may use the same configured code model but remain distinct calls, roles and audit records.
 
-Provider/model names come from the persisted native Settings store or environment configuration. The catalog is read directly from Pi, and routing never changes Tool permissions.
+Provider/model names come from the persisted native Settings store or environment configuration. Settings may additionally register custom OpenAI-completions- or Anthropic-messages-compatible endpoints (enterprise gateways or local inference) with their own base URLs and optional keys; keys are stored with private permissions and never returned by the settings view. `local-only` privacy mode blocks remote providers on the conversational path with the same semantics as on the screenshot path, exempting loopback and private-network endpoints, and model changes take effect on restart. The catalog is read directly from Pi, and routing never changes Tool permissions.
 
 ## Visual evidence path
 
@@ -84,6 +87,24 @@ Numeric `mutate` and `destructive` operations additionally require a determinist
 The persisted guardrail contains its input, decision, fact IDs, single-variable result, operation fingerprint and evaluation time. Its canonical fingerprint is bound to the token beside the execution-plan fingerprint. Before an approving risk review, user approval and commit/token consumption, AdPilot reloads every bound fact and its derivation lineage, rechecks lifecycle/provenance/expiry/Campaign binding, and recomputes the guardrail against current constraints and experiments. A page-changing native action marks that task's visual facts stale; starting, resuming, replacing or closing a managed-browser session invalidates the client's visual evidence. A missing, stale, rejected, superseded, changed or denied lineage blocks and cancels the pending approval. Immediately before mutation, AdPilot reconstructs the actual plan from the live managed screenshot and dual-reviewed identity regions persisted at approval time; any mismatch destroys the token and requires a new approval.
 
 The desktop user approval UI renders the complete plan plus the surface/account/plan/guardrail fingerprints, guardrail decision, cap, reasons and evidence Fact IDs. It is a disclosure surface over the deterministic approval service, never an alternate authority path.
+
+## Tool permission gate
+
+`TOOL_GATE_RULES` in `shared` declaratively classifies every model-callable tool as `read`, `write` or `destructive`, with an authority of `self_gated`, `approval_reference` or `approval_token`. `PiAgentRuntime` enforces the classification in `Agent.beforeToolCall`: read calls flow untouched; write and destructive calls must carry a valid same-client/task approval reference or the operator-held token; any unclassified tool fails closed as an approval-gated write. `commit_approved_action` is additionally hard-blocked because tokens never enter the model context. The gate is an advisory pre-check — `ApprovalService.consume` remains the final authority that verifies the HMAC token at execution time. Allowed write/destructive decisions and every denial are appended to the audit hash chain. This decision is recorded in [ADR 0010](architecture-decisions/0010-tool-permission-gate.md).
+
+A runtime audit extension chains the factual event stream into the same tamper-evident log: every tool call and result (secret-redacted and size-capped, so screenshot payloads never enter the chain), deterministic guardrail decisions, the final model routing decision per run and failed runs. Audit appends are serialized, so concurrent writers cannot fork the hash chain.
+
+## Skills, knowledge and slash commands
+
+Eleven typed skills define validated investigation, evaluation, reporting and experiment workflows. The `reporting_analyst` specialist owns the reporting skills (`daily-report`, `weekly-report`, `account-audit`, `generate-client-report`). The `execute_skill` tool description exposes each allowed skill's input and output contract — field paths, types, required flags and descriptions derived from its zod schema — and `SkillRegistry.execute` validates both ends and appends `denied`/`failed`/`succeeded` outcomes with input/output SHA-256 fingerprints to the audit chain. The experiment-creation skill writes the ledger and must reference the `executed` approval of the same client and task.
+
+Twenty-seven advertising knowledge playbooks are embedded at build time (`scripts/build-knowledge-data.mjs` produces `knowledge-data.generated.ts`), so they load identically from the single-file CLI bundle and the Electron asar. Decision turns inject a compressed catalog plus deterministic trigger matches; planning turns inject selected full texts on demand. Playbooks are reference material only: they grant no tools, permissions or execution authority. Slash commands split into two classes: `/report daily|weekly` and `/audit` expand into advisory investigation directives that travel the normal conversation pipeline, while `/approvals`, `/skills` and `/help` are answered directly by the server from workspace data with no model call.
+
+## Monitoring alerts and conversation fork
+
+`AlertMonitor` accepts monitoring alerts over `POST /api/clients/:id/alerts` and routes them into the client's live conversation as advisory user messages. An alert is follow-up-injected into a running session, persisted to `alerts/pending.json` when no session is active, and replayed (coalesced and bounded) when the next run starts; delivery is confirmed only once the message visibly enters the transcript, and an undrained injection is requeued. A dedupe window anchored in the audit chain and a per-client rate limit bound noise; rate-limited alerts persist like pending ones and deliver when the next session run starts. Every metric value must bind a verified Shared Fact ID, and the injected text states that alerts grant no approval authority. Every transition is chained into audit and published over SSE.
+
+Conversation fork creates an independent conversation from an anchored message: the source session path (root to fork point) is replayed into a new session file with provenance recorded, and the fork is chained into audit. Anchors are the per-message labels written since fork support shipped; older messages cannot be forked and return 409.
 
 ## Runtime and desktop security state
 

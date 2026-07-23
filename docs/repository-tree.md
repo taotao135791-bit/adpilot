@@ -10,18 +10,18 @@ adpilot/
 ├── packages/
 │   ├── advertising-core/       # deterministic TS policy + migrated UAC core/knowledge/evals
 │   ├── agent-orchestrator/     # one user-facing AdPilot Agent
-│   ├── application/            # dependency composition and event bus
+│   ├── application/            # dependency composition, event bus and alert monitor
 │   ├── approvals/              # risk/user approval and bound tokens
 │   ├── audit/                  # redaction and hash chain
 │   ├── computer-use/           # UI-TARS adapter and one-action visual loop
 │   ├── configuration/          # settings, providers and secret storage
 │   ├── experiments/            # single-variable lifecycle
 │   ├── model-router/           # Fast / Strong / GUI routing
-│   ├── runtime/                # Pi Agent, Session, streaming, compaction, extensions
+│   ├── runtime/                # Pi Agent, Session, streaming, compaction, tool gate and extensions
 │   ├── server/                 # local API, SSE and static UI
-│   ├── shared/                 # product contracts
+│   ├── shared/                 # product contracts and tool-gate rules
 │   ├── skills/                 # typed advertising workflows
-│   ├── specialist-agents/      # six isolated roles
+│   ├── specialist-agents/      # seven isolated roles
 │   ├── tools/                  # deterministic execution boundary
 │   ├── visual-table-reader/    # screenshot ROI table reading into verified facts
 │   └── workspace/              # client-scoped persistence
@@ -39,7 +39,7 @@ adpilot/
 │   ├── audits/
 │   └── screenshots/
 ├── licenses/
-├── scripts/
+├── scripts/                    # build, validation and knowledge-embedding harnesses
 ├── README.md
 ├── LICENSES.md
 ├── THIRD_PARTY_NOTICES.md
