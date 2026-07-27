@@ -120,9 +120,30 @@ importers:
 
   packages/model-router: {}
 
+  packages/native-computer-host:
+    dependencies:
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+
+  packages/plugin-runtime:
+    dependencies:
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+
   packages/runtime: {}
 
   packages/server: {}
+
+  packages/session-service:
+    dependencies:
+      '@adpilot/workspace':
+        specifier: workspace:*
+        version: link:../workspace
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
 
   packages/shared: {}
 

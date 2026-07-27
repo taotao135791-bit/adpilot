@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "id": "com.adpilot.csv-daily-report",
+  "name": "CSV Daily Report",
+  "version": "1.0.0",
+  "developer": {
+    "name": "AdPilot"
+  },
+  "description": "Creates a deterministic, read-only summary of a local CSV report through a scoped file broker.",
+  "entry": "index.mjs",
+  "tools": [
+    {
+      "name": "com.adpilot.csv-daily-report/summarize",
+      "description": "Summarize rows, columns, and numeric totals in a CSV file.",
+      "readOnly": true
+    }
+  ],
+  "skills": [],
+  "uiExtensions": [],
+  "permissions": {
+    "capabilities": [],
+    "filesystem": [
+      "read.text"
+    ],
+    "network": [],
+    "secrets": [],
+    "browser": false,
+    "computerUse": false,
+    "advertisingRead": false,
+    "advertisingMutation": false,
+    "storage": false
+  },
+  "platforms": [
+    "darwin-arm64",
+    "darwin-x64",
+    "linux-x64",
+    "win32-x64"
+  ],
+  "integrity": "sha256:2f7efffb826acfcf4381c0aa96f4441b7aea3681f0696588dcb2d3431202f4fe",
+  "signature": {
+    "algorithm": "ed25519",
+    "keyId": "adpilot-first-party-2026-01",
+    "value": "9VtIbRKWuO8H6gP6dHgwAPGVEBomeLwUKhaVNOz4DCs1tf6qL5E471YKjvlJb2q3tEu7uG1o2vSXcV1vqqj1CQ=="
+  },
+  "review": {
+    "status": "approved",
+    "reviewedAt": "2026-07-27T00:00:00.000Z",
+    "reviewer": "AdPilot Security"
+  },
+  "replaces": [],
+  "dataVersion": 0,
+  "migrations": []
+}

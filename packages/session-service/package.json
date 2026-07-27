@@ -1,0 +1,11 @@
+{
+  "name": "@adpilot/session-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@adpilot/workspace": "workspace:*",
+    "zod": "^3.25.76"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@adpilot/plugin-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./catalog": "./src/catalog-service.ts"
+  },
+  "dependencies": {
+    "zod": "^3.25.76"
+  }
+}
