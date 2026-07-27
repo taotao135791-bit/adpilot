@@ -15,6 +15,14 @@ import {
   type VisualTableEvalCorpus
 } from "../evals/computer-use-live/evaluator.js";
 import { createProductLiveProviderSuite } from "../evals/computer-use-live/providers.js";
+import {
+  summarizeRealBrowserRecords
+} from "./visual-validation-helpers.js";
+import {
+  assessRealBrowserManifest,
+  readRealBrowserManifest,
+  verifyRealBrowserEvidence
+} from "./real-browser-manifest.js";
 
 if (process.argv.includes("--help")) {
   console.log([
@@ -179,49 +187,36 @@ async function loadRealBrowserValidation(path: string | undefined) {
   }
   try {
     const source = resolve(path);
-    const manifest = JSON.parse(await readFile(source, "utf8")) as {
-      passed?: boolean;
-      mode?: string;
-      tokenUsage?: number | null;
-      records?: Array<{
-        result?: { status?: string; attempts?: number };
-        latencyMs?: number;
-        task?: { riskLevel?: string };
-        events?: Array<{
-          type?: string;
-          tier?: string;
-          matched?: boolean;
-          action?: { risk_level?: string };
-        }>;
-      }>;
-    };
-    const records = Array.isArray(manifest.records) ? manifest.records : [];
-    const completed = records.filter((record) => record.result?.status === "done").length;
-    const grounded = records.filter((record) => record.events?.some((event) => event.type === "grounded")).length;
-    const verified = records.flatMap((record) => record.events?.filter((event) => event.type === "verified") ?? []);
-    const unsafe = records.filter((record) => record.events?.some((event) => {
-      if (event.type !== "executed" || !event.action?.risk_level || !record.task?.riskLevel) return false;
-      return riskRank(event.action.risk_level) > riskRank(record.task.riskLevel);
-    })).length;
+    const manifest = await readRealBrowserManifest(source);
+    const records = manifest.records;
+    const summary = summarizeRealBrowserRecords(records);
+    const failures = [
+      ...assessRealBrowserManifest(manifest),
+      ...await verifyRealBrowserEvidence(source, manifest)
+    ];
+    const coherentPass = failures.length === 0;
     const metrics = emptyMetrics();
     metrics.evaluatedCases = records.length;
-    metrics.providerResponses = grounded;
-    metrics.elementGroundingAccuracy = records.length ? grounded / records.length : null;
-    metrics.actionSuccessRate = records.length ? completed / records.length : null;
-    metrics.unsafeActionRate = records.length ? unsafe / records.length : null;
-    metrics.verificationAccuracy = verified.length ? verified.filter((event) => event.matched === true).length / verified.length : null;
-    metrics.averageRetries = average(records.map((record) => Math.max(0, (record.result?.attempts ?? 1) - 1)));
+    metrics.providerResponses = summary.grounded;
+    metrics.elementGroundingAccuracy = records.length ? summary.grounded / records.length : null;
+    metrics.actionSuccessRate = records.length ? summary.completed / records.length : null;
+    metrics.unsafeActionRate = records.length ? summary.unsafe / records.length : null;
+    metrics.verificationAccuracy = summary.verified.length
+      ? summary.verified.filter((event) => event.matched === true).length / summary.verified.length
+      : null;
+    metrics.averageRetries = average(summary.retries);
     metrics.escalationRate = records.length
-      ? records.filter((record) => record.events?.some((event) => event.type === "grounded" && event.tier === "strong")).length / records.length
+      ? summary.escalated / records.length
       : null;
     metrics.tokenUsage = typeof manifest.tokenUsage === "number" ? manifest.tokenUsage : null;
-    metrics.averageLatencyMs = average(records.map((record) => record.latencyMs).filter((value): value is number => Number.isFinite(value)));
+    metrics.averageLatencyMs = average(summary.latencies);
     return {
-      status: manifest.passed === true ? "complete" as const : "failed" as const,
+      status: coherentPass ? "complete" as const : "failed" as const,
       title: "Real Browser Validation" as const,
       source,
-      mode: manifest.mode ?? "unknown",
-      passed: manifest.passed === true,
+      mode: manifest.mode,
+      passed: coherentPass,
+      failures,
       metrics,
       tokenUsageNote: metrics.tokenUsage === null ? "Real-browser manifest did not expose token usage." : undefined
     };
@@ -264,8 +259,4 @@ function optionalPositiveInteger(value: string | undefined): number | undefined 
 
 function average(values: number[]): number | null {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
-}
-
-function riskRank(value: string): number {
-  return ({ observe: 0, interact: 1, mutate: 2, destructive: 3 } as Record<string, number>)[value] ?? Number.POSITIVE_INFINITY;
 }

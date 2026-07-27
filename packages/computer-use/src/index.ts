@@ -146,6 +146,8 @@ export interface VisualMicroTask {
   permission: Permission;
   /** Additional least-privilege action boundary for tightly scoped micro-tasks. */
   allowedActions?: VisualAction["action"][];
+  /** When typing is permitted, the only exact text payload the native operator may receive. */
+  allowedText?: string;
   /** Optional exact direction boundary for scroll-only validation flows. */
   allowedScrollDirections?: Array<"up" | "down" | "left" | "right">;
   /** `none` permits exactly one grounding/execution attempt. */
@@ -228,6 +230,9 @@ export class VisualPolicy {
     this.checkSurface(task.surface);
     if (task.allowedActions && !task.allowedActions.includes(action.action)) {
       throw new Error(`action ${action.action} is outside this micro-task allowlist`);
+    }
+    if (action.action === "type" && task.allowedText !== undefined && action.text !== task.allowedText) {
+      throw new Error("typed text differs from this micro-task's exact allowlist");
     }
     if (action.action === "scroll") {
       if (task.allowedScrollDirections && !task.allowedScrollDirections.includes(action.direction)) {
@@ -618,13 +623,14 @@ export class UiTarsNativeOperator implements NativeOperator {
   async capture(): Promise<Screenshot> {
     if (this.surfaceIdentity) {
       const captured = await this.surfaceIdentity.captureActiveWindow();
+      const base64 = captured.base64.replace(/^data:image\/\w+;base64,/, "");
       const screenshot = Screenshot.parse({
-        base64: captured.base64,
+        base64,
         width: captured.width,
         height: captured.height,
         scaleFactor: captured.scaleFactor,
         capturedAt: new Date().toISOString(),
-        sha256: createHash("sha256").update(captured.base64).digest("hex"),
+        sha256: createHash("sha256").update(base64, "base64").digest("hex"),
         surface: captured.surface,
         surfaceFingerprint: captured.surfaceFingerprint
       });
@@ -632,14 +638,15 @@ export class UiTarsNativeOperator implements NativeOperator {
       return screenshot;
     }
     const raw = await this.operator.screenshot();
-    const image = await Jimp.fromBuffer(Buffer.from(raw.base64.replace(/^data:image\/\w+;base64,/, ""), "base64"));
+    const base64 = raw.base64.replace(/^data:image\/\w+;base64,/, "");
+    const image = await Jimp.fromBuffer(Buffer.from(base64, "base64"));
     const screenshot = Screenshot.parse({
-      base64: raw.base64.replace(/^data:image\/\w+;base64,/, ""),
+      base64,
       width: image.width,
       height: image.height,
       scaleFactor: raw.scaleFactor,
       capturedAt: new Date().toISOString(),
-      sha256: createHash("sha256").update(raw.base64).digest("hex")
+      sha256: createHash("sha256").update(base64, "base64").digest("hex")
     });
     this.lastCapture = screenshot;
     return screenshot;
@@ -760,6 +767,7 @@ export class OpenAICompatibleUiTarsProvider implements VisualGroundingProvider {
                   expected_result: task.expectedResult,
                   risk_level: task.riskLevel,
                   allowed_actions: task.allowedActions,
+                  allowed_text: task.allowedText,
                   allowed_scroll_directions: task.allowedScrollDirections,
                   surface_fingerprint: surfaceFingerprintFor(screenshot),
                   screenshot: { width: screenshot.width, height: screenshot.height, scaleFactor: screenshot.scaleFactor }
@@ -908,6 +916,7 @@ export class PiVisionModel implements VisualGroundingProvider, VisualVerifier {
             expectedResult: task.expectedResult,
             declaredRisk: task.riskLevel,
             allowedActions: task.allowedActions,
+            allowedText: task.allowedText,
             allowedScrollDirections: task.allowedScrollDirections,
             screenshot: { width: screenshot.width, height: screenshot.height }
           }) },

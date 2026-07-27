@@ -9,7 +9,7 @@ Scope: tracked product code, desktop shell, runtime, persistence, Computer Use, 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
 | `pnpm install --frozen-lockfile` | pass | 19 workspace projects, lockfile unchanged |
-| `pnpm typecheck` | pass | Current `tsconfig.json` excludes `scripts/**`, native code, and most eval harness code |
+| `pnpm typecheck` | pass | Rebuild checkpoint now includes `scripts/**/*.ts`; native Swift and unreferenced eval code remain separate gates |
 | `pnpm test` | pass: 46 files / 515 tests | Unit, integration, replay, and local mock coverage; not a live advertising account result |
 | `pnpm test:ads-core` | pass: 410 tests | Retained deterministic UAC Python contracts |
 | `pnpm build` | pass | CLI, web renderer, and Electron main bundle |
@@ -64,7 +64,7 @@ Scope: tracked product code, desktop shell, runtime, persistence, Computer Use, 
 - Live View renders text and an icon, not screenshot pixels, overlays, cursor, or replay history.
 - Baseline finding: a grounded `done` action could return a successful visual result without executing or independently verifying a mutation. Rebuild checkpoint 1 repairs this with native-execution provenance, an independent-verification flag, a one-attempt action allowlist without `done`, Runtime rejection, and approval-layer rejection.
 - Baseline finding: mutation success was a model boolean against free-text `expectedResult`. Rebuild checkpoint 2 now requires two independent post-action rereads, exact typed equality with the approved value, screenshot/region evidence hashes, and a verified Shared Fact before experiment start.
-- The logged-in Google Ads validation script reads event history without the required `clientId`, then assumes a redacted event still contains screenshot bytes. The current empty event list masks the mismatch.
+- Baseline finding: the logged-in Google Ads validation script read unscoped event history and treated redacted UI events as raw screenshots. It now uses client/task-scoped public events, captures raw evidence only through the Computer Use runtime, stores local evidence with restrictive permissions, strips pixels/input/coordinates/window titles from JSON, limits every step to one allowlisted attempt, binds preparation text exactly before native input, and requires a second visible-state check above a declared confidence threshold. A strict schema recomputes pass state and verifies every evidence file hash. No authenticated-account run has been claimed.
 
 ### Plugin system
 
@@ -75,7 +75,7 @@ Scope: tracked product code, desktop shell, runtime, persistence, Computer Use, 
 
 - Required commands such as `setup`, `dev:desktop`, `dev:daemon`, `test:e2e`, `test:security`, `test:computer`, `test:plugins`, `verify`, and `package:mac` are absent.
 - `pnpm dev` resolves the renderer path relative to source (`apps/cli/desktop`) and serves a 404 root page.
-- `scripts/**` is outside TypeScript checking, which hid a broken live validation harness.
+- Baseline finding: `scripts/**` was outside TypeScript checking, which hid a broken live validation harness. TypeScript scripts are now in the root compiler gate and the evidence sanitizer has focused tests.
 - Existing release/test documentation contains old version numbers, test counts, and artifacts and cannot be treated as current evidence.
 
 ## Non-negotiable code to preserve

@@ -22,7 +22,7 @@ Status values: `pass`, `partial`, `fail`, `not-run`, `blocked-external`.
 | Computer | pause/resume/stop/step/takeover/give-back | fail | only coarse singleton pause/takeover/resume |
 | Computer | mutation executes at most once | pass | one-attempt plan allowlist, execution provenance, terminal-`done` rejection, and regression tests |
 | Computer | exact post-change value verified | pass | two independent rereads, typed equality, region/screenshot hashes, and verified Shared Fact |
-| Computer | real Google Ads read path | not-run | broken harness plus no authenticated account |
+| Computer | real Google Ads read path | not-run | harness is typechecked, step-limited, exact-text-bound, threshold-confirmed, and evidence-hash-validated; no authenticated account was used |
 | Computer | real approved Google Ads mutation | not-run | requires explicit user environment; no claim made |
 | Plugins | curated registry and details | fail | absent |
 | Plugins | install/update/disable/uninstall | fail | absent |

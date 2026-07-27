@@ -9,7 +9,7 @@ Each stage must compile, test, capture/inspect its UI where applicable, update `
 - [x] Run install, TypeScript, product tests, Python contracts, build, app packaging, and real Electron inspection.
 - [x] Record live model and real browser work as `not-run`.
 - [x] Identify the source-mode dev-server 404.
-- [ ] Repair the broken Google Ads validation harness before it is used again.
+- [x] Repair and typecheck the Google Ads validation harness before it is used again; keep the authenticated-account result `not-run`.
 
 ## Stage 1 — single writer and Session Service
 
@@ -69,4 +69,3 @@ Rollback: legacy `swift -e` path remains test-only during transition and is not 
 - App restart/recovery, permissions matrix, multi-display/Retina/modes.
 - Package smoke, actual artifact hash, signing status, and honest known limits.
 - Live model and Google Ads results only when the user supplies the required environment and account access.
-

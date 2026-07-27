@@ -10,18 +10,17 @@ Last updated: 2026-07-27
 - Computer Use state and browser binding are global rather than session/task scoped.
 - Live View contains no live screenshot pixels.
 - Curated plugins and their lifecycle/security runtime do not exist.
-- The Google Ads live validation harness currently reads no events and assumes redacted events contain raw screenshot bytes.
 - `pnpm dev` serves API routes but a 404 renderer root from source mode.
 
 ## P1
 
-- Collapsed native sidebar can overlap macOS traffic lights.
 - Renderer privileged controls use unauthenticated loopback HTTP rather than a narrow preload bridge.
 - Credentials are private files, not OS credential stores.
-- Script/native/eval code is outside the root TypeScript gate.
+- Swift/native code and unreferenced eval code are outside the root TypeScript gate; `scripts/**/*.ts` is now included.
 - Desktop component tests are not included in the root Vitest run.
 - API/RPC is unversioned and front-end wire types are handwritten.
 - Existing docs and `/api/about` contain stale 0.1.1 release metadata.
+- Real-browser validation PNGs are private, ignored, and hash-checked, but do not yet have automatic expiry cleanup.
 - Audit hash chaining is not protected against an actor able to rewrite and recompute the entire local file.
 - Approval storage lacks a cross-process CAS/lease boundary.
 - The full Python UAC engine is tested offline but not packaged or called by the product.

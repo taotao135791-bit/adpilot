@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Jimp } from "jimp";
 import { describe, expect, it, vi } from "vitest";
 import { createModels } from "@earendil-works/pi-ai";
@@ -120,6 +121,32 @@ describe("visual action protocol", () => {
       expected_result: "submitted", risk_level: "interact"
     });
     expect(() => policy.check(enter, before, { ...task, target: "budget input", expectedResult: "submitted" })).toThrow("approved mutation plan");
+  });
+
+  it("requires an exact pre-authorized text payload before native typing", () => {
+    const policy = new VisualPolicy();
+    const type: Extract<VisualAction, { action: "type" }> = {
+      action: "type",
+      text: "120",
+      target: "budget input",
+      reason: "focused",
+      confidence: 1,
+      expected_result: "budget draft reads 120",
+      risk_level: "interact"
+    };
+    const exactTask: VisualMicroTask = {
+      ...task,
+      target: "budget input",
+      expectedResult: "budget draft reads 120",
+      allowedActions: ["type", "fail"],
+      allowedText: "120",
+      retryPolicy: "none"
+    };
+
+    expect(() => policy.check(type, before, exactTask)).not.toThrow();
+    expect(() => policy.check({ ...type, text: "999" }, before, exactTask)).toThrow(
+      "typed text differs from this micro-task's exact allowlist"
+    );
   });
 
   it("enforces a one-attempt action allowlist for scroll-only micro-tasks", async () => {
@@ -497,6 +524,7 @@ describe("visual action protocol", () => {
     const execute = vi.fn(async (_params: unknown) => undefined);
     const native = new UiTarsNativeOperator({ execute, screenshot: vi.fn() } as never, identity);
     const shot = await native.capture();
+    expect(shot.sha256).toBe(createHash("sha256").update(image).digest("hex"));
     await native.execute(VisualAction.parse({
       action: "click", x: 20, y: 10, target: "x", reason: "visible", confidence: 1,
       expected_result: "clicked", risk_level: "interact"

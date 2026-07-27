@@ -16,7 +16,7 @@ Last updated: 2026-07-27
 - [ ] Implement the curated plugin runtime foundation.
 - [x] Repair the mutation false-success path with execution provenance, a one-attempt allowlist, and fail-closed approval completion.
 - [x] Add dual-review exact-value reread, typed equality, evidence hashing, and a verified Shared Fact after mutation.
-- [ ] Repair the live Google Ads validation harness.
+- [x] Repair the live Google Ads validation harness without claiming a live account run.
 
 ## Direct baseline results
 
@@ -30,6 +30,7 @@ pnpm desktop:dir                 pass
 codesign --verify --deep --strict release/mac-arm64/AdPilot.app
                                  pass (ad-hoc integrity only)
 focused mutation safety tests    pass (3 files, 48 tests)
+validation manifest/evidence tests     pass (2 files, 13 tests)
 live model evaluation            not-run
 real Google Ads validation       not-run
 ```
