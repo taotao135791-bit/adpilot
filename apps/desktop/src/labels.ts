@@ -187,6 +187,20 @@ const zh = {
   planModeError: "切换计划模式失败",
   newChat: "新建对话",
   primaryConversation: "主会话",
+  searchSessions: "搜索会话",
+  clearSearch: "清除搜索",
+  pinnedGroup: "已置顶",
+  archivedGroup: "已归档",
+  archiveSession: "归档",
+  restoreSession: "恢复",
+  renameSession: "重命名",
+  pinSession: "置顶",
+  unpinSession: "取消置顶",
+  emptySessions: "还没有会话",
+  noSessionMatches: "没有匹配的会话",
+  untitledSession: "未命名会话",
+  sessionConflict: "会话已在别处更新，列表已刷新",
+  sessionActionError: "会话操作失败",
   collapseSidebar: "收起侧栏",
   expandSidebar: "展开侧栏",
   emptyTitle: "今天优化什么？",
@@ -374,6 +388,20 @@ const en: Record<keyof typeof zh, string> = {
   planModeError: "Could not switch plan mode",
   newChat: "New conversation",
   primaryConversation: "Primary",
+  searchSessions: "Search conversations",
+  clearSearch: "Clear search",
+  pinnedGroup: "Pinned",
+  archivedGroup: "Archived",
+  archiveSession: "Archive",
+  restoreSession: "Restore",
+  renameSession: "Rename",
+  pinSession: "Pin",
+  unpinSession: "Unpin",
+  emptySessions: "No conversations yet",
+  noSessionMatches: "No conversations match",
+  untitledSession: "Untitled session",
+  sessionConflict: "This session changed elsewhere; the list was refreshed",
+  sessionActionError: "Session action failed",
   collapseSidebar: "Collapse sidebar",
   expandSidebar: "Expand sidebar",
   emptyTitle: "What are we optimizing today?",
@@ -418,6 +446,13 @@ export function alertSeverityLabel(severity: string, locale: AppLocale): string 
   const zhLabels: Record<string, string> = { info: "提示", warning: "警告", critical: "严重" };
   const enLabels: Record<string, string> = { info: "Info", warning: "Warning", critical: "Critical" };
   return (locale === "zh-CN" ? zhLabels : enLabels)[severity] ?? humanize(severity);
+}
+
+/** Sidebar status-dot accessible label for a product Session run status. */
+export function sessionStatusLabel(status: string, locale: AppLocale): string {
+  const zhLabels: Record<string, string> = { idle: "空闲", queued: "排队中", running: "运行中", waiting_for_approval: "待审批", paused: "已暂停", failed: "失败", completed: "已完成", deleted: "已删除" };
+  const enLabels: Record<string, string> = { idle: "Idle", queued: "Queued", running: "Running", waiting_for_approval: "Waiting for approval", paused: "Paused", failed: "Failed", completed: "Completed", deleted: "Deleted" };
+  return (locale === "zh-CN" ? zhLabels : enLabels)[status] ?? humanize(status);
 }
 
 export function alertKindLabel(kind: string, locale: AppLocale): string {

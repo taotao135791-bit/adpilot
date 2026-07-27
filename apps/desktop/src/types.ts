@@ -30,6 +30,30 @@ export type ConversationMessage = {
   at: string;
 };
 
+/**
+ * Product Session as served by the Session Service (see
+ * packages/session-service schemas). The desktop app only consumes the
+ * identity/listing fields; model binding and permission profiles stay
+ * server-side concerns.
+ */
+export type SessionStatus = "idle" | "queued" | "running" | "waiting_for_approval" | "paused" | "failed" | "completed" | "deleted";
+
+export type ProductSession = {
+  id: string;
+  clientId: string;
+  runtimeConversationId: string;
+  title: string;
+  status: SessionStatus;
+  pinnedAt?: string;
+  archivedAt?: string;
+  deletedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastActivityAt: string;
+  lastOpenedAt: string;
+  revision: number;
+};
+
 export type ComputerVisualEvent = {
   type: string;
   phase?: string;
@@ -46,6 +70,9 @@ export type ProductEvent = {
   message?: string;
   approvalId?: string;
   conversationId?: string;
+  /** `type: "session"` events carry the full mutated session snapshot. */
+  sessionId?: string;
+  session?: ProductSession;
   alert?: { alertId: string; kind: string; severity: string; message: string; createdAt: string; metrics?: unknown[] };
   event?: ComputerVisualEvent;
 };
@@ -69,7 +96,12 @@ export type State = {
   clients: Client[];
   selectedClientId?: string;
   selectedConversationId?: string;
+  /** Legacy conversation ids, retained for backward compatibility only. */
   conversations?: string[];
+  /** Product Sessions for the selected client (deleted excluded, archived included). */
+  sessions?: ProductSession[];
+  /** Session whose runtimeConversationId matches the requested conversationId; null when none maps. */
+  selectedSessionId?: string | null;
   tasks: Task[];
   approvals: Approval[];
   experiments: Experiment[];

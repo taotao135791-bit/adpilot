@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCopy, phaseLabel, phaseTone, nextStepLabel, roleLabel, formatTime, type AppLocale } from "./labels.js";
-import { appendProductEvent, emptyState, type ConversationMessage, type ProductEvent, type State } from "./types.js";
+import { appendProductEvent, emptyState, type ConversationMessage, type ProductEvent, type ProductSession, type State } from "./types.js";
 import { isApprovalOpen, type Approval } from "./approvalDisclosure.js";
 import { mergeConversationTimeline, type TimelineInsight } from "./conversationTimeline.js";
 import { localInsightCommand } from "./slashCommands.js";
 import { normalizePlanMode, planModeEndpoint, planModeRequestBody } from "./planMode.js";
 import { autonomyEndpoint, autonomyRequestBody, normalizeAutonomy } from "./autonomy.js";
 import { modelChipLabel } from "./composerKeys.js";
+import {
+  SESSION_SEARCH_DEBOUNCE_MS,
+  applySessionSnapshot,
+  buildSessionListUrl,
+  fallbackSession,
+  isRevisionConflict,
+  normalizeSessionQuery
+} from "./sessionList.js";
 import { SettingsPanel, type SettingsData, type SettingsTab } from "./SettingsPanel.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { ConversationFeed } from "./components/ConversationFeed.js";
@@ -18,11 +26,14 @@ import { IconError, IconSettings } from "./icons.js";
 
 /**
  * Codex-style skeleton: a collapsible sidebar (brand, new conversation,
- * history, workspace + settings) next to a main conversation column. The
- * main column splits into a scrolling region (banners, task header, feed,
- * empty state) and a fixed composer dock, so the composer never moves
- * while the feed scrolls. Approvals, the live computer-use session, and
- * on-demand insight cards still render inline in the feed.
+ * session history, workspace + settings) next to a main conversation
+ * column. The sidebar is driven by real product Sessions — the selected
+ * session's runtimeConversationId keys the message projection — so several
+ * sessions can run concurrently and switching between them never cancels
+ * in-flight work. The main column splits into a scrolling region (banners,
+ * task header, feed, empty state) and a fixed composer dock, so the composer
+ * never moves while the feed scrolls. Approvals, the live computer-use
+ * session, and on-demand insight cards still render inline in the feed.
  */
 export function App() {
   const isNativeDesktop = new URLSearchParams(window.location.search).get("desktop") === "1";
@@ -35,6 +46,10 @@ export function App() {
   const [state, setState] = useState<State>(emptyState);
   const [clientId, setClientId] = useState("");
   const [conversationId, setConversationId] = useState("primary");
+  const [sessions, setSessions] = useState<ProductSession[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [sessionSearch, setSessionSearch] = useState("");
+  const [sessionSearchResults, setSessionSearchResults] = useState<ProductSession[] | null>(null);
   const [goal, setGoal] = useState("");
   const [insights, setInsights] = useState<TimelineInsight[]>([]);
   const [loading, setLoading] = useState(true);
@@ -45,6 +60,9 @@ export function App() {
   const [settingsData, setSettingsData] = useState<SettingsData>();
   const [settingsError, setSettingsError] = useState("");
   const copy = getCopy(locale);
+
+  /** One-time adoption of the server-selected (or most recent) session per client. */
+  const sessionBootstrap = useRef(false);
 
   const loadState = useCallback(async (requestedClientId?: string, requestedConversationId?: string) => {
     try {
@@ -58,7 +76,22 @@ export function App() {
       if (!response.ok) throw new Error(getCopy(locale).loadError);
       const data = await response.json() as State;
       setState(data);
+      const serverSessions = data.sessions ?? [];
+      setSessions(serverSessions);
       if (!clientId && data.selectedClientId) setClientId(data.selectedClientId);
+      if (!sessionBootstrap.current) {
+        sessionBootstrap.current = true;
+        const explicit = data.selectedSessionId ? serverSessions.find((session) => session.id === data.selectedSessionId) : undefined;
+        const target = explicit ?? fallbackSession(serverSessions, "");
+        if (target) {
+          setSelectedSessionId(target.id);
+          if (target.runtimeConversationId !== conversation) {
+            setConversationId(target.runtimeConversationId);
+            void loadState(selected, target.runtimeConversationId);
+            return;
+          }
+        }
+      }
       setError("");
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setLoading(false); }
@@ -86,6 +119,10 @@ export function App() {
    *   payloads (the timeline folds alert transitions by id and computer
    *   bursts into one pinned card), so they merge into the local event
    *   buffer with no network round-trip.
+   * - `session` events carry the full mutated session snapshot (run-status
+   *   transitions, renames, pins), so they upsert straight into the sidebar
+   *   list — a session keeps its live status dot even while another session
+   *   is open in the main column.
    * - `task` / `approval` / `conversation` / `error` events mutate
    *   server-side resources the client cannot reconstruct, so they trigger
    *   a state refetch, debounced to one fetch per 250ms burst.
@@ -109,7 +146,10 @@ export function App() {
     source.onmessage = (message) => {
       let event: ProductEvent;
       try { event = JSON.parse(message.data as string) as ProductEvent; } catch { return; }
-      if (event.type === "alert" || event.type === "computer") {
+      if (event.type === "session") {
+        const snapshot = event.session;
+        if (snapshot) setSessions((current) => applySessionSnapshot(current, snapshot));
+      } else if (event.type === "alert" || event.type === "computer") {
         setState((current) => ({ ...current, events: appendProductEvent(current.events, event) }));
       } else {
         scheduleRefresh();
@@ -118,6 +158,28 @@ export function App() {
     source.onerror = () => setError(copyRef.current.connectionError);
     return () => { window.clearTimeout(refreshTimer); source.close(); };
   }, [clientId]);
+
+  /* Sidebar search: debounce keystrokes, then query the server-side search.
+     An empty normalized query means "not searching" and shows the full list. */
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(normalizeSessionQuery(sessionSearch)), SESSION_SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [sessionSearch]);
+
+  useEffect(() => {
+    if (!clientId || !debouncedSearch) { setSessionSearchResults(null); return; }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(buildSessionListUrl(clientId, { q: debouncedSearch }));
+        if (!response.ok) throw new Error(String(response.status));
+        const body = await response.json() as { sessions?: ProductSession[] };
+        if (!cancelled) setSessionSearchResults(body.sessions ?? []);
+      } catch { if (!cancelled) setSessionSearchResults([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [clientId, debouncedSearch, sessions]);
 
   const currentTask = state.tasks[0];
   const computerMode = state.computerUse?.executionStatus ?? "unavailable";
@@ -131,9 +193,9 @@ export function App() {
     }),
     [state.messages, state.events, state.approvals, conversationId, computerActive, insights]
   );
-  const conversationOptions = useMemo(() => [...new Set([...(state.conversations ?? []), conversationId])], [state.conversations, conversationId]);
   const openApprovals = useMemo(() => state.approvals.filter((item) => isApprovalOpen(item.status)), [state.approvals]);
   const autonomy = normalizeAutonomy(state.autonomy);
+  const selectedSession = useMemo(() => sessions.find((session) => session.id === selectedSessionId), [sessions, selectedSessionId]);
 
   function applySettings(data: SettingsData) {
     setSettingsData(data);
@@ -151,26 +213,122 @@ export function App() {
     });
   }
 
-  /** New conversation: the server derives the list from messages, so a
-     fresh client-generated id becomes a real conversation on first send. */
-  function newConversation() {
-    const id = `c-${Array.from(crypto.getRandomValues(new Uint8Array(6)), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-    setConversationId(id);
-    setInsights([]);
-    void loadState(clientId, id);
+  /** Resyncs the sidebar list from the server — the rollback path after a
+     failed optimistic mutation, including 409 revision conflicts. */
+  async function refreshSessions() {
+    if (!clientId) return;
+    try {
+      const response = await fetch(buildSessionListUrl(clientId));
+      if (!response.ok) throw new Error(String(response.status));
+      const body = await response.json() as { sessions?: ProductSession[] };
+      setSessions(body.sessions ?? []);
+    } catch { setError(copy.sessionActionError); }
   }
 
-  function selectConversation(next: string) {
-    if (next === conversationId) return;
-    setConversationId(next);
+  /**
+   * Shared session-mutation plumbing. Every write goes through the revision
+   * chain: the request carries the revision of the entity the user acted on,
+   * the response carries the next revision and replaces the local entity.
+   * A 409 REVISION_CONFLICT means another writer moved first — resync the
+   * list and say so instead of retrying blindly.
+   */
+  async function sessionMutation(url: string, init: RequestInit): Promise<ProductSession | undefined> {
+    try {
+      const response = await fetch(url, init);
+      const body = await response.json().catch(() => undefined) as (ProductSession & { error?: string; code?: string }) | undefined;
+      if (response.ok && body) return body;
+      await refreshSessions();
+      setError(isRevisionConflict(body) ? copy.sessionConflict : (body?.error ?? copy.sessionActionError));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+    return undefined;
+  }
+
+  function selectSession(session: ProductSession) {
+    if (session.id === selectedSessionId) return;
+    setSelectedSessionId(session.id);
+    setConversationId(session.runtimeConversationId);
     setInsights([]);
-    void loadState(clientId, next);
+    void loadState(clientId, session.runtimeConversationId);
+  }
+
+  async function newSession() {
+    if (!clientId) return;
+    const session = await sessionMutation(`/api/clients/${encodeURIComponent(clientId)}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}"
+    });
+    if (!session) return;
+    setSessions((current) => applySessionSnapshot(current, session));
+    setSessionSearch("");
+    setSelectedSessionId(session.id);
+    setConversationId(session.runtimeConversationId);
+    setInsights([]);
+    await loadState(clientId, session.runtimeConversationId);
+  }
+
+  async function togglePin(session: ProductSession) {
+    const pinned = session.pinnedAt === undefined;
+    const optimistic: ProductSession = { ...session };
+    if (pinned) optimistic.pinnedAt = new Date().toISOString(); else delete optimistic.pinnedAt;
+    setSessions((current) => applySessionSnapshot(current, optimistic));
+    const updated = await sessionMutation(`/api/clients/${encodeURIComponent(clientId)}/sessions/${encodeURIComponent(session.id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ revision: session.revision, pinned })
+    });
+    if (updated) setSessions((current) => applySessionSnapshot(current, updated));
+  }
+
+  async function renameSession(session: ProductSession, title: string) {
+    setSessions((current) => applySessionSnapshot(current, { ...session, title }));
+    const updated = await sessionMutation(`/api/clients/${encodeURIComponent(clientId)}/sessions/${encodeURIComponent(session.id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ revision: session.revision, title })
+    });
+    if (updated) setSessions((current) => applySessionSnapshot(current, updated));
+  }
+
+  async function archiveSession(session: ProductSession) {
+    const updated = await sessionMutation(`/api/clients/${encodeURIComponent(clientId)}/sessions/${encodeURIComponent(session.id)}/archive`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ revision: session.revision })
+    });
+    if (!updated) return;
+    const next = applySessionSnapshot(sessions, updated);
+    setSessions(next);
+    if (session.id === selectedSessionId) {
+      const fallback = fallbackSession(next, session.id);
+      if (fallback) selectSession(fallback);
+      else {
+        setSelectedSessionId(null);
+        setConversationId("primary");
+        void loadState(clientId, "primary");
+      }
+    }
+  }
+
+  async function restoreSession(session: ProductSession) {
+    const updated = await sessionMutation(`/api/clients/${encodeURIComponent(clientId)}/sessions/${encodeURIComponent(session.id)}/unarchive`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ revision: session.revision })
+    });
+    if (updated) setSessions((current) => applySessionSnapshot(current, updated));
   }
 
   function selectClient(next: string) {
     setClientId(next);
+    setSelectedSessionId(null);
     setConversationId("primary");
+    setSessionSearch("");
+    setSessionSearchResults(null);
     setInsights([]);
+    sessionBootstrap.current = false;
     void loadState(next, "primary");
   }
 
@@ -187,22 +345,53 @@ export function App() {
     if (!state.models.chatConfigured && !isSlashCommand) { setSettingsTab("models"); setSettingsOpen(true); return; }
     setSubmitting(true); setError("");
     setGoal("");
-    setState((current) => ({ ...current, messages: [...current.messages, { id: `local-${Date.now()}`, clientId: clientId || "personal", conversationId, role: "user", content: message, status: "complete", at: new Date().toISOString() }] }));
+    // Resolve the target session: the selected one, or a freshly created one
+    // so the very first message of a workspace already lives in a Session.
+    let session = selectedSession;
+    if (!session && clientId) {
+      const created = await sessionMutation(`/api/clients/${encodeURIComponent(clientId)}/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}"
+      });
+      if (created) {
+        session = created;
+        setSessions((current) => applySessionSnapshot(current, created));
+        setSelectedSessionId(created.id);
+        setConversationId(created.runtimeConversationId);
+      }
+    }
+    const targetConversationId = session ? session.runtimeConversationId : conversationId;
+    setState((current) => ({ ...current, messages: [...current.messages, { id: `local-${Date.now()}`, clientId: clientId || "personal", conversationId: targetConversationId, role: "user", content: message, status: "complete", at: new Date().toISOString() }] }));
     try {
-      const response = await fetch("/api/messages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...(clientId ? { clientId } : {}), conversationId, message, locale }) });
+      const response = await fetch("/api/messages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...(clientId ? { clientId } : {}), ...(session ? { sessionId: session.id } : { conversationId: targetConversationId }), message, locale }) });
       const body = await response.json(); if (!response.ok) throw new Error(copy.taskError);
-      await loadState(clientId || body.message?.clientId);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); await loadState(clientId); }
+      await loadState(clientId || body.message?.clientId, targetConversationId);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); await loadState(clientId, targetConversationId); }
     finally { setSubmitting(false); }
   }
 
   async function forkMessage(messageId: string) {
     try {
-      const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/conversations/${encodeURIComponent(conversationId)}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ atMessageId: messageId }) });
-      const body = await response.json() as { conversationId?: string; error?: string };
-      if (!response.ok || !body.conversationId) throw new Error(body.error ?? copy.forkError);
-      setConversationId(body.conversationId);
-      await loadState(clientId, body.conversationId);
+      if (selectedSession) {
+        // Branch produces a brand-new product Session at the given message;
+        // the original keeps running untouched.
+        const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/sessions/${encodeURIComponent(selectedSession.id)}/branch`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ atMessageId: messageId }) });
+        const body = await response.json().catch(() => undefined) as (ProductSession & { error?: string }) | undefined;
+        if (!response.ok || !body?.id) throw new Error(body?.error ?? copy.forkError);
+        setSessions((current) => applySessionSnapshot(current, body));
+        setSelectedSessionId(body.id);
+        setConversationId(body.runtimeConversationId);
+        setInsights([]);
+        await loadState(clientId, body.runtimeConversationId);
+      } else {
+        // Legacy conversations without a Session keep the old fork endpoint.
+        const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/conversations/${encodeURIComponent(conversationId)}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ atMessageId: messageId }) });
+        const body = await response.json() as { conversationId?: string; error?: string };
+        if (!response.ok || !body.conversationId) throw new Error(body.error ?? copy.forkError);
+        setConversationId(body.conversationId);
+        await loadState(clientId, body.conversationId);
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -286,15 +475,23 @@ export function App() {
     <div className="shell" data-theme={theme} data-native={isNativeDesktop}>
       <Sidebar
         copy={copy}
+        locale={locale}
         clients={state.clients}
         clientId={clientId}
-        conversations={conversationOptions}
-        conversationId={conversationId}
+        sessions={sessionSearchResults ?? sessions}
+        searching={sessionSearchResults !== null}
+        selectedSessionId={selectedSessionId}
+        search={sessionSearch}
         pendingApprovals={openApprovals.length}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={toggleSidebar}
-        onNewConversation={newConversation}
-        onSelectConversation={selectConversation}
+        onNewSession={() => void newSession()}
+        onSelectSession={selectSession}
+        onTogglePin={(session) => void togglePin(session)}
+        onRename={(session, title) => void renameSession(session, title)}
+        onArchive={(session) => void archiveSession(session)}
+        onRestore={(session) => void restoreSession(session)}
+        onSearchChange={setSessionSearch}
         onSelectClient={selectClient}
         onJumpToApprovals={jumpToApprovals}
         onOpenSettings={() => openSettings("general")}

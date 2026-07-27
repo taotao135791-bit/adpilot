@@ -235,6 +235,44 @@ export const IconPlus = createIcon(
   </>
 );
 
+export const IconSearch = createIcon(
+  <>
+    <circle cx="11" cy="11" r="6.5" />
+    <path d="m16 16 4.2 4.2" />
+  </>
+);
+
+export const IconPin = createIcon(
+  <>
+    <path d="M8.5 4.5h7l-.9 5 2.4 2.8v2.2H7v-2.2l2.4-2.8-.9-5z" />
+    <path d="M12 14.5v5" />
+  </>
+);
+
+export const IconPencil = createIcon(
+  <>
+    <path d="m14.5 5.5 4 4L8 20H4v-4L14.5 5.5z" />
+    <path d="m12.5 7.5 4 4" />
+  </>
+);
+
+export const IconArchive = createIcon(
+  <>
+    <rect x="4" y="5" width="16" height="4" rx="1" />
+    <path d="M5.5 9v9A1.5 1.5 0 0 0 7 19.5h10a1.5 1.5 0 0 0 1.5-1.5V9" />
+    <path d="M10 12.5h4" />
+  </>
+);
+
+export const IconRestore = createIcon(
+  <>
+    <rect x="4" y="5" width="16" height="4" rx="1" />
+    <path d="M5.5 9v9A1.5 1.5 0 0 0 7 19.5h10a1.5 1.5 0 0 0 1.5-1.5V9" />
+    <path d="M12 17v-4.5" />
+    <path d="m9.8 14.7 2.2-2.2 2.2 2.2" />
+  </>
+);
+
 export const IconMenu = createIcon(
   <>
     <path d="M4 7h16" />
