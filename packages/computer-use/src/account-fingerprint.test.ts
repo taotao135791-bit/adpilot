@@ -166,4 +166,50 @@ describe("visual account fingerprint", () => {
     await expect(gate({ ...observation, unobscured: false }, { ...observation, unobscured: false }).confirm(expected, await screenshot()))
       .rejects.toMatchObject({ code: "OBSCURED_VISUAL_IDENTITY" });
   });
+
+  it("independently rereads the exact persisted value after mutation", async () => {
+    const persisted = {
+      ...observation,
+      currentValue: 110,
+      proposedValue: null,
+      proposedValueVisible: false,
+      target: null,
+      targetVisible: false,
+      regions: { ...observation.regions, target: observation.regions.currentValue },
+      reason: "account, campaign, currency, and persisted value are visible"
+    };
+    const result = await gate(persisted, persisted).confirmPostMutationValue({
+      ...expected,
+      currentValue: 110,
+      proposedValue: 110,
+      verificationPhase: "post_mutation"
+    }, await screenshot());
+    expect(result).toMatchObject({
+      value: 110,
+      currency: "USD",
+      screenshotHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      evidenceRegion: observation.regions.currentValue,
+      evidenceRegionHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      verificationHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      confidence: 0.94
+    });
+  });
+
+  it("rejects post-mutation reviewers that do not see the exact approved value", async () => {
+    const stale = {
+      ...observation,
+      currentValue: 109,
+      proposedValue: null,
+      proposedValueVisible: false,
+      target: null,
+      targetVisible: false,
+      regions: { ...observation.regions, target: observation.regions.currentValue }
+    };
+    await expect(gate(stale, stale).confirmPostMutationValue({
+      ...expected,
+      currentValue: 110,
+      proposedValue: 110,
+      verificationPhase: "post_mutation"
+    }, await screenshot())).rejects.toMatchObject({ code: "CURRENT_VALUE_CHANGED" });
+  });
 });

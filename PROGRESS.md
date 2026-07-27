@@ -13,7 +13,7 @@ Last updated: 2026-07-27
 - [ ] Implement the authenticated native helper and Permission Center foundation.
 - [ ] Implement the curated plugin runtime foundation.
 - [x] Repair the mutation false-success path with execution provenance, a one-attempt allowlist, and fail-closed approval completion.
-- [ ] Add deterministic exact-value reread after a mutation.
+- [x] Add dual-review exact-value reread, typed equality, evidence hashing, and a verified Shared Fact after mutation.
 - [ ] Repair the live Google Ads validation harness.
 
 ## Direct baseline results
@@ -35,7 +35,7 @@ real Google Ads validation       not-run
 ## Current working batch
 
 1. Add isolated, tested Session/Plugin/Native Helper foundations.
-2. Add exact post-mutation value verification.
-3. Integrate Session as the daemon/API/UI authority.
+2. Integrate Session as the daemon/API/UI authority.
+3. Surface the new safety evidence and plugin lifecycle in the desktop UI.
 
 No test, live action, or real-account result is recorded as passing unless it ran in this rebuild.

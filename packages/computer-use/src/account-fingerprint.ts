@@ -7,6 +7,7 @@ import type { Screenshot } from "./index.js";
 
 const Sha256 = z.string().regex(/^[a-f0-9]{64}$/);
 const IdentityValue = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
+export type VisualIdentityValue = z.infer<typeof IdentityValue>;
 
 export const VisualIdentityRegion = z.object({
   x: z.number().int().nonnegative(),
@@ -73,6 +74,8 @@ export const ExpectedVisualIdentity = z.object({
   operation: z.string().min(1),
   proposedValue: IdentityValue,
   target: z.string().min(1),
+  /** Selects the stricter preflight contract or the exact persisted-value reread contract. */
+  verificationPhase: z.enum(["preflight", "post_mutation"]).optional(),
   /**
    * Locally established pixel bounds for the four facts a remote identity
    * reviewer is allowed to see. Omission is supported for local-only models;
@@ -138,6 +141,20 @@ export interface ConfirmedVisualIdentity {
   evidenceRegions: VisualIdentityRegions;
   /** Union of the two sufficiently-overlapping target observations. */
   targetRegion: VisualIdentityRegion;
+  reviewers: [
+    { id: string; confidence: number; reason: string },
+    { id: string; confidence: number; reason: string }
+  ];
+}
+
+export interface ConfirmedPostMutationValue {
+  value: VisualIdentityValue;
+  currency: string | null;
+  screenshotHash: string;
+  evidenceRegion: VisualIdentityRegion;
+  evidenceRegionHash: string;
+  confidence: number;
+  verificationHash: string;
   reviewers: [
     { id: string; confidence: number; reason: string },
     { id: string; confidence: number; reason: string }
@@ -249,6 +266,82 @@ export class DualVisualIdentityVerifier {
       ]
     };
   }
+
+  /**
+   * Rereads the persisted business value after native input. Unlike preflight,
+   * the original proposal and submit control no longer need to be visible, but
+   * both independent reviewers must still agree on the exact account,
+   * Campaign, currency, operation, and normalized current value.
+   */
+  async confirmPostMutationValue(
+    expectedInput: ExpectedVisualIdentity,
+    screenshot: Screenshot
+  ): Promise<ConfirmedPostMutationValue> {
+    const expected = ExpectedVisualIdentity.parse({ ...expectedInput, verificationPhase: "post_mutation" });
+    const surface = screenshot.surface;
+    if (!surface) throw new VisualIdentityError("SURFACE_CHANGED", "post-mutation verification requires a native window-bound screenshot");
+    const applicationId = surface.bundleId ?? surface.app;
+    if (applicationId !== expected.applicationId || surface.windowId !== expected.windowId) {
+      throw new VisualIdentityError("SURFACE_CHANGED", "native application or window changed before the persisted value was reread");
+    }
+    const expectedNativeProfile = expected.nativeProfileFingerprint ?? expected.browserProfile;
+    if (!surface.browserProfile || surface.browserProfile !== expectedNativeProfile) {
+      throw new VisualIdentityError("PROFILE_CHANGED", "native browser Profile changed before the persisted value was reread");
+    }
+    if (!surface.title.trim()) throw new VisualIdentityError("SURFACE_CHANGED", "native browser window title is unavailable");
+
+    const gui = VisualIdentityObservation.parse(await this.guiVerifier.review(expected, screenshot));
+    validatePostMutationObservation(this.guiVerifier, gui, expected, screenshot, this.minimumConfidence);
+    const deepExpected = expected.evidenceRegions
+      ? expected
+      : ExpectedVisualIdentity.parse({
+          ...expected,
+          evidenceRegions: {
+            account: gui.regions.account,
+            campaign: gui.regions.campaign,
+            currentValue: gui.regions.currentValue,
+            // The submit control may disappear after save. Reuse the exact
+            // persisted-value box as the fourth privacy allow-region.
+            target: gui.regions.currentValue
+          }
+        });
+    const deep = VisualIdentityObservation.parse(await this.deepVisionReviewer.review(deepExpected, screenshot));
+    validatePostMutationObservation(this.deepVisionReviewer, deep, expected, screenshot, this.minimumConfidence);
+    ensurePostMutationReviewerAgreement(gui, deep);
+    ensureSelectedRegionAgreement(gui, deep, ["account", "campaign", "currentValue"]);
+
+    const evidenceRegion = unionRegion(gui.regions.currentValue, deep.regions.currentValue);
+    const evidenceRegionHash = await hashAgreedRegion(screenshot, gui.regions.currentValue, deep.regions.currentValue);
+    const confidence = Math.min(gui.confidence, deep.confidence);
+    const verificationHash = createHash("sha256").update(stableJson({
+      platform: expected.platform,
+      browserProfile: expected.browserProfile,
+      nativeProfileFingerprint: expectedNativeProfile,
+      applicationId: expected.applicationId,
+      windowId: expected.windowId,
+      accountId: expected.accountId,
+      campaignId: expected.campaignId,
+      currency: expected.currency,
+      operation: expected.operation,
+      value: gui.currentValue,
+      screenshotHash: screenshot.sha256,
+      evidenceRegionHash,
+      reviewers: [this.guiVerifier.id, this.deepVisionReviewer.id]
+    })).digest("hex");
+    return {
+      value: gui.currentValue,
+      currency: expected.currency,
+      screenshotHash: screenshot.sha256,
+      evidenceRegion,
+      evidenceRegionHash,
+      confidence,
+      verificationHash,
+      reviewers: [
+        { id: this.guiVerifier.id, confidence: gui.confidence, reason: gui.reason },
+        { id: this.deepVisionReviewer.id, confidence: deep.confidence, reason: deep.reason }
+      ]
+    };
+  }
 }
 
 function validateReviewerObservation(
@@ -263,6 +356,44 @@ function validateReviewerObservation(
   }
   ensureCompleteIdentity(reviewer.id, observation);
   ensureMatchesExpected(reviewer.id, observation, expected);
+  validateObservationRegions(observation, screenshot);
+}
+
+function validatePostMutationObservation(
+  reviewer: VisualIdentityReviewer,
+  observation: VisualIdentityObservation,
+  expected: ExpectedVisualIdentity,
+  screenshot: Screenshot,
+  minimumConfidence: number
+): void {
+  if (observation.confidence < minimumConfidence) {
+    throw new VisualIdentityError("UNRELIABLE_VISUAL_IDENTITY", `${reviewer.id} confidence ${observation.confidence.toFixed(2)} is below ${minimumConfidence.toFixed(2)}`);
+  }
+  if (!observation.unobscured) {
+    throw new VisualIdentityError("OBSCURED_VISUAL_IDENTITY", `${reviewer.id} reports that the persisted value or identity is obscured`);
+  }
+  const required = [
+    [observation.accountName !== null && observation.accountNameComplete, "account name"],
+    [observation.accountId !== null && observation.accountIdVisible, "account id"],
+    [observation.campaignName !== null && observation.campaignNameComplete, "campaign name"],
+    [observation.campaignId !== null && observation.campaignIdVisible, "campaign id"],
+    [observation.currentValueVisible, "persisted current value"],
+    [observation.platform !== null, "platform"],
+    [observation.pageType !== null, "page type"],
+    [observation.operation !== null, "operation"]
+  ] as const;
+  const missing = required.filter(([visible]) => !visible).map(([, label]) => label);
+  if (missing.length) {
+    throw new VisualIdentityError("UNRELIABLE_VISUAL_IDENTITY", `${reviewer.id} could not fully reread: ${missing.join(", ")}`);
+  }
+  for (const field of ["platform", "pageType", "accountName", "accountId", "campaignName", "campaignId", "currency", "operation"] as const) {
+    if (canonicalText(observation[field]) !== canonicalText(expected[field])) {
+      throw new VisualIdentityError("VISUAL_IDENTITY_CONFLICT", `${reviewer.id} observed a different post-mutation ${field}`);
+    }
+  }
+  if (stableJson(observation.currentValue) !== stableJson(expected.currentValue)) {
+    throw new VisualIdentityError("CURRENT_VALUE_CHANGED", `${reviewer.id} did not observe the exact approved persisted value`);
+  }
   validateObservationRegions(observation, screenshot);
 }
 
@@ -404,8 +535,27 @@ function ensureReviewerAgreement(left: VisualIdentityObservation, right: VisualI
   }
 }
 
+function ensurePostMutationReviewerAgreement(left: VisualIdentityObservation, right: VisualIdentityObservation): void {
+  for (const field of ["platform", "pageType", "accountName", "accountId", "campaignName", "campaignId", "currency", "operation"] as const) {
+    if (canonicalText(left[field]) !== canonicalText(right[field])) {
+      throw new VisualIdentityError("VISUAL_IDENTITY_CONFLICT", `post-mutation reviewers disagree on ${field}`);
+    }
+  }
+  if (stableJson(left.currentValue) !== stableJson(right.currentValue)) {
+    throw new VisualIdentityError("VISUAL_IDENTITY_CONFLICT", "post-mutation reviewers disagree on the persisted current value");
+  }
+}
+
 function ensureRegionAgreement(left: VisualIdentityObservation, right: VisualIdentityObservation): void {
-  for (const key of ["account", "campaign", "currentValue", "target"] as const) {
+  ensureSelectedRegionAgreement(left, right, ["account", "campaign", "currentValue", "target"]);
+}
+
+function ensureSelectedRegionAgreement(
+  left: VisualIdentityObservation,
+  right: VisualIdentityObservation,
+  keys: ReadonlyArray<keyof VisualIdentityRegions>
+): void {
+  for (const key of keys) {
     if (intersectionOverUnion(left.regions[key], right.regions[key]) < 0.5) {
       throw new VisualIdentityError("VISUAL_IDENTITY_CONFLICT", `visual reviewers disagree on ${key} evidence region`);
     }
@@ -475,8 +625,11 @@ function identitySystemPrompt(): string {
 }
 
 function identityRequest(expected: ExpectedVisualIdentity, screenshot: Screenshot): string {
+  const postMutation = expected.verificationPhase === "post_mutation";
   return JSON.stringify({
-    instruction: "Independently identify all visible facts and the exact control that would be changed.",
+    instruction: postMutation
+      ? "Independently reread the exact persisted current value after the approved mutation. Account, Campaign, currency, page type, and operation must be fully visible. The original proposal and submit control may have disappeared: report them as null/false when absent, and use the current-value rectangle for regions.target when no submit control remains."
+      : "Independently identify all visible facts and the exact control that would be changed.",
     expectedForComparisonOnly: expected,
     screenshot: { width: screenshot.width, height: screenshot.height },
     outputKeys: [

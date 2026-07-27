@@ -9,7 +9,6 @@ Last updated: 2026-07-27
 - Electron can create another system/server after its window is closed and the app is reactivated.
 - Computer Use has no shipped native helper or Permission Center.
 - Computer Use state and browser binding are global rather than session/task scoped.
-- Mutation completion has no deterministic exact-value reread.
 - Live View contains no live screenshot pixels.
 - Curated plugins and their lifecycle/security runtime do not exist.
 - The Google Ads live validation harness currently reads no events and assumes redacted events contain raw screenshot bytes.

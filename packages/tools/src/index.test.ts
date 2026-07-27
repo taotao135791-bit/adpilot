@@ -159,24 +159,30 @@ async function setup() {
     { id: "gui-verification", review: async () => structuredClone(currentObservation) },
     { id: "deep-vision-reviewer", review: async () => structuredClone(currentObservation) }
   );
-  const runMicroTask = vi.fn(async (task, initial: Screenshot | undefined): Promise<VisualStepResult> => ({
-    status: "done" as const,
-    attempts: 1,
-    action: {
-      action: "click" as const,
-      x: 90,
-      y: 65,
-      target: task.target,
-      reason: "visible",
-      confidence: 0.98,
-      expected_result: task.expectedResult,
-      risk_level: "mutate" as const
-    },
-    before: initial ?? screenshot,
-    after: { ...(initial ?? screenshot), capturedAt: new Date().toISOString() },
-    executed: true,
-    verified: true
-  }));
+  const runMicroTask = vi.fn(async (task, initial: Screenshot | undefined): Promise<VisualStepResult> => {
+    currentObservation = {
+      ...currentObservation,
+      currentValue: task.identity?.proposedValue ?? currentObservation.currentValue
+    };
+    return {
+      status: "done" as const,
+      attempts: 1,
+      action: {
+        action: "click" as const,
+        x: 90,
+        y: 65,
+        target: task.target,
+        reason: "visible",
+        confidence: 0.98,
+        expected_result: task.expectedResult,
+        risk_level: "mutate" as const
+      },
+      before: initial ?? screenshot,
+      after: { ...(initial ?? screenshot), capturedAt: new Date().toISOString() },
+      executed: true,
+      verified: true
+    };
+  });
   const computer = {
     captureForTask: vi.fn(async () => screenshot),
     runMicroTask
@@ -240,6 +246,15 @@ describe("production visual approval tools", () => {
       .resolves.toMatchObject({ status: "done" });
     expect(fixture.runMicroTask).toHaveBeenCalledTimes(1);
     await expect(fixture.approvals.get("client-a", fixture.approval.id)).resolves.toMatchObject({ status: "executed" });
+    await expect(fixture.sharedFacts.list("client-a", { taskId })).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        predicate: "post_mutation_set_daily_budget",
+        value: 110,
+        unit: "USD",
+        status: "verified",
+        sourceType: "visual_verification"
+      })
+    ]));
   });
 
   it("fails the approval when a runtime reports done without native execution provenance", async () => {
@@ -272,6 +287,28 @@ describe("production visual approval tools", () => {
     });
     await expect(fixture.approvals.get("client-a", fixture.approval.id)).resolves.toMatchObject({ status: "failed" });
     await expect(new ExperimentStore(fixture.workspace).list("client-a")).resolves.toEqual([]);
+  });
+
+  it("fails after native input when the exact persisted value cannot be reread", async () => {
+    const fixture = await approved();
+    const implementation = fixture.runMicroTask.getMockImplementation()!;
+    fixture.runMicroTask.mockImplementationOnce(async (...args) => {
+      const result = await implementation(...args);
+      fixture.setObservation({ ...observed, currentValue: 109 });
+      return result;
+    });
+    await expect(fixture.tools.commitApprovedVisualAction(
+      fixture.context,
+      fixture.approval.id,
+      fixture.token,
+      operation,
+      fixture.task
+    )).rejects.toThrow("exact persisted value could not be verified");
+    await expect(fixture.approvals.get("client-a", fixture.approval.id)).resolves.toMatchObject({ status: "failed" });
+    await expect(new ExperimentStore(fixture.workspace).list("client-a")).resolves.toEqual([]);
+    await expect(fixture.sharedFacts.list("client-a", { taskId })).resolves.not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ predicate: "post_mutation_set_daily_budget" })
+    ]));
   });
 
   it("burns the token before native input when the actual instruction changes", async () => {

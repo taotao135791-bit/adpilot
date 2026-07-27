@@ -132,7 +132,21 @@ describe("local mock advertising console", () => {
         fingerprint: { confidence: 0.99, screenshotHash: screenshot(operator.state).sha256, criticalRegionHashes: {} },
         targetRegion: { x: 900, y: 560, width: 220, height: 120 },
         reviewers: [{ id: "mock-gui", confidence: 0.99, reason: "fixture" }, { id: "mock-deep", confidence: 0.99, reason: "fixture" }]
-      })
+      }),
+      confirmPostMutationValue: async (expected: { currentValue: unknown }) => {
+        expect(expected.currentValue).toBe(operator.state.savedBudget);
+        const shot = screenshot(operator.state);
+        return {
+          value: expected.currentValue,
+          currency: "USD",
+          screenshotHash: shot.sha256,
+          evidenceRegion: { x: 820, y: 300, width: 120, height: 40 },
+          evidenceRegionHash: "e".repeat(64),
+          confidence: 0.99,
+          verificationHash: "f".repeat(64),
+          reviewers: [{ id: "mock-gui", confidence: 0.99, reason: "fixture" }, { id: "mock-deep", confidence: 0.99, reason: "fixture" }]
+        };
+      }
     } as unknown as DualVisualIdentityVerifier;
     const browserSessions = {
       get: async () => ({

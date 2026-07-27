@@ -21,7 +21,7 @@ Status values: `pass`, `partial`, `fail`, `not-run`, `blocked-external`.
 | Computer | real Live View | fail | metadata placeholder, no pixels |
 | Computer | pause/resume/stop/step/takeover/give-back | fail | only coarse singleton pause/takeover/resume |
 | Computer | mutation executes at most once | pass | one-attempt plan allowlist, execution provenance, terminal-`done` rejection, and regression tests |
-| Computer | exact post-change value verified | fail | only free-text model boolean |
+| Computer | exact post-change value verified | pass | two independent rereads, typed equality, region/screenshot hashes, and verified Shared Fact |
 | Computer | real Google Ads read path | not-run | broken harness plus no authenticated account |
 | Computer | real approved Google Ads mutation | not-run | requires explicit user environment; no claim made |
 | Plugins | curated registry and details | fail | absent |
@@ -32,7 +32,7 @@ Status values: `pass`, `partial`, `fail`, `not-run`, `blocked-external`.
 | Secrets | OS credential store | fail | private files only |
 | Advertising | deterministic TS guardrails | pass | product tests |
 | Advertising | verified facts/evidence/specialists | pass | product tests |
-| Advertising | approval/token/audit chain | partial | false-success path repaired; multi-writer audit and exact-value reread remain |
+| Advertising | approval/token/audit chain | partial | false-success and exact-value gates repaired; multi-writer audit remains |
 | Advertising | retained UAC Python engine in packaged app | fail | offline tests only, not wired/packaged |
 | GUI | Agent workspace vs permanent dashboard | partial | conversation-first shell exists; required IA/Inspector/routes absent |
 | Build | install/typecheck/test/build | pass | direct 2026-07-27 baseline |

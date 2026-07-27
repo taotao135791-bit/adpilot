@@ -761,6 +761,7 @@ export class AdPilotTools {
     if (unfinished.length > 0) throw new Error("an unfinished experiment blocks a new mutation");
     if (!this.computer) throw new Error("native computer runtime is unavailable");
     if (!this.visualIdentity) throw new Error("two independent visual identity reviewers are required for mutation");
+    if (!this.sharedFacts) throw new Error("canonical Shared Facts are required for post-mutation verification");
     const boundTask = await this.bindManagedTask(context, task);
     let screenshot: Screenshot;
     let actualPlan: VisualExecutionPlan;
@@ -848,6 +849,76 @@ export class AdPilotTools {
           blockerCode: "VERIFICATION_FAILED",
           lastAction: result.action
         };
+      }
+      let exactValueFact: SharedFact;
+      try {
+        const postExpected = expectedPostMutationValueFromTask(context, boundTask, result.after);
+        const exact = await this.visualIdentity.confirmPostMutationValue(postExpected, result.after);
+        await this.workspace.writeJson(context.clientId, `identity/${context.taskId}-${Date.now()}-post-mutation.json`, {
+          approvalId,
+          planId: boundTask.planId,
+          ...exact
+        });
+        const region = exact.evidenceRegion;
+        const observed = await this.sharedFacts.observe({
+          clientId: context.clientId,
+          taskId: context.taskId,
+          subject: boundTask.identity!.campaignId,
+          predicate: `post_mutation_${boundTask.identity!.operation}`,
+          value: exact.value,
+          unit: boundTask.identity!.currency ?? valueUnit(exact.value),
+          sourceType: "visual_verification",
+          sourceScreenshotId: exact.screenshotHash,
+          sourceBoundingBox: [region.x, region.y, region.width, region.height],
+          evidenceIds: [
+            `screenshot:${exact.screenshotHash}`,
+            `approval:${approvalId}`,
+            `plan:${boundTask.planId}`,
+            `verification:${exact.verificationHash}`
+          ],
+          confidence: exact.confidence,
+          createdBy: "dual_post_mutation_value_reviewer",
+          expiresAt: null
+        });
+        exactValueFact = await this.sharedFacts.verify(context.clientId, observed.factId, {
+          verifier: exact.reviewers.map((reviewer) => reviewer.id).join("+"),
+          confidence: exact.confidence
+        });
+        await this.audit.append({
+          clientId: context.clientId,
+          taskId: context.taskId,
+          actor: context.actor,
+          action: "verify_post_mutation_value",
+          status: "succeeded",
+          details: {
+            approvalId,
+            planId: boundTask.planId,
+            expectedValue: boundTask.identity!.proposedValue,
+            observedValue: exact.value,
+            currency: exact.currency,
+            factId: exactValueFact.factId,
+            screenshotHash: exact.screenshotHash,
+            evidenceRegionHash: exact.evidenceRegionHash,
+            verificationHash: exact.verificationHash,
+            reviewers: exact.reviewers
+          }
+        });
+      } catch (error) {
+        await this.audit.append({
+          clientId: context.clientId,
+          taskId: context.taskId,
+          actor: context.actor,
+          action: "verify_post_mutation_value",
+          status: "failed",
+          details: {
+            approvalId,
+            planId: boundTask.planId,
+            expectedValue: boundTask.identity?.proposedValue,
+            nativeActionExecuted: true,
+            reason: error instanceof Error ? error.message : String(error)
+          }
+        });
+        throw new Error(`native mutation executed, but the exact persisted value could not be verified: ${error instanceof Error ? error.message : String(error)}`);
       }
       if (executing.executionPlan) {
         const experiment = await this.experiments.create({
@@ -1140,6 +1211,13 @@ function textResult(details: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(details) }], details };
 }
 
+function valueUnit(value: string | number | boolean | null): string {
+  if (typeof value === "boolean") return "boolean";
+  if (typeof value === "number") return "number";
+  if (value === null) return "state";
+  return "text";
+}
+
 function expectedIdentityFromTask(
   context: ToolContext,
   task: VisualMicroTask,
@@ -1172,6 +1250,25 @@ function expectedIdentityFromTask(
     proposedValue: task.identity.proposedValue,
     target: task.target,
     ...(evidenceRegions ? { evidenceRegions } : {})
+  };
+}
+
+function expectedPostMutationValueFromTask(
+  context: ToolContext,
+  task: VisualMicroTask,
+  screenshot: Screenshot
+): ExpectedVisualIdentity {
+  if (!task.identity) throw new Error("visual task is missing post-mutation identity fields");
+  return {
+    ...expectedIdentityFromTask(context, {
+      ...task,
+      identity: {
+        ...task.identity,
+        currentValue: task.identity.proposedValue,
+        proposedValue: task.identity.proposedValue
+      }
+    }, screenshot),
+    verificationPhase: "post_mutation"
   };
 }
 

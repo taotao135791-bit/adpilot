@@ -63,7 +63,7 @@ Scope: tracked product code, desktop shell, runtime, persistence, Computer Use, 
 - Computer Use is not session-scoped and does not have a durable per-task actor.
 - Live View renders text and an icon, not screenshot pixels, overlays, cursor, or replay history.
 - Baseline finding: a grounded `done` action could return a successful visual result without executing or independently verifying a mutation. Rebuild checkpoint 1 repairs this with native-execution provenance, an independent-verification flag, a one-attempt action allowlist without `done`, Runtime rejection, and approval-layer rejection.
-- Mutation success is a model boolean against free-text `expectedResult`; there is no deterministic post-change exact-value reread.
+- Baseline finding: mutation success was a model boolean against free-text `expectedResult`. Rebuild checkpoint 2 now requires two independent post-action rereads, exact typed equality with the approved value, screenshot/region evidence hashes, and a verified Shared Fact before experiment start.
 - The logged-in Google Ads validation script reads event history without the required `clientId`, then assumes a redacted event still contains screenshot bytes. The current empty event list masks the mismatch.
 
 ### Plugin system
