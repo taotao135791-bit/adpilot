@@ -740,7 +740,15 @@ export class AdPilotTools {
         planId: boundTask.planId,
         accountFingerprint: boundTask.accountFingerprint,
         allowedRegion: boundTask.allowedRegion,
-        ...(result.status === "failed" ? { blocker: result.blocker, blockerCode: result.blockerCode } : { action: result.action.action, beforeHash: result.before.sha256, afterHash: result.after.sha256 })
+        ...(result.status === "failed"
+          ? { blocker: result.blocker, blockerCode: result.blockerCode }
+          : {
+              action: result.action.action,
+              executed: result.executed,
+              verified: result.verified,
+              beforeHash: result.before.sha256,
+              afterHash: result.after.sha256
+            })
       }
     });
     return result;
@@ -805,7 +813,43 @@ export class AdPilotTools {
     const executing = await this.approvals.consume(context.clientId, approvalId, token, operation, actualPlan);
     try {
       const result = await this.executeVisualTask(context, boundTask, screenshot);
-      if (result.status === "done" && executing.executionPlan) {
+      const mutationVerified = result.status === "done"
+        && result.executed
+        && result.verified
+        && result.action.action !== "done"
+        && result.action.action !== "fail"
+        && (result.action.risk_level === "mutate" || result.action.risk_level === "destructive");
+      if (!mutationVerified) {
+        await this.audit.append({
+          clientId: context.clientId,
+          taskId: context.taskId,
+          actor: context.actor,
+          action: "reject_unverified_visual_mutation",
+          status: "failed",
+          details: {
+            approvalId,
+            resultStatus: result.status,
+            ...(result.status === "done"
+              ? {
+                  action: result.action.action,
+                  actionRisk: result.action.risk_level,
+                  nativeActionExecuted: result.executed,
+                  postActionVerified: result.verified
+                }
+              : { blocker: result.blocker, blockerCode: result.blockerCode })
+          }
+        });
+        await this.approvals.finish(context.clientId, approvalId, false);
+        if (result.status === "failed") return result;
+        return {
+          status: "failed",
+          attempts: result.attempts,
+          blocker: "mutation completion requires a real native action and independent post-action verification",
+          blockerCode: "VERIFICATION_FAILED",
+          lastAction: result.action
+        };
+      }
+      if (executing.executionPlan) {
         const experiment = await this.experiments.create({
           ...executing.executionPlan.experiment,
           clientId: context.clientId,
@@ -814,7 +858,7 @@ export class AdPilotTools {
         });
         await this.experiments.start(context.clientId, experiment.id);
       }
-      await this.approvals.finish(context.clientId, approvalId, result.status === "done");
+      await this.approvals.finish(context.clientId, approvalId, true);
       return result;
     } catch (error) {
       await this.approvals.finish(context.clientId, approvalId, false);
@@ -1474,6 +1518,8 @@ export function visualTaskFromExecutionPlan(
     expectedResult: plan.expectedResult,
     riskLevel: plan.riskLevel,
     permission,
+    allowedActions: ["click", "type", "hotkey", "fail"],
+    retryPolicy: "none",
     surface: {
       app: plan.applicationName,
       applicationId: plan.applicationId,

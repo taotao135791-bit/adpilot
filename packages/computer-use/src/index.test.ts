@@ -352,6 +352,40 @@ describe("visual action protocol", () => {
     expect(clickExecutions).toBe(1);
   });
 
+  it("never accepts a terminal done claim as proof that a mutation executed", async () => {
+    let executions = 0;
+    const runtime = new VisualComputerRuntime(
+      { capture: async () => before, execute: async () => { executions += 1; } },
+      {
+        ground: async () => ({
+          action: "done",
+          target: "Save",
+          reason: "the model claims the task is complete",
+          confidence: 1,
+          expected_result: "Saved",
+          risk_level: "observe"
+        })
+      },
+      { verify: async () => ({ matched: true, confidence: 1, reason: "not reached" }) }
+    );
+    await expect(runtime.runMicroTask({
+      ...task,
+      target: "Save",
+      expectedResult: "Saved",
+      riskLevel: "mutate",
+      permission: "MUTATE",
+      planId: "plan-terminal-done",
+      accountFingerprint: "c".repeat(64),
+      allowedRegion: { x: 0, y: 0, width: before.width, height: before.height, coordinateSpace: "screenshot_pixels" }
+    })).resolves.toMatchObject({
+      status: "failed",
+      attempts: 1,
+      blockerCode: "POLICY_BLOCKED",
+      blocker: expect.stringContaining("cannot complete without a native action")
+    });
+    expect(executions).toBe(0);
+  });
+
   it("blocks a mutation outside its approved region before native input", async () => {
     let executions = 0;
     const runtime = new VisualComputerRuntime(

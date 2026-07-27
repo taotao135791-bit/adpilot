@@ -15,7 +15,8 @@ import {
   type BrowserSessionManager,
   type Screenshot,
   type VisualComputerRuntime,
-  type VisualIdentityObservation
+  type VisualIdentityObservation,
+  type VisualStepResult
 } from "@adpilot/computer-use";
 import { ExperimentStore } from "@adpilot/experiments";
 import { SharedFactLedger } from "@adpilot/shared";
@@ -158,7 +159,7 @@ async function setup() {
     { id: "gui-verification", review: async () => structuredClone(currentObservation) },
     { id: "deep-vision-reviewer", review: async () => structuredClone(currentObservation) }
   );
-  const runMicroTask = vi.fn(async (task, initial: Screenshot | undefined) => ({
+  const runMicroTask = vi.fn(async (task, initial: Screenshot | undefined): Promise<VisualStepResult> => ({
     status: "done" as const,
     attempts: 1,
     action: {
@@ -172,7 +173,9 @@ async function setup() {
       risk_level: "mutate" as const
     },
     before: initial ?? screenshot,
-    after: { ...(initial ?? screenshot), capturedAt: new Date().toISOString() }
+    after: { ...(initial ?? screenshot), capturedAt: new Date().toISOString() },
+    executed: true,
+    verified: true
   }));
   const computer = {
     captureForTask: vi.fn(async () => screenshot),
@@ -202,6 +205,8 @@ async function setup() {
     sharedFacts,
     guardrailEvidence,
     runMicroTask,
+    screenshot,
+    workspace,
     setObservation: (value: VisualIdentityObservation) => { currentObservation = value; }
   };
 }
@@ -235,6 +240,38 @@ describe("production visual approval tools", () => {
       .resolves.toMatchObject({ status: "done" });
     expect(fixture.runMicroTask).toHaveBeenCalledTimes(1);
     await expect(fixture.approvals.get("client-a", fixture.approval.id)).resolves.toMatchObject({ status: "executed" });
+  });
+
+  it("fails the approval when a runtime reports done without native execution provenance", async () => {
+    const fixture = await approved();
+    fixture.runMicroTask.mockResolvedValueOnce({
+      status: "done",
+      attempts: 1,
+      action: {
+        action: "done",
+        target: fixture.task.target,
+        reason: "model-only completion claim",
+        confidence: 1,
+        expected_result: fixture.task.expectedResult,
+        risk_level: "observe"
+      },
+      before: fixture.screenshot,
+      after: fixture.screenshot,
+      executed: false,
+      verified: false
+    });
+    await expect(fixture.tools.commitApprovedVisualAction(
+      fixture.context,
+      fixture.approval.id,
+      fixture.token,
+      operation,
+      fixture.task
+    )).resolves.toMatchObject({
+      status: "failed",
+      blockerCode: "VERIFICATION_FAILED"
+    });
+    await expect(fixture.approvals.get("client-a", fixture.approval.id)).resolves.toMatchObject({ status: "failed" });
+    await expect(new ExperimentStore(fixture.workspace).list("client-a")).resolves.toEqual([]);
   });
 
   it("burns the token before native input when the actual instruction changes", async () => {
@@ -490,7 +527,9 @@ describe("production visual table tool", () => {
         risk_level: "interact" as const
       },
       before: initial ?? first,
-      after: second
+      after: second,
+      executed: true,
+      verified: true
     }));
     const computer = {
       captureForTask: vi.fn(async () => first),

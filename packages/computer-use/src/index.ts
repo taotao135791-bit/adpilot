@@ -210,7 +210,17 @@ export class SurfaceChangedBlocker extends VisualRuntimeBlocker {
 }
 
 export type VisualStepResult =
-  | { status: "done"; attempts: number; action: VisualAction; before: Screenshot; after: Screenshot }
+  | {
+      status: "done";
+      attempts: number;
+      action: VisualAction;
+      before: Screenshot;
+      after: Screenshot;
+      /** True only after NativeOperator.execute returned successfully. */
+      executed: boolean;
+      /** True only after the independent post-action verifier matched. */
+      verified: boolean;
+    }
   | { status: "failed"; attempts: number; blocker: string; blockerCode?: VisualBlockerCode; lastAction?: VisualAction };
 
 export class VisualPolicy {
@@ -420,7 +430,17 @@ export class VisualComputerRuntime {
         }
         await this.onEvent(scopeVisualRuntimeEvent({ type: "grounded", attempt, tier, action }, boundTask));
         if (action.action === "fail") return { status: "failed", attempts: attempt, blocker: action.reason, lastAction: action };
-        if (action.action === "done") return { status: "done", attempts: attempt, action, before, after: before };
+        if (action.action === "done") {
+          if (boundTask.riskLevel === "mutate" || boundTask.riskLevel === "destructive") {
+            return failedResult(
+              attempt,
+              "a mutation cannot complete without a native action and independent post-action verification",
+              "POLICY_BLOCKED",
+              action
+            );
+          }
+          return { status: "done", attempts: attempt, action, before, after: before, executed: false, verified: false };
+        }
 
         const coordinateKey = actionCoordinateKey(action);
         if (coordinateKey && executedCoordinates.has(coordinateKey)) {
@@ -445,7 +465,7 @@ export class VisualComputerRuntime {
         }
         const verified = await withTimeout(this.verifier.verify(action.expected_result, before, after, boundTask), this.stepTimeoutMs, "visual verification");
         await this.onEvent(scopeVisualRuntimeEvent({ type: "verified", attempt, ...verified }, boundTask));
-        if (verified.matched) return { status: "done", attempts: attempt, action, before, after };
+        if (verified.matched) return { status: "done", attempts: attempt, action, before, after, executed: true, verified: true };
         if (mutationExecuted) {
           return failedResult(attempt, `mutation was executed but could not be visually verified: ${verified.reason}`, "MUTATION_RETRY_FORBIDDEN", action);
         }
