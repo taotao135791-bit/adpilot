@@ -554,6 +554,8 @@ export const ConversationMessage = z.object({
   id: z.string().uuid(),
   clientId: z.string().min(1),
   conversationId: z.string().min(1).default("primary"),
+  /** Product Session this message belongs to; absent on rows that predate the Session authority. */
+  sessionId: z.string().uuid().optional(),
   role: z.enum(["user", "assistant", "system"]),
   content: z.string().min(1),
   status: z.enum(["complete", "error"]).default("complete"),

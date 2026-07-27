@@ -9,7 +9,7 @@ import {
   listKnowledgeSkills,
   type KnowledgeSkillSummary
 } from "@adpilot/advertising-core";
-import { PiAgentRuntime } from "@adpilot/runtime";
+import { PiAgentRuntime, type SessionModelOverride } from "@adpilot/runtime";
 import { SpecialistCoordinator } from "@adpilot/specialist-agents";
 import {
   Evidence,
@@ -44,6 +44,10 @@ export interface AgentConversationContext extends Record<string, unknown> {
   interfaceLocale?: string;
   /** conversation.jsonl id of the user message being answered; threaded into the decision run for fork labeling. */
   userMessageId?: string;
+  /** Product Session backing this conversation, resolved by the server from the request. */
+  sessionId?: string;
+  /** Session-level model binding; overrides the global router for every run of this turn. */
+  modelOverride?: SessionModelOverride;
 }
 const ConversationDecision = z.object({
   mode: z.enum(["answer", "act", "investigate"]),
@@ -117,7 +121,8 @@ export class AdPilotAgent {
         await this.knowledge.catalog()
       ].join("\n"),
       prompt: JSON.stringify({ message, client, context: sanitizeConversationContext(context), verifiedFacts, matchedKnowledge: knowledgeMatches.map((skill) => skill.name) }),
-      signals: { task: "conversation" }
+      signals: { task: "conversation" },
+      ...(context.modelOverride ? { modelOverride: context.modelOverride } : {})
     });
     const decision = parseConversationDecision(decisionResult.text, message, context.interfaceLocale);
     if (decision.mode === "answer") return { reply: decision.reply, task: null };
@@ -167,7 +172,8 @@ export class AdPilotAgent {
         ].join("\n"),
         prompt: JSON.stringify({ goal, client: clientContext, conversation: sanitizeConversationContext(context) }),
         signals: { task: "conversation" },
-        tools: this.tools.generalAgentTools(runContext)
+        tools: this.tools.generalAgentTools(runContext),
+        ...(context.modelOverride ? { modelOverride: context.modelOverride } : {})
       });
       summary = run.text.trim();
       if (!summary) throw new Error("the action run produced an empty report");
@@ -292,7 +298,8 @@ export class AdPilotAgent {
           ...(knowledgeContext ? [knowledgeContext] : [])
         ].join("\n"),
         prompt: JSON.stringify({ goal, projectContext, currentTask: task }),
-        signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool, ...this.tools.generalAgentTools(runContext)]
+        signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool, ...this.tools.generalAgentTools(runContext)],
+        ...(context.modelOverride ? { modelOverride: context.modelOverride } : {})
       }, MainAgentOutput);
     } catch (error) {
       const blocker = error instanceof Error ? error.message : String(error);

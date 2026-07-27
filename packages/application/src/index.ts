@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { AuditLog } from "@adpilot/audit";
 import { ApprovalService } from "@adpilot/approvals";
 import { AdPilotAgent, WorkspaceSharedFactRepository, type AgentKnowledge } from "@adpilot/agent-orchestrator";
+import type { Session as ProductSessionEntity } from "@adpilot/session-service";
 import {
   BrowserSessionBoundOperator,
   BrowserSessionManager,
@@ -49,9 +50,33 @@ import { PiVisualTableModel, PiVisualTableVerifier, VisualTableReader } from "@a
 import { AlertMonitor, type AlertDeliveryStatus } from "./alert-monitor.js";
 import { PromptTemplateStore } from "./prompt-templates.js";
 import { createMergedAgentKnowledge, UserSkillStore } from "./user-skills.js";
+import { createSessionAuthority, type SessionAuthority } from "./session-authority.js";
 
 export { AlertMonitor, renderAlertMessage } from "./alert-monitor.js";
 export type { AlertDeliveryStatus, AlertMonitorOptions, PendingAlertRecord } from "./alert-monitor.js";
+export { acquireWorkspaceWriterLease, createSessionAuthority } from "./session-authority.js";
+export type { SessionAuthority } from "./session-authority.js";
+export {
+  DeletedSessionError,
+  FileSessionRepository,
+  PermissionEscalationRequiresApprovalError,
+  ProjectNotFoundError,
+  RevisionConflictError,
+  SessionModelBinding,
+  SessionNotFoundError,
+  SessionPermissionProfile,
+  SessionPlatform,
+  SessionService,
+  SessionStatus,
+  WorkspaceWriterLease,
+  WorkspaceWriterLeaseHeldError
+} from "@adpilot/session-service";
+export type {
+  CreateSessionInput,
+  LegacyMigrationResult,
+  Session as ProductSessionEntity,
+  SessionFilter
+} from "@adpilot/session-service";
 export {
   expandPromptTemplateBody,
   parsePromptTemplate,
@@ -83,6 +108,7 @@ export type ProductEvent =
   | { type: "approval"; clientId: string; approvalId: string; status: string }
   | { type: "alert"; clientId: string; status: AlertDeliveryStatus; alert: MonitoringAlert; conversationId?: string }
   | { type: "conversation"; clientId: string; conversationId: string; status: string; forkedFrom?: string }
+  | { type: "session"; clientId: string; sessionId: string; status: string; session: ProductSessionEntity }
   | { type: "error"; clientId?: string; message: string; retryable: boolean };
 
 export class ProductEventBus {
@@ -108,6 +134,10 @@ export interface AdPilotSystem {
   tools: AdPilotTools;
   skills: SkillRegistry;
   runtime: PiAgentRuntime;
+  /** Product Session authority: durable sessions backed by the workspace writer lease. */
+  sessions: SessionAuthority["service"];
+  /** Boot-time authority details: writer lease, idempotent legacy import result, interrupted runs. */
+  sessionAuthority: SessionAuthority;
   /** Conversation-level plan-mode switch state (persisted conversation metadata). */
   planMode: PlanModeStore;
   /** Client-level autonomy switch: guarded (default) or full_access. */
@@ -165,6 +195,10 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   const audit = new AuditLog(workspace);
   const approvals = new ApprovalService(workspace, secret);
   for (const client of await workspace.listClients()) await approvals.recoverInterrupted(client.id);
+  // The Session authority boots before any run is accepted: it acquires the
+  // workspace writer lease (a live foreign holder is a hard startup error),
+  // imports legacy conversations idempotently, and resets interrupted runs.
+  const sessionAuthority = await createSessionAuthority({ workspace, audit });
   const experiments = new ExperimentStore(workspace);
   const privacyMode: ScreenshotPrivacyMode = env.ADPILOT_PRIVACY_MODE === "local-only" ? "local-only" : "minimized";
   const screenshotArtifacts = new FileScreenshotArtifactStore(workspaceRoot);
@@ -383,6 +417,7 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   const connectedSessions = (await browserSessions.list()).filter((session) => session.sessionStatus === "connected");
   return {
     workspace, settings, credentials, models, audit, approvals, experiments, tools, skills, runtime, planMode, autonomy, specialists, agent,
+    sessions: sessionAuthority.service, sessionAuthority,
     alerts: alertMonitor, computer,
     browserSessions, screenshotAudits, visualTableReader, events,
     approvalTokens: new Map(),

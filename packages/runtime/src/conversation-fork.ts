@@ -22,6 +22,7 @@ import { AdPilotSessionStorage, resolvePiSessionId } from "./session-storage.js"
  * the existing persistence without a schema change.
  */
 export const FORK_CUSTOM_ENTRY_TYPE = "adpilot_fork";
+export const DUPLICATE_CUSTOM_ENTRY_TYPE = "adpilot_duplicate";
 
 const MESSAGE_LABEL_PREFIX = "conversation-message:";
 const FORK_ID_ATTEMPTS = 100;
@@ -92,15 +93,127 @@ export async function resolveForkLeafId(
 
 /**
  * Copies the conversation transcript and the session tree path up to the fork
- * point into a fresh conversation. Callers serialize against in-flight runs
- * (PiAgentRuntime wraps this in the source session lock) and append the audit
- * record; this function performs no locking of its own.
+ * point into a fresh conversation whose id is allocated here. Callers serialize
+ * against in-flight runs (PiAgentRuntime wraps this in the source session lock)
+ * and append the audit record; this function performs no locking of its own.
  */
 export async function forkConversationStorage(
   workspace: WorkspaceStore,
   clientId: string,
   sourceConversationId: string,
   atMessageId: string
+): Promise<ConversationForkResult> {
+  return executeFork(workspace, clientId, sourceConversationId, atMessageId, async (allMessages) => {
+    const usedConversationIds = new Set(allMessages.map((message) => message.conversationId));
+    return allocateForkConversationId(workspace, clientId, usedConversationIds);
+  });
+}
+
+/**
+ * Same fork semantics as forkConversationStorage, but the caller supplies the
+ * new conversation id. The product Session layer uses this to bind a freshly
+ * created Session's runtimeConversationId to the forked Pi history, so the
+ * product identity and the durable Pi context stay aligned. The target id must
+ * be unused: no existing messages and no persisted session file.
+ */
+export async function forkConversationStorageInto(
+  workspace: WorkspaceStore,
+  clientId: string,
+  sourceConversationId: string,
+  atMessageId: string,
+  targetConversationId: string
+): Promise<ConversationForkResult> {
+  return executeFork(workspace, clientId, sourceConversationId, atMessageId, async (allMessages) => {
+    const target = targetConversationId.trim();
+    if (!target) throw new SessionError("invalid_fork_target", "Fork target conversation id must not be empty");
+    if (target === sourceConversationId) {
+      throw new SessionError("invalid_fork_target", "Fork target conversation must differ from the source conversation");
+    }
+    if (allMessages.some((message) => message.conversationId === target)) {
+      throw new SessionError("invalid_fork_target", `Fork target conversation ${target} already has messages`);
+    }
+    const occupied = await workspace.readText(clientId, `sessions/${resolvePiSessionId(clientId, target)}.jsonl`);
+    if (occupied) {
+      throw new SessionError("invalid_fork_target", `Fork target conversation ${target} already has a persisted session`);
+    }
+    return target;
+  });
+}
+
+export interface ConversationDuplicateResult {
+  clientId: string;
+  /** Newly created conversation id holding the copy. */
+  conversationId: string;
+  /** Pi session id backing the new conversation. */
+  sessionId: string;
+  sourceConversationId: string;
+  copiedEntries: number;
+  copiedMessages: number;
+}
+
+/**
+ * Duplicates the complete conversation: every session tree entry (the whole
+ * file, not a single branch path) and every transcript message are replayed
+ * into a fresh conversation id supplied by the caller. Entry ids intentionally
+ * exist in both files — each file stays an independent, self-consistent tree,
+ * matching fork copy semantics. Provenance rides along as a custom entry that
+ * is excluded from model context.
+ */
+export async function duplicateConversationStorage(
+  workspace: WorkspaceStore,
+  clientId: string,
+  sourceConversationId: string,
+  targetConversationId: string
+): Promise<ConversationDuplicateResult> {
+  const target = targetConversationId.trim();
+  if (!target) throw new SessionError("invalid_fork_target", "Duplicate target conversation id must not be empty");
+  if (target === sourceConversationId) {
+    throw new SessionError("invalid_fork_target", "Duplicate target conversation must differ from the source conversation");
+  }
+  const sourceSessionId = resolvePiSessionId(clientId, sourceConversationId);
+  const persisted = await workspace.readText(clientId, `sessions/${sourceSessionId}.jsonl`);
+  if (!persisted) throw new SessionError("not_found", `Conversation ${sourceConversationId} has no persisted session to duplicate`);
+  const allMessages = await workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage);
+  if (allMessages.some((message) => message.conversationId === target)) {
+    throw new SessionError("invalid_fork_target", `Duplicate target conversation ${target} already has messages`);
+  }
+  const occupied = await workspace.readText(clientId, `sessions/${resolvePiSessionId(clientId, target)}.jsonl`);
+  if (occupied) {
+    throw new SessionError("invalid_fork_target", `Duplicate target conversation ${target} already has a persisted session`);
+  }
+
+  const sourceStorage = await AdPilotSessionStorage.openOrCreate(workspace, clientId, sourceConversationId);
+  const entries = await sourceStorage.getEntries();
+  const targetStorage = await AdPilotSessionStorage.openOrCreate(workspace, clientId, target);
+  for (const entry of entries) await targetStorage.appendEntry(entry);
+  const targetSession = new Session(targetStorage);
+  await targetSession.appendCustomEntry(DUPLICATE_CUSTOM_ENTRY_TYPE, {
+    sourceConversationId,
+    copiedEntries: entries.length,
+    duplicatedAt: new Date().toISOString()
+  });
+
+  const copied = allMessages.filter((message) => message.conversationId === sourceConversationId);
+  for (const message of copied) {
+    await workspace.appendJsonl(clientId, "conversation.jsonl", { ...message, conversationId: target });
+  }
+
+  return {
+    clientId,
+    conversationId: target,
+    sessionId: resolvePiSessionId(clientId, target),
+    sourceConversationId,
+    copiedEntries: entries.length,
+    copiedMessages: copied.length
+  };
+}
+
+async function executeFork(
+  workspace: WorkspaceStore,
+  clientId: string,
+  sourceConversationId: string,
+  atMessageId: string,
+  resolveTargetConversationId: (allMessages: ConversationMessage[]) => Promise<string>
 ): Promise<ConversationForkResult> {
   const sourceSessionId = resolvePiSessionId(clientId, sourceConversationId);
   const persisted = await workspace.readText(clientId, `sessions/${sourceSessionId}.jsonl`);
@@ -114,8 +227,7 @@ export async function forkConversationStorage(
   const leafId = await resolveForkLeafId(sourceStorage, conversationMessages, atMessageId);
   const path = await sourceStorage.getPathToRoot(leafId);
 
-  const usedConversationIds = new Set(allMessages.map((message) => message.conversationId));
-  const newConversationId = await allocateForkConversationId(workspace, clientId, usedConversationIds);
+  const newConversationId = await resolveTargetConversationId(allMessages);
   const targetStorage = await AdPilotSessionStorage.openOrCreate(workspace, clientId, newConversationId);
   for (const entry of path) await targetStorage.appendEntry(entry);
   const targetSession = new Session(targetStorage);

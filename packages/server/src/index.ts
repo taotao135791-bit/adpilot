@@ -7,9 +7,23 @@ import { z } from "zod";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import { SessionError } from "@earendil-works/pi-agent-core";
 import type { AdPilotSystem } from "@adpilot/application";
+import {
+  DeletedSessionError,
+  PermissionEscalationRequiresApprovalError,
+  ProjectNotFoundError,
+  RevisionConflictError,
+  SessionModelBinding,
+  SessionNotFoundError,
+  SessionPermissionProfile,
+  SessionPlatform,
+  SessionStatus,
+  type ProductSessionEntity,
+  type SessionFilter
+} from "@adpilot/application";
 import { ApprovalOperation } from "@adpilot/approvals";
 import { StartBrowserSessionInput, type BrowserSession } from "@adpilot/computer-use";
 import { SettingsUpdate } from "@adpilot/configuration";
+import { resolvePiSessionId, type SessionModelOverride } from "@adpilot/runtime";
 import { ConversationMessage, MonitoringAlert, MonitoringAlertInput, Platform } from "@adpilot/shared";
 import { ApprovalGuardrailEvidenceInput, VisualApprovalPlanInput, visualTaskFromExecutionPlan } from "@adpilot/tools";
 import {
@@ -30,6 +44,52 @@ const BrowserSessionStartRequest = z.object({
   platform: Platform.default("google_ads")
 });
 const BrowserSessionLookup = z.object({ clientId: z.string().min(1), browserProfile: z.string().min(1).optional() });
+
+const SessionClientParams = z.object({ id: z.string().min(1) });
+const SessionParams = z.object({ id: z.string().min(1), sid: z.string().uuid() });
+const SessionActor = z.string().trim().min(1).max(120).default("workspace-owner");
+const SessionListQuery = z.object({
+  pinned: z.enum(["true", "false"]).optional(),
+  archived: z.enum(["true", "false"]).optional(),
+  status: z.string().trim().min(1).optional(),
+  q: z.string().trim().min(1).max(200).optional(),
+  deleted: z.enum(["true"]).optional()
+});
+const SessionCreateBody = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
+  projectId: z.string().uuid().optional(),
+  agentProfileId: z.string().trim().min(1).max(256).optional(),
+  advertisingWorkspaceId: z.string().trim().min(1).max(256).optional(),
+  platforms: z.array(SessionPlatform).max(SessionPlatform.options.length).optional(),
+  tags: z.array(z.string().trim().min(1).max(64)).max(64).optional(),
+  modelBinding: SessionModelBinding.optional(),
+  permissionProfile: SessionPermissionProfile.optional(),
+  actor: SessionActor
+}).strict();
+const SessionPatchBody = z.object({
+  revision: z.number().int().positive(),
+  title: z.string().trim().min(1).max(200).optional(),
+  pinned: z.boolean().optional(),
+  actor: SessionActor
+}).strict().refine((value) => value.title !== undefined || value.pinned !== undefined, {
+  message: "at least one of title or pinned is required"
+});
+const SessionMutationBody = z.object({
+  revision: z.number().int().positive().optional(),
+  actor: SessionActor
+}).strict();
+const SessionDuplicateBody = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
+  projectId: z.string().uuid().nullable().optional(),
+  tags: z.array(z.string().trim().min(1).max(64)).max(64).optional(),
+  actor: SessionActor
+}).strict();
+const SessionBranchBody = z.object({
+  atMessageId: z.string().uuid(),
+  title: z.string().trim().min(1).max(200).optional(),
+  actor: SessionActor
+}).strict();
+const SessionDeleteQuery = z.object({ revision: z.coerce.number().int().positive().optional() });
 
 export async function createServer(system: AdPilotSystem, options: { uiRoot?: string; onRestartRequested?: () => void } = {}) {
   const app = Fastify({ logger: false });
@@ -120,17 +180,19 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const clientId = query.clientId ?? clients[0]?.id;
     const computerUse = await computerUseState(system, clientId);
     const models = { ...system.modelStatus, browserSession: computerUse.browserStatus };
-    if (!clientId) return { clients, tasks: [], approvals: [], experiments: [], audit: [], messages: [], browserSessions: computerUse.sessions, computerUse, events: [], models };
-    const [tasks, approvals, experiments, audit, messages, settings, planMode, autonomy] = await Promise.all([
+    if (!clientId) return { clients, tasks: [], approvals: [], experiments: [], audit: [], messages: [], sessions: [], selectedSessionId: null, browserSessions: computerUse.sessions, computerUse, events: [], models };
+    const [tasks, approvals, experiments, audit, messages, settings, planMode, autonomy, sessions] = await Promise.all([
       system.workspace.listTasks(clientId), system.approvals.list(clientId), system.experiments.list(clientId), system.audit.list(clientId),
       system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage), system.settings.publicView(),
       system.planMode.get(clientId, query.conversationId),
-      system.autonomy.get(clientId)
+      system.autonomy.get(clientId),
+      system.sessions.list({ clientId })
     ]);
     return {
       clients,
       selectedClientId: clientId,
       selectedConversationId: query.conversationId,
+      selectedSessionId: sessions.find((session) => session.runtimeConversationId === query.conversationId)?.id ?? null,
       tasks,
       approvals,
       experiments,
@@ -138,6 +200,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       planMode,
       autonomy,
       conversations: [...new Set(messages.map((message) => message.conversationId))],
+      sessions,
       messages: messages.filter((message) => message.conversationId === query.conversationId).map((message) => sanitizeLegacyConversationError(message, settings.locale)),
       browserSessions: computerUse.sessions,
       computerUse,
@@ -176,16 +239,50 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
   });
 
   app.post("/api/messages", async (request, reply) => {
-    const body = z.object({ clientId: z.string().optional(), conversationId: z.string().trim().min(1).max(120).default("primary"), message: z.string().trim().min(1).max(20_000), locale: z.enum(["zh-CN", "en"]).default("zh-CN") }).parse(request.body);
+    const body = z.object({ clientId: z.string().optional(), conversationId: z.string().trim().min(1).max(120).default("primary"), sessionId: z.string().uuid().optional(), message: z.string().trim().min(1).max(20_000), locale: z.enum(["zh-CN", "en"]).default("zh-CN") }).parse(request.body);
     const clients = await system.workspace.listClients();
-    const clientId = body.clientId ?? clients[0]?.id;
+    let clientId = body.clientId ?? clients[0]?.id;
     if (!clientId) return reply.code(409).send({ error: "workspace is not available" });
-    const existing = (await system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage)).filter((message) => message.conversationId === body.conversationId);
-    const userMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "user", content: body.message, at: new Date().toISOString() });
+    // An explicit product Session wins over the legacy conversationId: the
+    // session owns the client and its runtimeConversationId becomes the
+    // durable Pi/conversation key. A legacy conversation keeps working and is
+    // imported into a Session on first sight (see below).
+    let session: ProductSessionEntity | undefined;
+    if (body.sessionId) {
+      session = await system.sessions.get(body.sessionId);
+      if (!session) return reply.code(404).send({ error: `session not found: ${body.sessionId}`, code: "SESSION_NOT_FOUND" });
+      if (body.clientId && session.clientId !== body.clientId) {
+        return reply.code(400).send({ error: `session ${body.sessionId} belongs to client ${session.clientId}`, code: "SESSION_CLIENT_MISMATCH" });
+      }
+      clientId = session.clientId;
+    } else {
+      // Legacy compatibility: a previously imported conversation resolves to
+      // its product Session through the persisted mapping, so follow-up
+      // messages bind the session immediately.
+      const mapping = await system.sessions.repository.findLegacyMapping(clientId, body.conversationId);
+      if (mapping) session = await system.sessions.get(mapping.sessionId);
+    }
+    const conversationId = session ? session.runtimeConversationId : body.conversationId;
+    const existing = (await system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage)).filter((message) => message.conversationId === conversationId);
+    const userMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId, ...(session ? { sessionId: session.id } : {}), role: "user", content: body.message, at: new Date().toISOString() });
     await system.workspace.appendJsonl(clientId, "conversation.jsonl", userMessage);
+    if (!session && !body.sessionId) {
+      // First sight of a legacy conversation: import not-yet-migrated
+      // conversations (including this one) through the idempotent migration.
+      // Legacy data itself is never rewritten.
+      await system.sessions.migrateLegacy(system.workspace);
+      const mapping = await system.sessions.repository.findLegacyMapping(clientId, conversationId);
+      if (mapping) session = await system.sessions.get(mapping.sessionId);
+    }
+    const modelOverride = session ? sessionModelOverride(session.modelBinding) : undefined;
+    const setSessionStatus = async (status: "running" | "completed" | "failed") => {
+      if (!session) return;
+      session = await system.sessions.setStatus(session.id, status);
+      publishSession(system, session, status);
+    };
     const slash = parseSlashCommand(body.message);
     const directAnswer = async (markdown: string, commandName: string) => {
-      const systemMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "system", content: markdown, status: "complete", at: new Date().toISOString() });
+      const systemMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId, ...(session ? { sessionId: session.id } : {}), role: "system", content: markdown, status: "complete", at: new Date().toISOString() });
       await system.workspace.appendJsonl(clientId, "conversation.jsonl", systemMessage);
       system.events.publish({ type: "task", clientId, status: "completed", message: markdown });
       reply.code(201);
@@ -195,13 +292,16 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     // built-in and user-template expansions take the identical path.
     const runConversation = async (prompt: string) => {
       system.events.publish({ type: "task", clientId, status: "running", message: body.message });
+      await setSessionStatus("running");
       try {
-        const response = await system.agent.respond(clientId, prompt, { conversationId: body.conversationId, interfaceLocale: body.locale, userMessageId: userMessage.id, recentConversation: existing.slice(-12).map((item) => sanitizeLegacyConversationError(item, body.locale)).map(({ role, content }) => ({ role, content })) });
-        const assistantMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "assistant", content: response.reply, ...(response.task ? { taskId: response.task.id } : {}), at: new Date().toISOString() });
+        const response = await system.agent.respond(clientId, prompt, { conversationId, interfaceLocale: body.locale, userMessageId: userMessage.id, ...(session ? { sessionId: session.id } : {}), ...(modelOverride ? { modelOverride } : {}), recentConversation: existing.slice(-12).map((item) => sanitizeLegacyConversationError(item, body.locale)).map(({ role, content }) => ({ role, content })) });
+        const assistantMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId, ...(session ? { sessionId: session.id } : {}), role: "assistant", content: response.reply, ...(response.task ? { taskId: response.task.id } : {}), at: new Date().toISOString() });
         await system.workspace.appendJsonl(clientId, "conversation.jsonl", assistantMessage);
+        await setSessionStatus("completed");
         system.events.publish({ type: "task", clientId, status: response.task?.phase ?? "completed", ...(response.task ? { taskId: response.task.id } : {}), message: response.reply });
         reply.code(201); return { message: assistantMessage, task: response.task };
       } catch (error) {
+        await setSessionStatus("failed").catch(() => undefined);
         const incidentId = crypto.randomUUID();
         const detail = error instanceof Error ? error.message : String(error);
         const content = conversationErrorMessage(body.locale, detail, incidentId);
@@ -209,7 +309,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
           id: incidentId, at: new Date().toISOString(), route: "/api/messages",
           error: { name: error instanceof Error ? error.name : "Error", message: detail }
         });
-        await system.workspace.appendJsonl(clientId, "conversation.jsonl", ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId: body.conversationId, role: "system", content, status: "error", at: new Date().toISOString() }));
+        await system.workspace.appendJsonl(clientId, "conversation.jsonl", ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId, ...(session ? { sessionId: session.id } : {}), role: "system", content, status: "error", at: new Date().toISOString() }));
         system.events.publish({ type: "error", clientId, message: content, retryable: true });
         return reply.code(502).send({ error: content, incidentId });
       }
@@ -423,6 +523,182 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     }
   });
 
+  /* ------------------------- product Session authority ------------------------- */
+
+  /** Loads a session and hides cross-client ids behind the same 404. */
+  const requireClientSession = async (clientId: string, sessionId: string, options: { includeDeleted?: boolean } = {}) => {
+    const session = await system.sessions.require(sessionId, options);
+    if (session.clientId !== clientId) throw new SessionNotFoundError(sessionId);
+    return session;
+  };
+  const auditSession = async (session: ProductSessionEntity, actor: string, action: string, details: Record<string, unknown> = {}) => {
+    await system.audit.append({
+      clientId: session.clientId,
+      sessionId: session.id,
+      actor,
+      action,
+      status: "succeeded",
+      details: { runtimeConversationId: session.runtimeConversationId, ...details }
+    });
+  };
+
+  app.get("/api/clients/:id/sessions", async (request) => {
+    const params = SessionClientParams.parse(request.params);
+    const query = SessionListQuery.parse(request.query);
+    await system.workspace.readClient(params.id);
+    const statuses = query.status
+      ?.split(",")
+      .map((value) => SessionStatus.parse(value.trim()));
+    const filter: SessionFilter = {
+      clientId: params.id,
+      ...(query.pinned !== undefined ? { pinned: query.pinned === "true" } : {}),
+      ...(query.archived !== undefined ? { archived: query.archived === "true" } : {}),
+      ...(statuses && statuses.length > 0 ? { statuses } : {}),
+      ...(query.deleted === "true" ? { deleted: true } : {})
+    };
+    const sessions = query.q
+      ? await system.sessions.search(query.q, filter)
+      : await system.sessions.list(filter);
+    return { sessions };
+  });
+
+  app.post("/api/clients/:id/sessions", async (request, reply) => {
+    const params = SessionClientParams.parse(request.params);
+    const body = SessionCreateBody.parse(request.body);
+    await system.workspace.readClient(params.id);
+    const session = await system.sessions.create({
+      clientId: params.id,
+      ...(body.title !== undefined ? { title: body.title } : {}),
+      ...(body.projectId !== undefined ? { projectId: body.projectId } : {}),
+      ...(body.agentProfileId !== undefined ? { agentProfileId: body.agentProfileId } : {}),
+      ...(body.advertisingWorkspaceId !== undefined ? { advertisingWorkspaceId: body.advertisingWorkspaceId } : {}),
+      ...(body.platforms !== undefined ? { platforms: body.platforms } : {}),
+      ...(body.tags !== undefined ? { tags: body.tags } : {}),
+      ...(body.modelBinding !== undefined ? { modelBinding: body.modelBinding } : {}),
+      ...(body.permissionProfile !== undefined ? { permissionProfile: body.permissionProfile } : {})
+    });
+    await auditSession(session, body.actor, "session_create", { title: session.title });
+    publishSession(system, session, "created");
+    reply.code(201);
+    return session;
+  });
+
+  app.get("/api/clients/:id/sessions/:sid", async (request, reply) => {
+    const params = SessionParams.parse(request.params);
+    const query = z.object({ deleted: z.enum(["true"]).optional() }).parse(request.query);
+    await system.workspace.readClient(params.id);
+    const session = await system.sessions.get(params.sid, { includeDeleted: query.deleted === "true" });
+    if (!session || session.clientId !== params.id) {
+      return reply.code(404).send({ error: `session not found: ${params.sid}`, code: "SESSION_NOT_FOUND" });
+    }
+    return session;
+  });
+
+  app.patch("/api/clients/:id/sessions/:sid", async (request) => {
+    const params = SessionParams.parse(request.params);
+    const body = SessionPatchBody.parse(request.body);
+    await system.workspace.readClient(params.id);
+    await requireClientSession(params.id, params.sid);
+    let session: ProductSessionEntity | undefined;
+    let revision = body.revision;
+    if (body.title !== undefined) {
+      session = await system.sessions.rename(params.sid, body.title, revision);
+      revision = session.revision;
+    }
+    if (body.pinned !== undefined) {
+      session = body.pinned
+        ? await system.sessions.pin(params.sid, revision)
+        : await system.sessions.unpin(params.sid, revision);
+    }
+    if (!session) throw new Error("session patch produced no mutation");
+    await auditSession(session, body.actor, "session_update", {
+      ...(body.title !== undefined ? { title: body.title } : {}),
+      ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
+      revision: session.revision
+    });
+    publishSession(system, session, "updated");
+    return session;
+  });
+
+  const sessionStatusMutation = (
+    action: "archive" | "unarchive" | "restore",
+    mutate: (sessionId: string, revision?: number) => Promise<ProductSessionEntity>
+  ) => async (request: import("fastify").FastifyRequest) => {
+    const params = SessionParams.parse(request.params);
+    const body = SessionMutationBody.parse(request.body ?? {});
+    await system.workspace.readClient(params.id);
+    await requireClientSession(params.id, params.sid, { includeDeleted: true });
+    const session = await mutate(params.sid, body.revision);
+    await auditSession(session, body.actor, `session_${action}`, { revision: session.revision });
+    publishSession(system, session, `${action}d`);
+    return session;
+  };
+  app.post("/api/clients/:id/sessions/:sid/archive", sessionStatusMutation("archive", (sid, revision) => system.sessions.archive(sid, revision)));
+  app.post("/api/clients/:id/sessions/:sid/unarchive", sessionStatusMutation("unarchive", (sid, revision) => system.sessions.unarchive(sid, revision)));
+  app.post("/api/clients/:id/sessions/:sid/restore", sessionStatusMutation("restore", (sid, revision) => system.sessions.restore(sid, revision)));
+
+  app.delete("/api/clients/:id/sessions/:sid", async (request) => {
+    const params = SessionParams.parse(request.params);
+    const query = SessionDeleteQuery.parse(request.query);
+    await system.workspace.readClient(params.id);
+    await requireClientSession(params.id, params.sid, { includeDeleted: true });
+    const session = await system.sessions.softDelete(params.sid, query.revision);
+    await auditSession(session, "workspace-owner", "session_delete", { revision: session.revision });
+    publishSession(system, session, "deleted");
+    return session;
+  });
+
+  app.post("/api/clients/:id/sessions/:sid/duplicate", async (request, reply) => {
+    const params = SessionParams.parse(request.params);
+    const body = SessionDuplicateBody.parse(request.body ?? {});
+    await system.workspace.readClient(params.id);
+    const source = await requireClientSession(params.id, params.sid);
+    const copy = await system.sessions.duplicate(params.sid, {
+      ...(body.title !== undefined ? { title: body.title } : {}),
+      ...(body.projectId !== undefined ? { projectId: body.projectId } : {}),
+      ...(body.tags !== undefined ? { tags: body.tags } : {})
+    });
+    try {
+      // Empty sessions have no persisted Pi history yet; there is nothing to copy.
+      const hasHistory = await system.workspace.readText(params.id, `sessions/${resolvePiSessionId(params.id, source.runtimeConversationId)}.jsonl`);
+      if (hasHistory) {
+        await system.runtime.duplicateConversationInto(params.id, source.runtimeConversationId, copy.runtimeConversationId, { actor: body.actor });
+      }
+    } catch (error) {
+      await rollbackCreatedSession(system, copy.id);
+      throw error;
+    }
+    await auditSession(copy, body.actor, "session_duplicate", { sourceSessionId: source.id });
+    publishSession(system, copy, "duplicated");
+    reply.code(201);
+    return copy;
+  });
+
+  app.post("/api/clients/:id/sessions/:sid/branch", async (request, reply) => {
+    const params = SessionParams.parse(request.params);
+    const body = SessionBranchBody.parse(request.body ?? {});
+    await system.workspace.readClient(params.id);
+    const source = await requireClientSession(params.id, params.sid);
+    const branch = await system.sessions.branch(params.sid, {
+      ...(body.title !== undefined ? { title: body.title } : {}),
+      sourceMessageId: body.atMessageId
+    });
+    try {
+      await system.runtime.forkConversationInto(params.id, source.runtimeConversationId, body.atMessageId, branch.runtimeConversationId, { actor: body.actor });
+    } catch (error) {
+      await rollbackCreatedSession(system, branch.id);
+      if (error instanceof SessionError) {
+        const statusCode = error.code === "not_found" ? 404 : 409;
+        return reply.code(statusCode).send({ error: error.message, code: error.code === "not_found" ? "FORK_TARGET_NOT_FOUND" : "FORK_TARGET_UNAVAILABLE" });
+      }
+      throw error;
+    }
+    await auditSession(branch, body.actor, "session_branch", { parentSessionId: source.id, sourceMessageId: body.atMessageId });
+    publishSession(system, branch, "branched");
+    reply.code(201);
+    return branch;
+  });
+
   const planModeParams = z.object({ id: z.string().min(1), cid: z.string().trim().min(1).max(120) });
 
   app.get("/api/clients/:id/conversations/:cid/plan-mode", async (request) => {
@@ -479,6 +755,8 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
   });
 
   app.setErrorHandler((error, _request, reply) => {
+    const sessionError = sessionErrorResponse(error);
+    if (sessionError) return reply.code(sessionError.status).send(sessionError.body);
     const code = errorCode(error);
     reply.status(code === "BROWSER_SESSION_LOST" ? 409 : code === "PRIVACY_MODE_REMOTE_PROVIDER_BLOCKED" ? 403 : 400)
       .send({ error: error instanceof Error ? error.message : String(error), ...(code ? { code } : {}) });
@@ -580,6 +858,76 @@ function publicBrowserSession(session: BrowserSession) {
 function errorCode(error: unknown): string | undefined {
   if (!error || typeof error !== "object" || !("code" in error)) return undefined;
   return typeof error.code === "string" ? error.code : undefined;
+}
+
+/** Maps Session-authority errors onto the REST contract: 404 / 409 (+field detail). */
+function sessionErrorResponse(error: unknown): { status: number; body: Record<string, unknown> } | undefined {
+  if (error instanceof SessionNotFoundError) {
+    return { status: 404, body: { error: error.message, code: "SESSION_NOT_FOUND" } };
+  }
+  if (error instanceof ProjectNotFoundError) {
+    return { status: 404, body: { error: error.message, code: "PROJECT_NOT_FOUND" } };
+  }
+  if (error instanceof RevisionConflictError) {
+    return {
+      status: 409,
+      body: {
+        error: error.message,
+        code: "REVISION_CONFLICT",
+        expectedRevision: error.expectedRevision,
+        actualRevision: error.actualRevision
+      }
+    };
+  }
+  if (error instanceof DeletedSessionError) {
+    return { status: 409, body: { error: error.message, code: "SESSION_DELETED" } };
+  }
+  if (error instanceof PermissionEscalationRequiresApprovalError) {
+    return { status: 409, body: { error: error.message, code: "PERMISSION_ESCALATION_REQUIRES_APPROVAL" } };
+  }
+  return undefined;
+}
+
+/** Session-scoped SSE: every mutation and run-lifecycle change reaches subscribers. */
+function publishSession(system: AdPilotSystem, session: ProductSessionEntity, status: string): void {
+  system.events.publish({
+    type: "session",
+    clientId: session.clientId,
+    sessionId: session.id,
+    status,
+    session
+  });
+}
+
+/**
+ * Resolves a run's model selection from the Session binding. A pinned binding
+ * replaces global routing; a router binding only forces the strong route when
+ * it says so; anything else keeps the existing global router behavior.
+ */
+function sessionModelOverride(binding: ProductSessionEntity["modelBinding"]): SessionModelOverride | undefined {
+  if (binding.mode === "pinned") {
+    return {
+      ref: { provider: binding.providerId, model: binding.modelId },
+      ...(binding.fallbackRoute === "fast" ? { fallbackRoute: "fast" as const } : {})
+    };
+  }
+  return binding.route === "strong" ? { route: "strong" as const } : undefined;
+}
+
+/**
+ * Best-effort compensation when the Pi-history copy behind a freshly created
+ * branch/duplicate Session fails: the new Session carries no legacy mapping
+ * and no user-visible history, so it is soft-deleted and purged rather than
+ * left as an orphan pointing at an empty conversation.
+ */
+async function rollbackCreatedSession(system: AdPilotSystem, sessionId: string): Promise<void> {
+  try {
+    const deleted = await system.sessions.softDelete(sessionId);
+    await system.sessions.permanentPurge(sessionId, deleted.revision);
+  } catch {
+    // The failed endpoint already reports the primary error; the orphaned
+    // session remains listed as deleted for an explicit later purge.
+  }
 }
 
 function conversationErrorMessage(locale: "zh-CN" | "en", detail: string, incidentId: string): string {

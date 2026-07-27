@@ -1,13 +1,13 @@
 import { Agent, DEFAULT_COMPACTION_SETTINGS, Session, estimateContextTokens, prepareCompaction, compact, shouldCompact, type AgentEvent, type AgentMessage, type AgentTool, type CompactionSettings } from "@earendil-works/pi-agent-core";
 import type { Api, Message, Model, Models } from "@earendil-works/pi-ai";
 import { z } from "zod";
-import { ModelRouter, resolvePiModel, type RoutingSignals } from "@adpilot/model-router";
+import { ModelRouter, resolvePiModel, type ModelRef, type RoutingSignals } from "@adpilot/model-router";
 import { SkillRegistry, formatSkillContract } from "@adpilot/skills";
 import type { ToolContext, AdPilotTools } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
 import { AdPilotSessionStorage, resolvePiSessionId } from "./session-storage.js";
 import { ToolPermissionGate } from "./tool-gate.js";
-import { conversationMessageLabel, forkConversationStorage, type ConversationForkResult } from "./conversation-fork.js";
+import { conversationMessageLabel, duplicateConversationStorage, forkConversationStorage, forkConversationStorageInto, type ConversationDuplicateResult, type ConversationForkResult } from "./conversation-fork.js";
 import { isPlanModeSkill, isPlanModeTool, PLAN_MODE_SYSTEM_PROMPT, PlanModeStore, type PlanModeProbe } from "./plan-mode.js";
 import type { AutonomyProbe } from "./autonomy-mode.js";
 
@@ -15,8 +15,8 @@ export { AdPilotSessionStorage, resolvePiSessionId } from "./session-storage.js"
 export type { AdPilotSessionMetadata } from "./session-storage.js";
 export { ToolPermissionGate } from "./tool-gate.js";
 export { AuditRuntimeExtension, sanitizeForAudit } from "./audit-extension.js";
-export { FORK_CUSTOM_ENTRY_TYPE, conversationMessageLabel, forkConversationStorage, resolveForkLeafId } from "./conversation-fork.js";
-export type { ConversationForkResult } from "./conversation-fork.js";
+export { DUPLICATE_CUSTOM_ENTRY_TYPE, FORK_CUSTOM_ENTRY_TYPE, conversationMessageLabel, duplicateConversationStorage, forkConversationStorage, forkConversationStorageInto, resolveForkLeafId } from "./conversation-fork.js";
+export type { ConversationDuplicateResult, ConversationForkResult } from "./conversation-fork.js";
 export { PlanModeState, PlanModeStore, PLAN_MODE_SYSTEM_PROMPT, isPlanModeSkill, isPlanModeTool } from "./plan-mode.js";
 export type { PlanModeProbe } from "./plan-mode.js";
 export { AutonomyMode, AutonomyState, AutonomyStore } from "./autonomy-mode.js";
@@ -50,6 +50,25 @@ export interface RuntimeRequest {
   tools?: AgentTool[];
   allowedSkills?: string[];
   priorMessages?: AgentMessage[];
+  /**
+   * Session-level model binding resolved by the product Session authority.
+   * A pinned `ref` replaces router routing for the run's primary model;
+   * `route` forces a router route when nothing is pinned. Without it the
+   * global router decides, exactly as before.
+   */
+  modelOverride?: SessionModelOverride;
+}
+
+/**
+ * Session-scoped model selection for one run. `ref` pins an exact
+ * provider/model; `fallbackRoute` picks where the one-shot error escalation
+ * goes afterwards (the strong route by default). `route` forces a router
+ * route ("strong") or leaves default routing untouched ("fast").
+ */
+export interface SessionModelOverride {
+  ref?: ModelRef;
+  route?: "fast" | "strong";
+  fallbackRoute?: "fast" | "strong";
 }
 
 export interface RuntimeResult {
@@ -181,13 +200,19 @@ export class PiAgentRuntime {
     const resolvedRequest = this.resolveRequest(request);
     return this.withSessionLock(resolvedRequest.context.sessionId, async () => {
       for (const extension of this.extensions) await extension.beforeRun?.(resolvedRequest.context);
-      const decision = this.router.route(resolvedRequest.signals);
+      const override = resolvedRequest.modelOverride;
+      const decision: { tier: string; ref: ModelRef; reasons: string[] } = override?.ref
+        ? { tier: "session", ref: override.ref, reasons: ["session-pinned model binding"] }
+        : override?.route === "strong"
+          ? this.router.route({ ...resolvedRequest.signals, reviewerEscalated: true })
+          : this.router.route(resolvedRequest.signals);
       let model = resolvePiModel(this.models, decision.ref);
       try {
         let result = await this.execute(resolvedRequest, model, decision.tier, false);
         if (result.messages.some((message) => message.role === "assistant" && message.stopReason === "error") && decision.tier !== "strong") {
-          model = resolvePiModel(this.models, this.router.route({ ...resolvedRequest.signals, reviewerEscalated: true }).ref);
-          result = await this.execute({ ...resolvedRequest, priorMessages: result.messages }, model, "strong", true);
+          const fallbackFast = override?.ref !== undefined && override.fallbackRoute === "fast";
+          model = resolvePiModel(this.models, this.router.route(fallbackFast ? resolvedRequest.signals : { ...resolvedRequest.signals, reviewerEscalated: true }).ref);
+          result = await this.execute({ ...resolvedRequest, priorMessages: result.messages }, model, fallbackFast ? "fast" : "strong", true);
         }
         for (const extension of this.extensions) await extension.afterRun?.(result, resolvedRequest.context);
         return result;
@@ -322,6 +347,95 @@ export class PiAgentRuntime {
           sourceConversationId: result.sourceConversationId,
           sourceMessageId: result.sourceMessageId,
           sourceEntryId: result.sourceEntryId,
+          newConversationId: result.conversationId,
+          newSessionId: result.sessionId,
+          copiedEntries: result.copiedEntries,
+          copiedMessages: result.copiedMessages
+        }
+      });
+      return result;
+    });
+  }
+
+  /**
+   * Same fork semantics as forkConversation, but the new conversation id is
+   * supplied by the caller. The product Session layer passes a freshly created
+   * Session's runtimeConversationId so the product identity and the durable Pi
+   * context stay aligned; provenance rides the same custom entry and audit
+   * record, and the target receives an idle recovery checkpoint.
+   */
+  async forkConversationInto(
+    clientId: string,
+    sourceConversationId: string,
+    atMessageId: string,
+    targetConversationId: string,
+    options: { actor?: string } = {}
+  ): Promise<ConversationForkResult> {
+    const actor = options.actor ?? "workspace-owner";
+    return this.withSessionLock(resolvePiSessionId(clientId, sourceConversationId), async () => {
+      const result = await forkConversationStorageInto(this.workspace, clientId, sourceConversationId, atMessageId, targetConversationId);
+      const targetSession = new Session(await AdPilotSessionStorage.openOrCreate(this.workspace, clientId, result.conversationId));
+      await this.writeCheckpoint(targetSession, {
+        clientId,
+        conversationId: result.conversationId,
+        sessionId: result.sessionId,
+        taskId: crypto.randomUUID(),
+        actor,
+        permission: "OBSERVE",
+        role: actor
+      }, "idle");
+      await this.tools.audit.append({
+        clientId,
+        actor,
+        action: "fork_conversation",
+        status: "succeeded",
+        details: {
+          sourceConversationId: result.sourceConversationId,
+          sourceMessageId: result.sourceMessageId,
+          sourceEntryId: result.sourceEntryId,
+          newConversationId: result.conversationId,
+          newSessionId: result.sessionId,
+          copiedEntries: result.copiedEntries,
+          copiedMessages: result.copiedMessages
+        }
+      });
+      return result;
+    });
+  }
+
+  /**
+   * Duplicates the complete conversation (every session tree entry and every
+   * transcript message) into a caller-supplied new conversation id — again the
+   * freshly created duplicate Session's runtimeConversationId. The source
+   * session lock serializes the copy against in-flight runs; provenance and
+   * the idle recovery checkpoint match the fork path.
+   */
+  async duplicateConversationInto(
+    clientId: string,
+    sourceConversationId: string,
+    targetConversationId: string,
+    options: { actor?: string } = {}
+  ): Promise<ConversationDuplicateResult> {
+    const actor = options.actor ?? "workspace-owner";
+    return this.withSessionLock(resolvePiSessionId(clientId, sourceConversationId), async () => {
+      const result = await duplicateConversationStorage(this.workspace, clientId, sourceConversationId, targetConversationId);
+      const targetSession = new Session(await AdPilotSessionStorage.openOrCreate(this.workspace, clientId, result.conversationId));
+      await this.writeCheckpoint(targetSession, {
+        clientId,
+        conversationId: result.conversationId,
+        sessionId: result.sessionId,
+        taskId: crypto.randomUUID(),
+        actor,
+        permission: "OBSERVE",
+        role: actor
+      }, "idle");
+      await this.tools.audit.append({
+        clientId,
+        actor,
+        action: "duplicate_conversation",
+        status: "succeeded",
+        details: {
+          sourceConversationId: result.sourceConversationId,
           newConversationId: result.conversationId,
           newSessionId: result.sessionId,
           copiedEntries: result.copiedEntries,
