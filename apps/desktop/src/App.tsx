@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getCopy, phaseLabel, phaseTone, nextStepLabel, roleLabel, formatTime, type AppLocale } from "./labels.js";
+import { getCopy, phaseLabel, phaseTone, nextStepLabel, roleLabel, formatTime, pluginsCopy, type AppLocale } from "./labels.js";
 import { appendProductEvent, emptyState, type ConversationMessage, type ProductEvent, type ProductSession, type State } from "./types.js";
 import { isApprovalOpen, type Approval } from "./approvalDisclosure.js";
 import { mergeConversationTimeline, type TimelineInsight } from "./conversationTimeline.js";
@@ -20,6 +20,7 @@ import { Sidebar } from "./components/Sidebar.js";
 import { ConversationFeed } from "./components/ConversationFeed.js";
 import { Composer } from "./components/Composer.js";
 import { MissionZero } from "./components/MissionZero.js";
+import { PluginsView } from "./components/PluginsView.js";
 import type { ComputerControlAction } from "./components/ComputerUseCard.js";
 import { Badge, Button } from "./ui.js";
 import { IconError, IconSettings } from "./icons.js";
@@ -59,6 +60,10 @@ export function App() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const [settingsData, setSettingsData] = useState<SettingsData>();
   const [settingsError, setSettingsError] = useState("");
+  /** Main-area view switch: the conversation, or the plugins catalog. */
+  const [mainView, setMainView] = useState<"chat" | "plugins">("chat");
+  /** Bumped on every plugin SSE event; PluginsView refetches on change. */
+  const [pluginTick, setPluginTick] = useState(0);
   const copy = getCopy(locale);
 
   /** One-time adoption of the server-selected (or most recent) session per client. */
@@ -149,6 +154,8 @@ export function App() {
       if (event.type === "session") {
         const snapshot = event.session;
         if (snapshot) setSessions((current) => applySessionSnapshot(current, snapshot));
+      } else if (event.type === "plugin") {
+        setPluginTick((tick) => tick + 1);
       } else if (event.type === "alert" || event.type === "computer") {
         setState((current) => ({ ...current, events: appendProductEvent(current.events, event) }));
       } else {
@@ -246,7 +253,8 @@ export function App() {
   }
 
   function selectSession(session: ProductSession) {
-    if (session.id === selectedSessionId) return;
+    if (session.id === selectedSessionId && mainView === "chat") return;
+    setMainView("chat");
     setSelectedSessionId(session.id);
     setConversationId(session.runtimeConversationId);
     setInsights([]);
@@ -495,9 +503,18 @@ export function App() {
         onSelectClient={selectClient}
         onJumpToApprovals={jumpToApprovals}
         onOpenSettings={() => openSettings("general")}
+        pluginsLabel={pluginsCopy(locale).nav}
+        pluginsActive={mainView === "plugins"}
+        onShowPlugins={() => setMainView("plugins")}
       />
 
       <main className="main-column">
+        {mainView === "plugins" ? (
+          <div className="main-scroll">
+            <PluginsView locale={locale} clientId={clientId} pluginTick={pluginTick} />
+          </div>
+        ) : (
+        <>
         <div className="main-scroll">
           {error && (
             <div className="error-banner" role="alert">
@@ -583,6 +600,8 @@ export function App() {
             onOpenModelSettings={() => openSettings("models")}
           />
         </div>
+        </>
+        )}
       </main>
 
       <SettingsPanel

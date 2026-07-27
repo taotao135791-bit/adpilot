@@ -11,6 +11,7 @@ import {
   IconPencil,
   IconPin,
   IconPlus,
+  IconPuzzle,
   IconRestore,
   IconSearch,
   IconSettings,
@@ -30,7 +31,7 @@ import {
  * single dot: breathing accent while running, warning while waiting for
  * approval, danger on failure — everything else stays quiet.
  */
-export function Sidebar({ copy, locale, clients, clientId, sessions, searching, selectedSessionId, search, pendingApprovals, collapsed, onToggleCollapsed, onNewSession, onSelectSession, onTogglePin, onRename, onArchive, onRestore, onSearchChange, onSelectClient, onJumpToApprovals, onOpenSettings }: {
+export function Sidebar({ copy, locale, clients, clientId, sessions, searching, selectedSessionId, search, pendingApprovals, collapsed, onToggleCollapsed, onNewSession, onSelectSession, onTogglePin, onRename, onArchive, onRestore, onSearchChange, onSelectClient, onJumpToApprovals, onOpenSettings, pluginsLabel, pluginsActive, onShowPlugins }: {
   copy: ConsoleCopy;
   locale: AppLocale;
   clients: Client[];
@@ -54,6 +55,9 @@ export function Sidebar({ copy, locale, clients, clientId, sessions, searching, 
   onSelectClient: (clientId: string) => void;
   onJumpToApprovals: () => void;
   onOpenSettings: () => void;
+  pluginsLabel: string;
+  pluginsActive: boolean;
+  onShowPlugins: () => void;
 }) {
   const groups = useMemo(() => groupSessions(sessions), [sessions]);
   const [archivedOpen, setArchivedOpen] = useState(false);
@@ -244,6 +248,9 @@ export function Sidebar({ copy, locale, clients, clientId, sessions, searching, 
             </div>
           </div>
         )}
+        <Tooltip content={pluginsLabel} side={collapsed ? "right" : "top"}>
+          <Button variant="subtle" className="icon-button" icon={<IconPuzzle size={17} />} aria-label={pluginsLabel} aria-pressed={pluginsActive} data-active={pluginsActive || undefined} onClick={onShowPlugins} />
+        </Tooltip>
         <Tooltip content={copy.settings} side={collapsed ? "right" : "top"}>
           <Button variant="subtle" className="icon-button" icon={<IconSettings size={17} />} aria-label={copy.settings} onClick={onOpenSettings} />
         </Tooltip>

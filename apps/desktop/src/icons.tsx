@@ -293,3 +293,16 @@ export const IconChip = createIcon(
     <path d="M9 2.5V6M15 2.5V6M9 18v3.5M15 18v3.5M2.5 9H6M2.5 15H6M18 9h3.5M18 15h3.5" />
   </>
 );
+
+export const IconPuzzle = createIcon(
+  <>
+    <path d="M9.5 4.5h5v2.2a1.8 1.8 0 1 0 2 0V4.5h3v5h-2.2a1.8 1.8 0 1 0 0 2h2.2v3h-5v2.2a1.8 1.8 0 1 0-2 0V14.5h-3v-3H7.3a1.8 1.8 0 1 0 0-2h2.2v-5z" />
+  </>
+);
+
+export const IconArrowLeft = createIcon(
+  <>
+    <path d="M19 12H5" />
+    <path d="m11 6-6 6 6 6" />
+  </>
+);

@@ -695,6 +695,199 @@ export function platformLabel(platform: string): string {
   return platform === "google_ads" ? "Google Ads" : platform;
 }
 
+/* ------------------------------------------------------------------ */
+/* Plugins copy                                                        */
+/* ------------------------------------------------------------------ */
+
+const pluginsZh = {
+  nav: "插件",
+  title: "插件",
+  body: "精选目录中的签名插件。广告修改类权限始终显著标识。",
+  backToList: "返回列表",
+  closeView: "返回对话",
+  retry: "重试",
+  loading: "正在读取插件目录",
+  loadFailed: "无法读取插件目录",
+  installedGroup: "已安装",
+  curatedGroup: "精选目录",
+  empty: "目录为空",
+  emptyBody: "精选目录中暂时没有可用插件。",
+  developerModeTitle: "开发者模式已启用",
+  developerModeBody: "目录中存在未签名的已审查插件包；安装未签名插件需要逐次显式确认。",
+  catalogErrorTitle: "插件目录不可用",
+  catalogErrorBody: "目录校验未通过，插件子系统已按失败关闭策略降级；其余功能不受影响。",
+  updateAvailable: "可更新",
+  statusActive: "已启用",
+  statusDisabled: "已禁用",
+  statusNeedsReview: "待权限复核",
+  install: "安装",
+  uninstall: "卸载",
+  disable: "禁用",
+  enable: "启用",
+  updateAction: "更新",
+  actionFailed: "插件操作失败",
+  permissions: "权限",
+  noPermissions: "未声明权限",
+  adsMutation: "广告修改",
+  tools: "工具",
+  noTools: "未声明工具",
+  toolReadOnly: "只读",
+  toolMutable: "可变",
+  signature: "签名",
+  signed: "已签名",
+  unsigned: "未签名",
+  signerFingerprint: "签名指纹",
+  verification: "完整性校验",
+  verificationOk: "校验通过",
+  verificationFailed: "校验失败",
+  review: "审查",
+  reviewApproved: "已通过审查",
+  reviewPending: "审查中",
+  reviewRejected: "审查未通过",
+  version: "版本",
+  developerLabel: "开发者",
+  supervisor: "隔离运行时",
+  logs: "运行日志",
+  logsEmpty: "暂无日志记录",
+  logsShow: "查看日志",
+  logsHide: "收起日志",
+  permReviewTitle: "确认新增权限",
+  permReviewBody: "更新到 {version} 将授予以下新增权限。明确接受后才会继续。",
+  permReviewConfirm: "接受权限并继续",
+  permReviewRemoved: "同时将移除 {count} 项权限",
+  unsignedTitle: "未签名插件 · 高危",
+  unsignedBody: "此插件包没有签名，无法核验发布者身份。只有完全信任来源时才应继续。",
+  unsignedReason: "服务端原因",
+  unsignedConfirm: "仍要继续",
+  cancel: "取消",
+  riskLow: "低",
+  riskMedium: "中",
+  riskHigh: "高",
+  riskCritical: "严重",
+  categoryCapability: "能力",
+  categoryFilesystem: "文件系统",
+  categoryNetwork: "网络",
+  categorySecret: "密钥",
+  categoryBrowser: "浏览器",
+  categoryComputerUse: "电脑控制",
+  categoryAdvertising: "广告数据",
+  categoryStorage: "存储"
+} as const;
+
+const pluginsEn: Record<keyof typeof pluginsZh, string> = {
+  nav: "Plugins",
+  title: "Plugins",
+  body: "Signed plugins from the curated catalog. Advertising-mutation grants are always flagged.",
+  backToList: "Back to list",
+  closeView: "Back to conversation",
+  retry: "Retry",
+  loading: "Loading the plugin catalog",
+  loadFailed: "Could not load the plugin catalog",
+  installedGroup: "Installed",
+  curatedGroup: "Curated",
+  empty: "Catalog is empty",
+  emptyBody: "No plugins are available in the curated catalog yet.",
+  developerModeTitle: "Developer mode is on",
+  developerModeBody: "The catalog contains an unsigned reviewed bundle. Installing unsigned plugins requires explicit per-action confirmation.",
+  catalogErrorTitle: "Plugin catalog unavailable",
+  catalogErrorBody: "Catalog verification failed, so the plugin subsystem degraded fail-closed. Everything else keeps working.",
+  updateAvailable: "Update available",
+  statusActive: "Enabled",
+  statusDisabled: "Disabled",
+  statusNeedsReview: "Permission review",
+  install: "Install",
+  uninstall: "Uninstall",
+  disable: "Disable",
+  enable: "Enable",
+  updateAction: "Update",
+  actionFailed: "Plugin action failed",
+  permissions: "Permissions",
+  noPermissions: "No permissions declared",
+  adsMutation: "Ads mutation",
+  tools: "Tools",
+  noTools: "No tools declared",
+  toolReadOnly: "Read-only",
+  toolMutable: "Mutable",
+  signature: "Signature",
+  signed: "Signed",
+  unsigned: "Unsigned",
+  signerFingerprint: "Signer fingerprint",
+  verification: "Integrity check",
+  verificationOk: "Verified",
+  verificationFailed: "Verification failed",
+  review: "Review",
+  reviewApproved: "Review approved",
+  reviewPending: "Review pending",
+  reviewRejected: "Review rejected",
+  version: "Version",
+  developerLabel: "Developer",
+  supervisor: "Isolation runtime",
+  logs: "Runtime logs",
+  logsEmpty: "No log entries yet",
+  logsShow: "Show logs",
+  logsHide: "Hide logs",
+  permReviewTitle: "Confirm new permissions",
+  permReviewBody: "Updating to {version} grants the following new permissions. Nothing continues until you explicitly accept.",
+  permReviewConfirm: "Accept permissions and continue",
+  permReviewRemoved: "{count} permission(s) will also be removed",
+  unsignedTitle: "Unsigned plugin · high risk",
+  unsignedBody: "This bundle is unsigned, so the publisher identity cannot be verified. Continue only if you fully trust the source.",
+  unsignedReason: "Server reason",
+  unsignedConfirm: "Continue anyway",
+  cancel: "Cancel",
+  riskLow: "Low",
+  riskMedium: "Medium",
+  riskHigh: "High",
+  riskCritical: "Critical",
+  categoryCapability: "Capability",
+  categoryFilesystem: "Filesystem",
+  categoryNetwork: "Network",
+  categorySecret: "Secret",
+  categoryBrowser: "Browser",
+  categoryComputerUse: "Computer use",
+  categoryAdvertising: "Advertising",
+  categoryStorage: "Storage"
+};
+
+export type PluginsCopy = { readonly [K in keyof typeof pluginsZh]: string };
+
+export function pluginsCopy(locale: AppLocale): PluginsCopy {
+  return locale === "zh-CN" ? pluginsZh : pluginsEn;
+}
+
+export function pluginRiskLabel(risk: string, locale: AppLocale): string {
+  const copy = pluginsCopy(locale);
+  const labels: Record<string, string> = { low: copy.riskLow, medium: copy.riskMedium, high: copy.riskHigh, critical: copy.riskCritical };
+  return labels[risk] ?? humanize(risk);
+}
+
+export function pluginStatusLabel(status: string, locale: AppLocale): string {
+  const copy = pluginsCopy(locale);
+  const labels: Record<string, string> = { active: copy.statusActive, disabled: copy.statusDisabled, needs_review: copy.statusNeedsReview };
+  return labels[status] ?? humanize(status);
+}
+
+export function pluginReviewLabel(status: string, locale: AppLocale): string {
+  const copy = pluginsCopy(locale);
+  const labels: Record<string, string> = { approved: copy.reviewApproved, pending: copy.reviewPending, rejected: copy.reviewRejected };
+  return labels[status] ?? humanize(status);
+}
+
+export function pluginCategoryLabel(category: string, locale: AppLocale): string {
+  const copy = pluginsCopy(locale);
+  const labels: Record<string, string> = {
+    capability: copy.categoryCapability,
+    filesystem: copy.categoryFilesystem,
+    network: copy.categoryNetwork,
+    secret: copy.categorySecret,
+    browser: copy.categoryBrowser,
+    "computer-use": copy.categoryComputerUse,
+    advertising: copy.categoryAdvertising,
+    storage: copy.categoryStorage
+  };
+  return labels[category] ?? humanize(category);
+}
+
 export function runtimePlatformLabel(platform: string): string {
   return platform === "darwin" ? "macOS" : platform === "win32" ? "Windows" : "Linux";
 }
