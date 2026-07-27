@@ -615,6 +615,16 @@ function classifySegment(segment: ParsedSegment, context: SegmentContext): Simpl
     return finish(verdict("write", "delegated_execution", `${program} executes a delegated command`), program);
   }
 
+  // macOS open: launching apps and URLs is the local assistant's everyday
+  // action surface, so it is an explicit write-level command (waived from the
+  // approval reference only under full access). Arguments that point at
+  // browser profile stores or other protected paths were already hard-denied
+  // by the token-path check above; the seatbelt profile still confines the
+  // spawned process.
+  if (program === "open") {
+    return finish(verdict("write", "launch_application", "open launches an application, document or URL on the host; a write-level side effect, hard-denied when it references a protected path such as a browser profile store"), program);
+  }
+
   // Whitelisted read programs, with their write-capable flags checked.
   if (READ_PROGRAMS.has(program)) {
     if (program === "sed") {

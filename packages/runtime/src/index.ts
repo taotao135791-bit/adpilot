@@ -9,6 +9,7 @@ import { AdPilotSessionStorage, resolvePiSessionId } from "./session-storage.js"
 import { ToolPermissionGate } from "./tool-gate.js";
 import { conversationMessageLabel, forkConversationStorage, type ConversationForkResult } from "./conversation-fork.js";
 import { isPlanModeSkill, isPlanModeTool, PLAN_MODE_SYSTEM_PROMPT, PlanModeStore, type PlanModeProbe } from "./plan-mode.js";
+import type { AutonomyProbe } from "./autonomy-mode.js";
 
 export { AdPilotSessionStorage, resolvePiSessionId } from "./session-storage.js";
 export type { AdPilotSessionMetadata } from "./session-storage.js";
@@ -18,6 +19,8 @@ export { FORK_CUSTOM_ENTRY_TYPE, conversationMessageLabel, forkConversationStora
 export type { ConversationForkResult } from "./conversation-fork.js";
 export { PlanModeState, PlanModeStore, PLAN_MODE_SYSTEM_PROMPT, isPlanModeSkill, isPlanModeTool } from "./plan-mode.js";
 export type { PlanModeProbe } from "./plan-mode.js";
+export { AutonomyMode, AutonomyState, AutonomyStore } from "./autonomy-mode.js";
+export type { AutonomyProbe } from "./autonomy-mode.js";
 
 export interface RuntimeExtension {
   name: string;
@@ -115,6 +118,13 @@ export interface PiAgentRuntimeOptions {
    * gate denies every non-read classification.
    */
   planMode?: PlanModeProbe;
+  /**
+   * Client-level autonomy probe. In `full_access` the tool gate waives the
+   * executed-approval reference for the general local write surface
+   * (write/edit, write-classified bash). Destructive classifications and
+   * account mutations are never waived.
+   */
+  autonomy?: AutonomyProbe;
 }
 
 export interface RuntimeRecoveryCheckpoint {
@@ -164,7 +174,7 @@ export class PiAgentRuntime {
     this.compactionInstructions = options.compactionInstructions ?? DEFAULT_ADPILOT_COMPACTION_INSTRUCTIONS;
     this.generalReadTools = options.generalReadTools ?? [];
     this.planMode = options.planMode;
-    this.toolGate = new ToolPermissionGate(tools.approvals, tools.audit, this.planMode);
+    this.toolGate = new ToolPermissionGate(tools.approvals, tools.audit, this.planMode, options.autonomy);
   }
 
   async run(request: RuntimeRequest): Promise<RuntimeResult> {

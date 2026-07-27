@@ -78,6 +78,8 @@ export type State = {
   events: ProductEvent[];
   /** Present only when a client is selected (see the server /api/state handler). */
   planMode?: PlanModeState;
+  /** Workspace autonomy switch, carried by /api/state (see autonomy.ts). */
+  autonomy?: { mode?: string };
   computerUse?: { executionStatus?: ComputerExecutionStatus };
   models: ModelStatus;
 };

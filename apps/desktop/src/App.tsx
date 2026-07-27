@@ -5,8 +5,10 @@ import { isApprovalOpen, type Approval } from "./approvalDisclosure.js";
 import { mergeConversationTimeline, type TimelineInsight } from "./conversationTimeline.js";
 import { localInsightCommand } from "./slashCommands.js";
 import { normalizePlanMode, planModeEndpoint, planModeRequestBody } from "./planMode.js";
+import { autonomyEndpoint, autonomyRequestBody, normalizeAutonomy } from "./autonomy.js";
+import { modelChipLabel } from "./composerKeys.js";
 import { SettingsPanel, type SettingsData, type SettingsTab } from "./SettingsPanel.js";
-import { TopBar } from "./components/TopBar.js";
+import { Sidebar } from "./components/Sidebar.js";
 import { ConversationFeed } from "./components/ConversationFeed.js";
 import { Composer } from "./components/Composer.js";
 import { MissionZero } from "./components/MissionZero.js";
@@ -15,11 +17,12 @@ import { Badge, Button } from "./ui.js";
 import { IconError, IconSettings } from "./icons.js";
 
 /**
- * Single-column IA: the conversation feed is the whole product. Approvals,
- * the live computer-use session, and on-demand experiment/audit cards all
- * render inline in the feed; there is no navigation rail or operations
- * rail. Model routing lives in Settings; model readiness only appears as
- * an in-feed banner when chat is not configured.
+ * Codex-style skeleton: a collapsible sidebar (brand, new conversation,
+ * history, workspace + settings) next to a main conversation column. The
+ * main column splits into a scrolling region (banners, task header, feed,
+ * empty state) and a fixed composer dock, so the composer never moves
+ * while the feed scrolls. Approvals, the live computer-use session, and
+ * on-demand insight cards still render inline in the feed.
  */
 export function App() {
   const isNativeDesktop = new URLSearchParams(window.location.search).get("desktop") === "1";
@@ -28,6 +31,7 @@ export function App() {
     const stored = localStorage.getItem("adpilot-theme");
     return stored === "light" || stored === "dark" ? stored : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("adpilot-sidebar") === "collapsed");
   const [state, setState] = useState<State>(emptyState);
   const [clientId, setClientId] = useState("");
   const [conversationId, setConversationId] = useState("primary");
@@ -129,6 +133,7 @@ export function App() {
   );
   const conversationOptions = useMemo(() => [...new Set([...(state.conversations ?? []), conversationId])], [state.conversations, conversationId]);
   const openApprovals = useMemo(() => state.approvals.filter((item) => isApprovalOpen(item.status)), [state.approvals]);
+  const autonomy = normalizeAutonomy(state.autonomy);
 
   function applySettings(data: SettingsData) {
     setSettingsData(data);
@@ -139,8 +144,38 @@ export function App() {
     localStorage.setItem("adpilot-theme", nextTheme);
   }
 
-  async function submitGoal() {
-    const message = goal.trim();
+  function toggleSidebar() {
+    setSidebarCollapsed((current) => {
+      localStorage.setItem("adpilot-sidebar", current ? "expanded" : "collapsed");
+      return !current;
+    });
+  }
+
+  /** New conversation: the server derives the list from messages, so a
+     fresh client-generated id becomes a real conversation on first send. */
+  function newConversation() {
+    const id = `c-${Array.from(crypto.getRandomValues(new Uint8Array(6)), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    setConversationId(id);
+    setInsights([]);
+    void loadState(clientId, id);
+  }
+
+  function selectConversation(next: string) {
+    if (next === conversationId) return;
+    setConversationId(next);
+    setInsights([]);
+    void loadState(clientId, next);
+  }
+
+  function selectClient(next: string) {
+    setClientId(next);
+    setConversationId("primary");
+    setInsights([]);
+    void loadState(next, "primary");
+  }
+
+  async function submitGoal(override?: string) {
+    const message = (override ?? goal).trim();
     if (!message) return;
     const insightKind = localInsightCommand(message);
     if (insightKind) {
@@ -180,6 +215,21 @@ export function App() {
       const body = await response.json();
       if (!response.ok) throw new Error(copy.planModeError);
       setState((current) => ({ ...current, planMode: normalizePlanMode(body) }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  /** Autonomy switch: PUT the desired mode, then quietly confirm by
+     rendering the server-echoed mode — no modal, no banner on success. */
+  async function toggleAutonomy() {
+    if (!clientId) return;
+    const next = autonomy === "guarded" ? "full_access" : "guarded";
+    try {
+      const response = await fetch(autonomyEndpoint(clientId), { method: "PUT", headers: { "content-type": "application/json" }, body: autonomyRequestBody(next) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(copy.autonomyError);
+      setState((current) => ({ ...current, autonomy: { mode: normalizeAutonomy(body) } }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -234,88 +284,108 @@ export function App() {
 
   return (
     <div className="shell" data-theme={theme} data-native={isNativeDesktop}>
-      <TopBar
+      <Sidebar
         copy={copy}
         clients={state.clients}
         clientId={clientId}
+        conversations={conversationOptions}
+        conversationId={conversationId}
         pendingApprovals={openApprovals.length}
-        onSelectClient={(next) => { setClientId(next); setConversationId("primary"); setInsights([]); void loadState(next, "primary"); }}
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={toggleSidebar}
+        onNewConversation={newConversation}
+        onSelectConversation={selectConversation}
+        onSelectClient={selectClient}
         onJumpToApprovals={jumpToApprovals}
         onOpenSettings={() => openSettings("general")}
       />
 
       <main className="main-column">
-        {error && (
-          <div className="error-banner" role="alert">
-            <IconError size={15} />
-            <span>{error}</span>
-            <Button size="sm" variant="subtle" onClick={() => void loadState()}>{copy.retry}</Button>
-          </div>
-        )}
-
-        {!state.models.chatConfigured && (
-          <div className="model-banner" role="status">
-            <span className="model-banner-dot" aria-hidden="true" />
-            <div>
-              <strong>{copy.modelRequired}</strong>
-              <p>{copy.modelBannerBody}</p>
+        <div className="main-scroll">
+          {error && (
+            <div className="error-banner" role="alert">
+              <IconError size={15} />
+              <span>{error}</span>
+              <Button size="sm" variant="subtle" onClick={() => void loadState()}>{copy.retry}</Button>
             </div>
-            <Button size="sm" variant="outline" icon={<IconSettings size={13} />} onClick={() => openSettings("models")}>{copy.configureModel}</Button>
-          </div>
-        )}
+          )}
 
-        {currentTask ? (
-          <>
-            <section className="task-header">
+          {!state.models.chatConfigured && (
+            <div className="model-banner" role="status">
+              <span className="model-banner-dot" aria-hidden="true" />
               <div>
-                <span className="section-kicker">{copy.activeMission} · {currentTask.id.slice(0, 6)}</span>
-                <h1>{currentTask.goal}</h1>
-                <p>{currentTask.nextStep ? nextStepLabel(currentTask.nextStep, locale) : copy.preparingEvidence}</p>
+                <strong>{copy.modelRequired}</strong>
+                <p>{copy.modelBannerBody}</p>
               </div>
-              <Badge tone={phaseTone(currentTask.phase)} variant="soft">{phaseLabel(currentTask.phase, locale)}</Badge>
-            </section>
-            <section className="task-ledger" aria-label={copy.activeMission}>
-              <Metric label={copy.evidenceSteps} value={String(currentTask.completedSteps.length).padStart(2, "0")} />
-              <Metric label={copy.blockers} value={String(currentTask.blockers.length).padStart(2, "0")} />
-              <Metric label={copy.operator} value={currentTask.owner ? roleLabel(currentTask.owner, locale) : copy.agent} compact />
-              <Metric label={copy.reviewWindow} value={currentTask.reviewAt ? formatTime(currentTask.reviewAt, locale) : copy.unscheduled} compact />
-            </section>
-          </>
-        ) : state.messages.length === 0 ? <MissionZero onPick={setGoal} guiReady={state.models.guiConfigured} clients={state.clients.length} locale={locale} /> : null}
+              <Button size="sm" variant="outline" icon={<IconSettings size={13} />} onClick={() => openSettings("models")}>{copy.configureModel}</Button>
+            </div>
+          )}
 
-        {(timeline.length > 0 || submitting) && (
-          <ConversationFeed
+          {currentTask ? (
+            <>
+              <section className="task-header">
+                <div>
+                  <span className="section-kicker">{copy.activeMission} · {currentTask.id.slice(0, 6)}</span>
+                  <h1>{currentTask.goal}</h1>
+                  <p>{currentTask.nextStep ? nextStepLabel(currentTask.nextStep, locale) : copy.preparingEvidence}</p>
+                </div>
+                <Badge tone={phaseTone(currentTask.phase)} variant="soft">{phaseLabel(currentTask.phase, locale)}</Badge>
+              </section>
+              <section className="task-ledger" aria-label={copy.activeMission}>
+                <Metric label={copy.evidenceSteps} value={String(currentTask.completedSteps.length).padStart(2, "0")} />
+                <Metric label={copy.blockers} value={String(currentTask.blockers.length).padStart(2, "0")} />
+                <Metric label={copy.operator} value={currentTask.owner ? roleLabel(currentTask.owner, locale) : copy.agent} compact />
+                <Metric label={copy.reviewWindow} value={currentTask.reviewAt ? formatTime(currentTask.reviewAt, locale) : copy.unscheduled} compact />
+              </section>
+            </>
+          ) : state.messages.length === 0 ? (
+            <div className="empty-stage">
+              <MissionZero onPick={(prompt) => void submitGoal(prompt)} guiReady={state.models.guiConfigured} clients={state.clients.length} locale={locale} />
+            </div>
+          ) : null}
+
+          {(timeline.length > 0 || submitting) && (
+            <ConversationFeed
+              copy={copy}
+              locale={locale}
+              timeline={timeline}
+              experiments={state.experiments}
+              audit={state.audit}
+              computerMode={computerMode}
+              guiConfigured={state.models.guiConfigured}
+              submitting={submitting}
+              onFork={(messageId) => void forkMessage(messageId)}
+              onRiskReview={(approval) => void riskReview(approval)}
+              onApprove={(approval) => void approve(approval)}
+              onCommit={(approval) => void commit(approval)}
+              onComputerControl={(action) => void computerControl(action)}
+            />
+          )}
+        </div>
+
+        <div className="composer-dock">
+          <Composer
             copy={copy}
             locale={locale}
-            timeline={timeline}
-            experiments={state.experiments}
-            audit={state.audit}
-            computerMode={computerMode}
-            guiConfigured={state.models.guiConfigured}
-            conversationOptions={conversationOptions}
-            conversationId={conversationId}
+            goal={goal}
+            onGoalChange={setGoal}
+            chatConfigured={state.models.chatConfigured}
             submitting={submitting}
-            onSelectConversation={(next) => { setConversationId(next); void loadState(clientId, next); }}
-            onFork={(messageId) => void forkMessage(messageId)}
-            onRiskReview={(approval) => void riskReview(approval)}
-            onApprove={(approval) => void approve(approval)}
-            onCommit={(approval) => void commit(approval)}
-            onComputerControl={(action) => void computerControl(action)}
+            onSubmit={() => void submitGoal()}
+            onConfigureModel={() => openSettings("models")}
+            planMode={state.planMode?.enabled === true}
+            planModeDisabled={!clientId}
+            onTogglePlanMode={() => void togglePlanMode()}
+            clients={state.clients}
+            clientId={clientId}
+            onSelectClient={selectClient}
+            autonomy={autonomy}
+            autonomyDisabled={!clientId}
+            onToggleAutonomy={() => void toggleAutonomy()}
+            modelLabel={modelChipLabel(state.models.fast, copy.unassigned)}
+            onOpenModelSettings={() => openSettings("models")}
           />
-        )}
-
-        <Composer
-          copy={copy}
-          locale={locale}
-          goal={goal}
-          onGoalChange={setGoal}
-          chatConfigured={state.models.chatConfigured}
-          submitting={submitting}
-          onSubmit={() => void submitGoal()}
-          planMode={state.planMode?.enabled === true}
-          planModeDisabled={!clientId}
-          onTogglePlanMode={() => void togglePlanMode()}
-        />
+        </div>
       </main>
 
       <SettingsPanel

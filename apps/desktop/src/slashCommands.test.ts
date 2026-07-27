@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { localInsightCommand, matchSlashCompletions, slashCommandSpecs } from "./slashCommands.js";
+import { isNoopCompletion, localInsightCommand, matchSlashCompletions, slashCommandSpecs } from "./slashCommands.js";
 
 describe("slashCommandSpecs", () => {
   it("mirrors the five server commands plus two local insight commands in both locales", () => {
@@ -62,5 +62,23 @@ describe("matchSlashCompletions", () => {
     expect(matchSlashCompletions("/bogus ", "en")).toEqual([]);
     expect(matchSlashCompletions("/audit ", "en")).toEqual([]);
     expect(matchSlashCompletions("/help anything", "en")).toEqual([]);
+  });
+});
+
+describe("isNoopCompletion", () => {
+  it("flags completions whose acceptance leaves the input unchanged", () => {
+    const exact = matchSlashCompletions("/experiments", "en").find((item) => item.label === "/experiments");
+    expect(exact && isNoopCompletion(exact, "/experiments")).toBe(true);
+    const argument = matchSlashCompletions("/report daily", "en")[0];
+    expect(argument && isNoopCompletion(argument, "/report daily")).toBe(true);
+  });
+
+  it("clears candidates that would still change the input", () => {
+    const prefix = matchSlashCompletions("/experimen", "en")[0];
+    expect(prefix && isNoopCompletion(prefix, "/experimen")).toBe(false);
+    const command = matchSlashCompletions("/report", "en").find((item) => item.label === "/report");
+    expect(command && isNoopCompletion(command, "/report")).toBe(false);
+    const sibling = matchSlashCompletions("/audit", "en").find((item) => item.label === "/audit-trail");
+    expect(sibling && isNoopCompletion(sibling, "/audit")).toBe(false);
   });
 });

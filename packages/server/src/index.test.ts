@@ -570,6 +570,49 @@ describe("product server", () => {
   });
 });
 
+describe("autonomy endpoints", () => {
+  it("reads and switches the client-level mode, persists it, and audits both directions", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-autonomy-server-"));
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+    const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
+
+    // Default: guarded.
+    const initial = await server.inject({ method: "GET", url: "/api/clients/personal/autonomy" });
+    expect(initial.statusCode).toBe(200);
+    expect(initial.json()).toMatchObject({ clientId: "personal", mode: "guarded" });
+
+    // Switch to full access: the mode persists and shows up in the state payload.
+    const full = await server.inject({
+      method: "PUT",
+      url: "/api/clients/personal/autonomy",
+      payload: { mode: "full_access", actor: "operator" }
+    });
+    expect(full.statusCode).toBe(200);
+    expect(full.json()).toMatchObject({ mode: "full_access", actor: "operator" });
+    const state = await server.inject({ method: "GET", url: "/api/state?clientId=personal&conversationId=primary" });
+    expect(state.json().autonomy).toMatchObject({ mode: "full_access", actor: "operator" });
+
+    // Switch back; both directions are chained into the audit log.
+    await server.inject({
+      method: "PUT",
+      url: "/api/clients/personal/autonomy",
+      payload: { mode: "guarded", actor: "operator" }
+    });
+    const audit = (await system.audit.list("personal")).filter((event) => event.action === "autonomy_mode_changed");
+    expect(audit.map((event) => event.details)).toEqual([
+      expect.objectContaining({ from: "guarded", to: "full_access" }),
+      expect.objectContaining({ from: "full_access", to: "guarded" })
+    ]);
+    expect(await system.audit.verify("personal")).toBe(true);
+
+    // Input validation and unknown clients are rejected.
+    const badBody = await server.inject({ method: "PUT", url: "/api/clients/personal/autonomy", payload: { mode: "yolo" } });
+    expect(badBody.statusCode).toBe(400);
+    const unknownClient = await server.inject({ method: "GET", url: "/api/clients/nope/autonomy" });
+    expect(unknownClient.statusCode).toBeGreaterThanOrEqual(400);
+    await server.close();
+  });
+});
 describe("plan-mode endpoints", () => {
   it("reads and toggles the conversation-level switch, persists it, and audits both directions", async () => {
     const root = await mkdtemp(join(tmpdir(), "adpilot-plan-mode-server-"));

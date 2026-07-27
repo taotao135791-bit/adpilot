@@ -45,7 +45,7 @@ const zh = {
   agent: "AdPilot 智能体",
   investigating: "正在调查账户事实并调度专业智能体",
   directive: "任务指令",
-  launchHint: "⌘ + Enter 发送 · 输入 / 使用命令",
+  launchHint: "Enter 发送 · Shift + Enter 换行 · 输入 / 使用命令",
   goalPlaceholder: "描述目标、症状和不可改变的业务约束…",
   goalLabel: "任务目标",
   investigatingShort: "调查中",
@@ -156,10 +156,6 @@ const zh = {
   auditTrace: "审计轨迹",
   tracePristine: "暂无审计记录",
   traceBody: "每个关键动作都会留下不可跳过的记录。",
-  heroKicker: "决策智能",
-  heroLine1: "把广告信号",
-  heroLine2: "变成可控的",
-  heroLine3: "行动。",
   heroBody: "把症状交给 AdPilot。它会核验测量、调度专业智能体，并在任何真实修改前停在审批门口。",
   autonomy: "受控\n自治",
   workspaceReady: "工作区",
@@ -188,7 +184,18 @@ const zh = {
   planModeReadOnly: "计划模式 · 只读",
   planModeHint: "只读探索：自由调查并产出编号计划，不做任何修改；关闭后计划走正常审批链执行",
   planModePlaceholder: "计划模式：描述要调查的问题，先产出编号计划，不做任何修改…",
-  planModeError: "切换计划模式失败"
+  planModeError: "切换计划模式失败",
+  newChat: "新建对话",
+  primaryConversation: "主会话",
+  collapseSidebar: "收起侧栏",
+  expandSidebar: "展开侧栏",
+  emptyTitle: "今天优化什么？",
+  insertCommand: "插入斜杠命令",
+  autonomyGuarded: "守护",
+  autonomyFull: "完全访问",
+  autonomyHint: "执行权限：守护模式下真实账户修改必须经审批门；完全访问允许直接执行",
+  autonomyError: "切换自主权模式失败",
+  modelChipHint: "当前日常模型 · 点击打开模型设置"
 } as const;
 
 const en: Record<keyof typeof zh, string> = {
@@ -225,7 +232,7 @@ const en: Record<keyof typeof zh, string> = {
   agent: "AdPilot agent",
   investigating: "Investigating account facts and assigning specialists",
   directive: "Directive",
-  launchHint: "⌘ + Enter to send · type / for commands",
+  launchHint: "Enter to send · Shift + Enter for a newline · type / for commands",
   goalPlaceholder: "Describe the goal, symptoms, and fixed business constraints…",
   goalLabel: "Mission directive",
   investigatingShort: "Investigating",
@@ -336,10 +343,6 @@ const en: Record<keyof typeof zh, string> = {
   auditTrace: "Audit trace",
   tracePristine: "No audit events",
   traceBody: "Every critical action leaves a mandatory record.",
-  heroKicker: "Decision intelligence",
-  heroLine1: "Turn ad signals",
-  heroLine2: "into controlled",
-  heroLine3: "action.",
   heroBody: "Give AdPilot the symptom. It verifies measurement, assigns specialists, and stops at the approval gate before any live change.",
   autonomy: "Controlled\nautonomy",
   workspaceReady: "Workspace",
@@ -368,7 +371,18 @@ const en: Record<keyof typeof zh, string> = {
   planModeReadOnly: "Plan mode · read-only",
   planModeHint: "Read-only exploration: investigate freely and draft a numbered plan; disable to execute it through the normal approval chain",
   planModePlaceholder: "Plan mode: describe what to investigate and get a numbered plan — nothing changes…",
-  planModeError: "Could not switch plan mode"
+  planModeError: "Could not switch plan mode",
+  newChat: "New conversation",
+  primaryConversation: "Primary",
+  collapseSidebar: "Collapse sidebar",
+  expandSidebar: "Expand sidebar",
+  emptyTitle: "What are we optimizing today?",
+  insertCommand: "Insert a slash command",
+  autonomyGuarded: "Guarded",
+  autonomyFull: "Full access",
+  autonomyHint: "Execution permission: Guarded routes every live account change through the approval gate; Full access allows direct execution",
+  autonomyError: "Could not switch autonomy mode",
+  modelChipHint: "Current daily model · click to open model settings"
 };
 
 export type ConsoleCopy = { readonly [K in keyof typeof zh]: string };
@@ -377,15 +391,22 @@ export function getCopy(locale: AppLocale): ConsoleCopy {
   return locale === "zh-CN" ? zh : en;
 }
 
-export function starterGoals(locale: AppLocale): string[] {
+/**
+ * Empty-state suggestion cards: a short display title plus the exact
+ * directive sent when the card is picked. Clicking a card submits the
+ * prompt immediately (Codex-style), it does not stage text in the composer.
+ */
+export function starterCards(locale: AppLocale): { title: string; prompt: string }[] {
   return locale === "zh-CN" ? [
-    "检查投放不足的根因，并给出可审批的预算建议",
-    "审计转化测量是否可信，列出缺失证据",
-    "找出近 7 天 CPA 异常上升的主要驱动因素"
+    { title: "诊断投放不足", prompt: "检查投放不足的根因，并给出可审批的预算建议" },
+    { title: "审计转化测量", prompt: "审计转化测量是否可信，列出缺失证据" },
+    { title: "解析 CPA 异常", prompt: "找出近 7 天 CPA 异常上升的主要驱动因素" },
+    { title: "生成投放日报", prompt: "/report daily" }
   ] : [
-    "Find the cause of underspend and propose an approvable budget change",
-    "Audit conversion measurement and list the missing evidence",
-    "Explain the primary drivers of the seven-day CPA increase"
+    { title: "Diagnose underspend", prompt: "Find the cause of underspend and propose an approvable budget change" },
+    { title: "Audit conversion tracking", prompt: "Audit conversion measurement and list the missing evidence" },
+    { title: "Explain the CPA spike", prompt: "Explain the primary drivers of the seven-day CPA increase" },
+    { title: "Daily performance report", prompt: "/report daily" }
   ];
 }
 

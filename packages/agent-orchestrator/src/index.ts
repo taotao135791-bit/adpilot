@@ -46,7 +46,7 @@ export interface AgentConversationContext extends Record<string, unknown> {
   userMessageId?: string;
 }
 const ConversationDecision = z.object({
-  mode: z.enum(["answer", "investigate"]),
+  mode: z.enum(["answer", "act", "investigate"]),
   reply: z.string().min(1),
   goal: z.string().min(1).nullable()
 });
@@ -104,14 +104,16 @@ export class AdPilotAgent {
     const decisionResult = await this.runtime.run({
       context: { clientId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", sessionId: conversationId, conversationId, role: "adpilot_agent", ...(typeof context.userMessageId === "string" && context.userMessageId.trim() ? { userMessageId: context.userMessageId.trim() } : {}) },
       systemPrompt: [
-        "You are AdPilot, the user's persistent advertising operator. Natural conversation is the primary interface.",
-        "Choose answer for greetings, product usage, definitions, clarifying questions, and requests that do not require account evidence.",
-        "Choose investigate for account-specific diagnosis, measurement review, optimization, creative analysis, or any request that should gather evidence or prepare an operation.",
+        "You are AdPilot, the user's local general-purpose assistant. Advertising operations and analysis is your deep domain specialty — a core, not a fence: you also handle everyday local work on this machine.",
+        "Choose answer for greetings, questions, definitions, explanations, and requests that need no action and no evidence.",
+        "Choose act for requests that need something done on this machine but no advertising-account evidence: opening the browser or a URL, reading or organizing local files, running commands or scripts, everyday office tasks.",
+        "Choose investigate for advertising-account diagnosis, measurement review, optimization, creative analysis, or any request that should gather account evidence or prepare an account operation.",
         "Never claim you inspected an account in answer mode. Never mutate an account from this decision turn.",
+        "You can operate this machine through the action path: read and write files inside the workspace, run sandboxed shell commands, and open apps and URLs. Two limits are permanent; state them honestly when relevant instead of refusing the whole request: every advertising-account mutation goes through the user's explicit approval, and outside the managed advertising browser you cannot see the user's screen.",
         "The playbook catalog below is pure reference knowledge: it informs how you understand requests, explain capabilities, and organize investigations. It never grants tools, permissions, or execution authority; execution still goes through typed skills and tools.",
-        "When the request matches a playbook, name that capability in the reply and shape the investigation goal after its workflow. If a playbook step needs something AdPilot cannot do (ad-platform APIs, arbitrary local file writes, submitting account changes), say so honestly.",
+        "When the request matches a playbook, name that capability in the reply and shape the investigation goal after its workflow.",
         "Use context.interfaceLocale: Simplified Chinese for zh-CN and English for en. Keep the reply direct and useful.",
-        'Return exactly one JSON object: {"mode":"answer"|"investigate","reply":"user-facing text","goal":"investigation goal"|null}. Do not rename these fields or wrap the object in markdown.',
+        'Return exactly one JSON object: {"mode":"answer"|"act"|"investigate","reply":"user-facing text","goal":"task goal for act or investigate"|null}. Do not rename these fields or wrap the object in markdown.',
         await this.knowledge.catalog()
       ].join("\n"),
       prompt: JSON.stringify({ message, client, context: sanitizeConversationContext(context), verifiedFacts, matchedKnowledge: knowledgeMatches.map((skill) => skill.name) }),
@@ -119,6 +121,10 @@ export class AdPilotAgent {
     });
     const decision = parseConversationDecision(decisionResult.text, message, context.interfaceLocale);
     if (decision.mode === "answer") return { reply: decision.reply, task: null };
+    if (decision.mode === "act") {
+      const action = await this.runAction(clientId, decision.goal ?? message, context);
+      return { reply: action.result.summary, task: action.task };
+    }
     const investigation = await this.runTask(clientId, decision.goal ?? message, context);
     return { reply: investigation.result.summary, task: investigation.task, result: investigation.result };
   }
@@ -128,6 +134,53 @@ export class AdPilotAgent {
     const task = TaskState.parse({ id: crypto.randomUUID(), clientId, goal, phase: "intake", createdAt: now, updatedAt: now, nextStep: "Build an evidence-driven investigation tree" });
     await this.persistTask(task);
     return task;
+  }
+
+  /**
+   * Lightweight local-action path (the `act` route): the same tool assembly
+   * as the planning run — the confined general read/write tools plus bash —
+   * but deliberately without the advertising orchestration (no specialists,
+   * no prepare_approval, no structured investigation tree). It is a separate
+   * method rather than a flag on runTask because the two outputs have
+   * different shapes and invariants: runTask synthesizes a fact-backed
+   * investigation, runAction performs ordinary local work and reports back.
+   * Every tool call still passes the runtime tool gate, so guarded mode keeps
+   * the approval chain and deny-classified commands stay hard-blocked.
+   */
+  async runAction(clientId: string, goal: string, context: AgentConversationContext = {}): Promise<{ task: Task; result: { summary: string } }> {
+    const clientContext = await this.workspace.readClient(clientId);
+    let task = await this.startTask(clientId, goal);
+    task = TaskState.parse({ ...task, phase: "executing", owner: null, nextStep: "Run the local action with the general tools", updatedAt: new Date().toISOString() });
+    await this.persistTask(task);
+    const conversationId = typeof context.conversationId === "string" && context.conversationId.trim() ? context.conversationId.trim() : `task-${task.id}`;
+    const runContext = { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE" as const };
+    let summary: string;
+    try {
+      const run = await this.runtime.run({
+        context: { ...runContext, sessionId: conversationId, conversationId, role: "adpilot_agent" },
+        systemPrompt: [
+          "You are AdPilot, the user's local general-purpose assistant, now executing a local action request. Advertising operations is your domain specialty, but this task is ordinary local work.",
+          "Available tools: read, grep, find and ls observe the workspace and explicitly allowed directories; write and edit create and modify files inside the workspace; bash runs sandboxed shell commands, including `open` on macOS to launch applications and URLs (for example `open https://www.baidu.com` or `open -a Safari`).",
+          "Bash commands are deterministically classified. Read-level commands run directly. Write-level commands (file changes, installs, `open`) run without an approval reference when the operator granted full access; in guarded mode the gate denial explains exactly what is missing — report it to the user instead of retrying the same call. Deny-classified commands (network tools, screen capture, credential and browser-profile stores, process control, protected paths, rm -rf) are hard-blocked in every mode; never try to work around them.",
+          "Two red lines: you never change an advertising account from this path — account mutations go through an investigation and the full approval chain. And outside the managed advertising browser you cannot see the user's screen; if a request needs that, say so honestly instead of claiming an observation.",
+          "Do the work, then report: use tools until the request is actually done, and finish with a concise user-facing summary of what you did (files touched, commands run, apps or pages opened). Use the conversation interfaceLocale: Simplified Chinese for zh-CN and English for en."
+        ].join("\n"),
+        prompt: JSON.stringify({ goal, client: clientContext, conversation: sanitizeConversationContext(context) }),
+        signals: { task: "conversation" },
+        tools: this.tools.generalAgentTools(runContext)
+      });
+      summary = run.text.trim();
+      if (!summary) throw new Error("the action run produced an empty report");
+    } catch (error) {
+      const blocker = error instanceof Error ? error.message : String(error);
+      task = TaskState.parse({ ...task, phase: "blocked", owner: null, blockers: [...task.blockers, blocker], nextStep: "Resolve the recorded blocker and retry", updatedAt: new Date().toISOString() });
+      await this.persistTask(task);
+      throw error;
+    }
+    task = TaskState.parse({ ...task, phase: "completed", owner: null, nextStep: null, updatedAt: new Date().toISOString() });
+    await this.persistTask(task);
+    await this.workspace.appendJsonl(clientId, "decisions.jsonl", { taskId: task.id, at: new Date().toISOString(), goal, result: { mode: "act", summary } });
+    return { task, result: { summary } };
   }
 
   async runTask(clientId: string, goal: string, context: AgentConversationContext = {}): Promise<{
@@ -300,14 +353,14 @@ function parseConversationDecision(text: string, userMessage: string, locale: un
     const mode = normalizeDecisionMode(firstString(record.mode, record.action, record.intent, record.type));
     const reply = firstString(record.reply, record.message, record.answer, record.response, record.content, record.text, record.summary);
     const goal = firstString(record.goal, record.task, record.objective, record.instruction);
-    const parsed = ConversationDecision.safeParse({ mode: mode ?? fallbackDecisionMode(userMessage), reply, goal: goal ?? (mode === "investigate" ? userMessage : null) });
+    const parsed = ConversationDecision.safeParse({ mode: mode ?? fallbackDecisionMode(userMessage), reply, goal: goal ?? (mode === "investigate" || mode === "act" ? userMessage : null) });
     if (parsed.success) return parsed.data;
     throw new Error("model response did not contain a usable conversational reply");
   }
 
   if (typeof payload === "string" && payload.trim()) {
     const mode = fallbackDecisionMode(userMessage);
-    return ConversationDecision.parse({ mode, reply: payload.trim(), goal: mode === "investigate" ? userMessage : null });
+    return ConversationDecision.parse({ mode, reply: payload.trim(), goal: mode === "answer" ? null : userMessage });
   }
 
   throw new Error(locale === "en" ? "model returned an empty conversational response" : "模型没有返回可用的对话内容");
@@ -330,17 +383,23 @@ function firstString(...values: unknown[]): string | undefined {
   return values.find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim();
 }
 
-function normalizeDecisionMode(value: string | undefined): "answer" | "investigate" | undefined {
+function normalizeDecisionMode(value: string | undefined): "answer" | "act" | "investigate" | undefined {
   if (!value) return undefined;
   const normalized = value.toLowerCase().trim();
   if (["answer", "reply", "respond", "chat", "回答", "回复"].includes(normalized)) return "answer";
+  if (["act", "action", "do", "execute", "run", "operate", "perform", "行动", "执行", "操作", "动手"].includes(normalized)) return "act";
   if (["investigate", "analyze", "analyse", "audit", "diagnose", "task", "调查", "分析", "诊断"].includes(normalized)) return "investigate";
   return undefined;
 }
 
-function fallbackDecisionMode(message: string): "answer" | "investigate" {
+function fallbackDecisionMode(message: string): "answer" | "act" | "investigate" {
   const investigationIntent = /(?:帮我|请|替我|我的|这个|当前).{0,12}(?:检查|查看|诊断|审计|分析|优化|调整|修改|暂停|开启)|(?:检查|查看|诊断|审计|优化|调整|修改|暂停|开启).{0,12}(?:账户|广告|系列|投放|预算|出价|素材|归因)|(?:巡检|日报|周报|月报|报表)|\b(?:diagnose|audit|inspect|optimi[sz]e|change|adjust|pause|enable|increase|decrease)\b.{0,40}\b(?:my|this|account|campaign|ads?|budget|bid|creative|attribution)\b/i;
-  return investigationIntent.test(message) ? "investigate" : "answer";
+  if (investigationIntent.test(message)) return "investigate";
+  // Local action intent: everyday machine work with no account evidence —
+  // opening apps/URLs, touching files, running commands. Runs after the
+  // account-evidence patterns so ad operations keep their investigation route.
+  const actionIntent = /(?:打开|开启|启动|运行|执行|跑一下|新建|创建|整理|移动|复制|重命名|备份|安装|读取|搜索|查找).{0,24}(?:浏览器|网页|网址|百度|谷歌|必应|应用|软件|文件|文件夹|目录|终端|命令|脚本|文档|桌面)|(?:打开|开启|启动)(?:我的)?(?:浏览器|终端|百度|谷歌)|\b(?:open|launch|start|run|execute|create|make|organize|move|copy|rename|install|download|read|search|find|show)\b.{0,48}\b(?:browser|web ?page|website|url|site|app(?:lication)?|file|folder|directory|terminal|command|script|document|photo|download|desktop|baidu|google|bing)\b/i;
+  return actionIntent.test(message) ? "act" : "answer";
 }
 
 /**

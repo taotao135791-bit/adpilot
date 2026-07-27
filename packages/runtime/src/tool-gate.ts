@@ -3,6 +3,7 @@ import type { ApprovalService } from "@adpilot/approvals";
 import type { ToolContext } from "@adpilot/tools";
 import { classifyToolCall, extractApprovalCredentials, stableJson, type ToolGateRule } from "@adpilot/shared";
 import type { PlanModeProbe } from "./plan-mode.js";
+import type { AutonomyProbe } from "./autonomy-mode.js";
 
 /**
  * Deterministic write-operation gate enforced in Agent.beforeToolCall.
@@ -19,12 +20,22 @@ import type { PlanModeProbe } from "./plan-mode.js";
  * conversation, every non-read classification is denied outright (the
  * read-only tool shrink is the primary mechanism; this is the deterministic
  * backstop for anything that still reached the model's tool list).
+ *
+ * Autonomy mode is the client-level counterweight: in `full_access` the gate
+ * waives the executed-approval reference for the general local write surface
+ * (write/edit and write-classified bash). Destructive classifications — deny
+ * bash verdicts, account-mutation dispatches, commit_approved_action — are
+ * never waived, in any mode.
  */
+/** General local tools whose write-level calls full access lifts from the approval chain. */
+const FULL_ACCESS_WAIVED_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "bash"]);
+
 export class ToolPermissionGate {
   constructor(
     private readonly approvals: ApprovalService,
     private readonly audit: AuditLog,
-    private readonly planMode?: PlanModeProbe
+    private readonly planMode?: PlanModeProbe,
+    private readonly autonomy?: AutonomyProbe
   ) {}
 
   /**
@@ -38,9 +49,18 @@ export class ToolPermissionGate {
     const planModeOn = this.planMode && typeof context.conversationId === "string"
       ? await this.planMode.isEnabled(context.clientId, context.conversationId).catch(() => false)
       : false;
+    // Full access lifts only the write-level approval reference of the general
+    // local tools; destructive classifications (deny bash verdicts, account
+    // mutations) and every non-general tool keep their declared authority.
+    const fullAccessWaiver = !planModeOn && classification === "write" && FULL_ACCESS_WAIVED_TOOLS.has(toolName)
+      && this.autonomy !== undefined
+      ? await this.autonomy.mode(context.clientId).then((mode) => mode === "full_access").catch(() => false)
+      : false;
     const denial = planModeOn
       ? `Plan mode is active for this conversation: ${toolName} is a ${classification} operation and only read-only tools are available. Present the numbered plan and ask the user to disable plan mode to execute it.`
-      : await this.authorize(rule, toolName, args, context);
+      : fullAccessWaiver
+        ? null
+        : await this.authorize(rule, toolName, args, context);
     await this.audit.append({
       clientId: context.clientId,
       taskId: context.taskId,
@@ -53,6 +73,7 @@ export class ToolPermissionGate {
         authority: rule.authority,
         defaulted,
         ...(planModeOn ? { planMode: true } : {}),
+        ...(fullAccessWaiver ? { autonomy: "full_access", approvalReferenceWaived: true } : {}),
         ...(denial ? { reason: denial } : { referenceStatuses: rule.referenceStatuses ?? [] })
       }
     });
@@ -63,7 +84,10 @@ export class ToolPermissionGate {
     if (rule.authority === "self_gated") return null;
     const credentials = extractApprovalCredentials(args);
     if (!credentials) {
-      return `${toolName} is a ${rule.authority === "approval_token" ? "token-gated" : "approval-gated"} operation and the call carried no approvalId. Prepare an approval and reference it explicitly.`;
+      const autonomyHint = rule.authority === "approval_reference" && FULL_ACCESS_WAIVED_TOOLS.has(toolName)
+        ? " If the user asked for a routine local action, tell them this workspace is in guarded mode and they can grant full access (Settings or PUT /api/clients/:id/autonomy) to let local write operations run without an approval reference."
+        : "";
+      return `${toolName} is a ${rule.authority === "approval_token" ? "token-gated" : "approval-gated"} operation and the call carried no approvalId. Prepare an approval and reference it explicitly.${autonomyHint}`;
     }
     const approval = await this.approvals.get(context.clientId, credentials.approvalId).catch(() => undefined);
     if (!approval) return `${toolName} referenced an approval that does not exist`;

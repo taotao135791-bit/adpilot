@@ -55,6 +55,17 @@ export interface SlashCompletion {
 }
 
 /**
+ * True when accepting this completion would leave the input unchanged —
+ * the input already is the completed token ("/experiments", "/report
+ * daily"). The composer needs this to keep Enter meaningful: accepting a
+ * no-op forever would make exact commands impossible to submit, so Enter
+ * on a no-op completion submits instead (see composerKeys.ts).
+ */
+export function isNoopCompletion(item: SlashCompletion, input: string): boolean {
+  return item.apply(input) === input;
+}
+
+/**
  * Completion candidates for the current composer value. Only single-line
  * input starting with "/" completes; anything else returns no candidates.
  * After a complete command token, argument candidates complete by prefix.

@@ -121,10 +121,11 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const computerUse = await computerUseState(system, clientId);
     const models = { ...system.modelStatus, browserSession: computerUse.browserStatus };
     if (!clientId) return { clients, tasks: [], approvals: [], experiments: [], audit: [], messages: [], browserSessions: computerUse.sessions, computerUse, events: [], models };
-    const [tasks, approvals, experiments, audit, messages, settings, planMode] = await Promise.all([
+    const [tasks, approvals, experiments, audit, messages, settings, planMode, autonomy] = await Promise.all([
       system.workspace.listTasks(clientId), system.approvals.list(clientId), system.experiments.list(clientId), system.audit.list(clientId),
       system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage), system.settings.publicView(),
-      system.planMode.get(clientId, query.conversationId)
+      system.planMode.get(clientId, query.conversationId),
+      system.autonomy.get(clientId)
     ]);
     return {
       clients,
@@ -135,6 +136,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       experiments,
       audit,
       planMode,
+      autonomy,
       conversations: [...new Set(messages.map((message) => message.conversationId))],
       messages: messages.filter((message) => message.conversationId === query.conversationId).map((message) => sanitizeLegacyConversationError(message, settings.locale)),
       browserSessions: computerUse.sessions,
@@ -437,6 +439,22 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const state = await system.planMode.set(params.id, params.cid, body.enabled, body.actor);
     system.events.publish({ type: "conversation", clientId: params.id, conversationId: params.cid, status: body.enabled ? "plan_mode_enabled" : "plan_mode_disabled" });
     return { clientId: params.id, conversationId: params.cid, ...state };
+  });
+
+  app.get("/api/clients/:id/autonomy", async (request) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    await system.workspace.readClient(params.id);
+    const state = await system.autonomy.get(params.id);
+    return { clientId: params.id, ...state };
+  });
+
+  app.put("/api/clients/:id/autonomy", async (request) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = z.object({ mode: z.enum(["guarded", "full_access"]), actor: z.string().trim().min(1).max(120).default("workspace-owner") }).parse(request.body);
+    await system.workspace.readClient(params.id);
+    const state = await system.autonomy.set(params.id, body.mode, body.actor);
+    system.events.publish({ type: "task", clientId: params.id, status: body.mode === "full_access" ? "autonomy_full_access" : "autonomy_guarded", message: `Autonomy mode: ${body.mode}` });
+    return { clientId: params.id, ...state };
   });
 
   app.post("/api/clients/:id/alerts", async (request, reply) => {

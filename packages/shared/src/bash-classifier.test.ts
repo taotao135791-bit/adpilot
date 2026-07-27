@@ -212,6 +212,29 @@ describe("bash command classifier: hard deny (no approval can authorize)", () =>
   });
 });
 
+describe("bash command classifier: macOS open (local action surface)", () => {
+  it("classifies opening URLs and applications as an explicit write-level command", () => {
+    for (const command of ["open https://www.baidu.com", "open -a Safari", "open -a 'Google Chrome'", "open notes.md", "open .", "open -R notes.md"]) {
+      const result = verdict(command, ROOT);
+      expect(result.verdict, command).toBe("write");
+      expect(result.commands[0]?.rule, command).toBe("launch_application");
+    }
+  });
+
+  it("still hard-denies open when it points at a browser profile store or other protected path", () => {
+    for (const command of [
+      "open '/Users/x/Library/Application Support/Google/Chrome'",
+      "open -a 'Google Chrome' --args '--user-data-dir=/Users/x/Library/Application Support/Google/Chrome'",
+      "open ~/.ssh",
+      "open ~/Library/Cookies"
+    ]) {
+      const result = verdict(command, ROOT);
+      expect(result.verdict, command).toBe("deny");
+      expect(result.commands.find((item) => item.verdict === "deny")?.rule, command).toBe("protected_path");
+    }
+  });
+});
+
 describe("isProtectedToken", () => {
   it("matches basenames, credential directories and browser stores", () => {
     for (const token of [

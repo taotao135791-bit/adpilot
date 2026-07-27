@@ -1,10 +1,10 @@
-import { getCopy, starterGoals, type AppLocale } from "../labels.js";
+import { getCopy, starterCards, type AppLocale } from "../labels.js";
 import { IconArrowUpRight } from "../icons.js";
 
 /**
- * Empty state for a workspace with no active mission and no messages yet.
- * Keeps the onboarding value (what AdPilot does, three starter goals,
- * readiness at a glance) with one headline and zero decorative motion.
+ * Empty state, Codex-style: one centered headline, a 2×2 grid of
+ * suggestion cards, and the readiness strip underneath. Picking a card
+ * submits its directive immediately — nothing is staged in the composer.
  */
 export function MissionZero({ onPick, guiReady, clients, locale }: {
   onPick: (goal: string) => void;
@@ -16,15 +16,13 @@ export function MissionZero({ onPick, guiReady, clients, locale }: {
   return (
     <section className="mission-zero">
       <div className="mission-copy">
-        <span className="section-kicker">{copy.heroKicker}</span>
-        <h1>{copy.heroLine1}<br /><em>{copy.heroLine2}</em><br />{copy.heroLine3}</h1>
+        <h1>{copy.emptyTitle}</h1>
         <p>{copy.heroBody}</p>
       </div>
-      <div className="starter-list">
-        {starterGoals(locale).map((item: string, index: number) => (
-          <button key={item} className="starter-item" onClick={() => onPick(item)}>
-            <span className="starter-index" aria-hidden="true">0{index + 1}</span>
-            <span className="starter-text">{item}</span>
+      <div className="starter-grid">
+        {starterCards(locale).map((card) => (
+          <button key={card.title} className="starter-card" onClick={() => onPick(card.prompt)}>
+            <span className="starter-card-text">{card.title}</span>
             <IconArrowUpRight size={14} className="starter-arrow" />
           </button>
         ))}

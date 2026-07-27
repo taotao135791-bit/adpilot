@@ -227,3 +227,31 @@ export const IconPlan = createIcon(
     <path d="M10.8 18.2h8.7" />
   </>
 );
+
+export const IconPlus = createIcon(
+  <>
+    <path d="M12 5v14" />
+    <path d="M5 12h14" />
+  </>
+);
+
+export const IconMenu = createIcon(
+  <>
+    <path d="M4 7h16" />
+    <path d="M4 12h16" />
+    <path d="M4 17h16" />
+  </>
+);
+
+export const IconBolt = createIcon(
+  <>
+    <path d="M13 2.5 4.5 13.5H11l-1 8L18.5 10.5H12l1-8z" />
+  </>
+);
+
+export const IconChip = createIcon(
+  <>
+    <rect x="6" y="6" width="12" height="12" rx="2" />
+    <path d="M9 2.5V6M15 2.5V6M9 18v3.5M15 18v3.5M2.5 9H6M2.5 15H6M18 9h3.5M18 15h3.5" />
+  </>
+);

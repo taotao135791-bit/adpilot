@@ -37,7 +37,7 @@ import {
 } from "@adpilot/computer-use";
 import { ExperimentStore } from "@adpilot/experiments";
 import { createPiModels, modelRouterFromEnv, resolvePiModel } from "@adpilot/model-router";
-import { PiAgentRuntime, AuditRuntimeExtension, PlanModeStore } from "@adpilot/runtime";
+import { PiAgentRuntime, AuditRuntimeExtension, AutonomyStore, PlanModeStore } from "@adpilot/runtime";
 import { SkillRegistry } from "@adpilot/skills";
 import { AccountOperator, CreativeStrategist, MediaBuyer, MeasurementReviewer, PerformanceAnalyst, ReportingAnalyst, RiskReviewer, SpecialistCoordinator } from "@adpilot/specialist-agents";
 import { AdPilotTools } from "@adpilot/tools";
@@ -110,6 +110,8 @@ export interface AdPilotSystem {
   runtime: PiAgentRuntime;
   /** Conversation-level plan-mode switch state (persisted conversation metadata). */
   planMode: PlanModeStore;
+  /** Client-level autonomy switch: guarded (default) or full_access. */
+  autonomy: AutonomyStore;
   specialists: SpecialistCoordinator;
   agent: AdPilotAgent;
   alerts: AlertMonitor;
@@ -355,13 +357,14 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   const tools = new AdPilotTools(workspace, audit, approvals, experiments, computer, visualIdentity, browserSessions, visualTableTools, sharedFacts, generalReadRoots);
   const skills = new SkillRegistry();
   const planMode = new PlanModeStore(workspace, audit);
+  const autonomy = new AutonomyStore(workspace, audit);
   const runtime = new PiAgentRuntime(models, router, workspace, skills, tools, [
     {
       name: "product-events",
       onError: (error) => events.publish({ type: "error", message: error.message, retryable: true })
     },
     new AuditRuntimeExtension(audit)
-  ], { generalReadTools: tools.generalReadTools(), planMode });
+  ], { generalReadTools: tools.generalReadTools(), planMode, autonomy });
   const alertMonitor = new AlertMonitor({ workspace, runtime, audit, events });
   runtime.registerExtension(alertMonitor.extension);
   const specialists = new SpecialistCoordinator([
@@ -379,7 +382,7 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   }), sharedFacts, knowledge);
   const connectedSessions = (await browserSessions.list()).filter((session) => session.sessionStatus === "connected");
   return {
-    workspace, settings, credentials, models, audit, approvals, experiments, tools, skills, runtime, planMode, specialists, agent,
+    workspace, settings, credentials, models, audit, approvals, experiments, tools, skills, runtime, planMode, autonomy, specialists, agent,
     alerts: alertMonitor, computer,
     browserSessions, screenshotAudits, visualTableReader, events,
     approvalTokens: new Map(),

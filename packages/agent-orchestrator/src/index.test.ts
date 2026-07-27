@@ -324,8 +324,130 @@ describe("AdPilotAgent integration", () => {
   });
 });
 
-function factIdsFromModelContext(context: unknown): Record<string, string> {
-  const strings: string[] = [];
+describe("AdPilotAgent conversation routing: answer / act / investigate", () => {
+  async function makeAgent(tag: string) {
+    const root = await mkdtemp(join(tmpdir(), `adpilot-${tag}-`));
+    const workspace = new WorkspaceStore(root);
+    await workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
+    const faux = fauxProvider({ provider: "routing-test", models: [{ id: "fast" }, { id: "strong", reasoning: true }] });
+    const models = createModels(); models.setProvider(faux.provider);
+    const router = new ModelRouter({ fast: { provider: "routing-test", model: "fast" }, strong: { provider: "routing-test", model: "strong" }, gui: { provider: "routing-test", model: "fast" } });
+    const audit = new AuditLog(workspace);
+    const tools = new AdPilotTools(workspace, audit, new ApprovalService(workspace, "0123456789abcdef0123456789abcdef"), new ExperimentStore(workspace));
+    const runtime = new PiAgentRuntime(models, router, workspace, new SkillRegistry(), tools);
+    const agent = new AdPilotAgent(runtime, new SpecialistCoordinator([]), workspace, tools);
+    return { root, workspace, faux, agent, audit };
+  }
+
+  const planningReply = () => fauxAssistantMessage(JSON.stringify({
+    summary: "账户诊断完成。",
+    investigationTree: [{ question: "花费是否异常?", specialist: "performance_analyst", status: "complete", conclusion: "未见异常" }],
+    nextStep: "继续观察", proposedApprovalIds: [], reviewAt: null
+  }));
+
+  it("answer replies directly, act runs the local-action loop, investigate keeps the account pipeline", async () => {
+    const { faux, agent } = await makeAgent("routing");
+    const contexts: Array<Record<string, unknown>> = [];
+    const capture = async (context: unknown) => { contexts.push(context as Record<string, unknown>); };
+
+    // answer: pure Q&A, no task, no tools.
+    faux.setResponses([async (context) => { await capture(context); return fauxAssistantMessage('{"mode":"answer","reply":"CPA 是单次转化成本。","goal":null}'); }]);
+    const answer = await agent.respond("client-a", "CPA 是什么意思?", { interfaceLocale: "zh-CN" });
+    expect(answer).toMatchObject({ reply: "CPA 是单次转化成本。", task: null });
+    expect(contexts).toHaveLength(1);
+
+    // act: the decision routes into the local-action loop with the general tools.
+    contexts.length = 0;
+    faux.setResponses([
+      async (context) => { await capture(context); return fauxAssistantMessage('{"mode":"act","reply":"好的，我来打开。","goal":"打开百度"}'); },
+      async (context) => { await capture(context); return fauxAssistantMessage("已在默认浏览器打开百度。"); }
+    ]);
+    const act = await agent.respond("client-a", "打开百度", { interfaceLocale: "zh-CN" });
+    expect(act.reply).toBe("已在默认浏览器打开百度。");
+    expect(act.task?.phase).toBe("completed");
+    // The act loop received exactly the general tool surface — no advertising orchestration.
+    const actionTools = ((contexts[1]?.tools ?? []) as Array<{ name: string }>).map((tool) => tool.name);
+    expect(actionTools).toEqual(expect.arrayContaining(["read", "grep", "find", "ls", "write", "edit", "bash"]));
+    for (const absent of ["dispatch_specialist", "prepare_approval", "commit_approved_action", "read_workspace", "read_visual_table"]) {
+      expect(actionTools, absent).not.toContain(absent);
+    }
+    // The rewritten persona: a local general-purpose assistant with an advertising core, not a fence.
+    const decisionPrompt = String((contexts[0] as { systemPrompt?: unknown }).systemPrompt ?? "");
+    expect(decisionPrompt).toContain("local general-purpose assistant");
+    expect(decisionPrompt).toContain('"answer"|"act"|"investigate"');
+    expect(decisionPrompt).not.toContain("persistent advertising operator");
+    expect(decisionPrompt).not.toContain("If a playbook step needs something AdPilot cannot do");
+
+    // investigate: unchanged account-evidence pipeline through runTask.
+    contexts.length = 0;
+    faux.setResponses([
+      async (context) => { await capture(context); return fauxAssistantMessage('{"mode":"investigate","reply":"好，我来诊断。","goal":"诊断账户花费"}'); },
+      async (context) => { await capture(context); return planningReply(); }
+    ]);
+    const investigation = await agent.respond("client-a", "帮我诊断账户花费", { interfaceLocale: "zh-CN" });
+    expect(investigation.reply).toBe("账户诊断完成。");
+    expect(investigation.task?.phase).toBe("completed");
+    const planningTools = ((contexts[1]?.tools ?? []) as Array<{ name: string }>).map((tool) => tool.name);
+    expect(planningTools).toEqual(expect.arrayContaining(["dispatch_specialist", "prepare_approval"]));
+  });
+
+  it("routes a vague non-JSON reply for 打开浏览器/百度 to the act loop via the deterministic fallback", async () => {
+    const { faux, agent } = await makeAgent("routing-fallback");
+    const contexts: Array<Record<string, unknown>> = [];
+    faux.setResponses([
+      async (context) => { contexts.push(context as unknown as Record<string, unknown>); return fauxAssistantMessage("好的,马上处理。"); },
+      async (context) => { contexts.push(context as unknown as Record<string, unknown>); return fauxAssistantMessage("浏览器已打开。"); }
+    ]);
+    const outcome = await agent.respond("client-a", "打开我的浏览器,打开百度", { interfaceLocale: "zh-CN" });
+    expect(outcome.task).not.toBeNull();
+    expect(outcome.reply).toBe("浏览器已打开。");
+    const actionTools = ((contexts[1]?.tools ?? []) as Array<{ name: string }>).map((tool) => tool.name);
+    expect(actionTools).toContain("bash");
+    // The fallback keeps the user's original request as the act goal.
+    const task = outcome.task!;
+    expect(task.goal).toBe("打开我的浏览器,打开百度");
+  });
+
+  it("act loop tools are real: a read-level bash call executes under the sandbox and is audited", async () => {
+    const { root, faux, agent, audit } = await makeAgent("routing-act-run");
+    let sawToolResult = "";
+    faux.setResponses([
+      fauxAssistantMessage('{"mode":"act","reply":"好的。","goal":"确认当前目录"}'),
+      fauxAssistantMessage(fauxToolCall("bash", { command: "pwd" }), { stopReason: "toolUse" }),
+      async (context) => { sawToolResult = JSON.stringify(context); return fauxAssistantMessage("已确认当前工作目录。"); }
+    ]);
+    const outcome = await agent.respond("client-a", "看一下当前目录在哪", { interfaceLocale: "zh-CN" });
+    expect(outcome.reply).toBe("已确认当前工作目录。");
+    // The tool actually ran inside the sandbox: its result carries the real workspace path.
+    expect(sawToolResult).toContain(root.split("/").pop()!);
+    const bashAudit = (await audit.list("client-a")).filter((event) => event.action === "bash_classify");
+    expect(bashAudit).toHaveLength(1);
+    expect(bashAudit[0]).toMatchObject({ status: "succeeded", details: { verdict: "read", executed: true } });
+    expect(outcome.task?.phase).toBe("completed");
+  });
+
+  it("guarded mode blocks a write-level open call at the gate; the denial reaches the model", async () => {
+    const { faux, agent, audit } = await makeAgent("routing-act-guarded");
+    let toolResultText = "";
+    faux.setResponses([
+      fauxAssistantMessage('{"mode":"act","reply":"好的。","goal":"打开百度"}'),
+      fauxAssistantMessage(fauxToolCall("bash", { command: "open https://www.baidu.com" }), { stopReason: "toolUse" }),
+      async (context) => {
+        toolResultText = JSON.stringify(context);
+        return fauxAssistantMessage("当前处于 guarded 模式,需要你在设置中授予 full access 后我才能直接打开网页。");
+      }
+    ]);
+    const outcome = await agent.respond("client-a", "打开百度", { interfaceLocale: "zh-CN" });
+    expect(outcome.reply).toContain("guarded");
+    expect(toolResultText).toContain("approval-gated");
+    expect(toolResultText).toContain("full access");
+    const gateEvents = (await audit.list("client-a")).filter((event) => event.action === "tool_gate");
+    expect(gateEvents).toHaveLength(1);
+    expect(gateEvents[0]).toMatchObject({ status: "denied", details: { tool: "bash", classification: "write" } });
+  });
+});
+
+function factIdsFromModelContext(context: unknown): Record<string, string> {  const strings: string[] = [];
   const visit = (value: unknown): void => {
     if (typeof value === "string") { strings.push(value); return; }
     if (Array.isArray(value)) { value.forEach(visit); return; }

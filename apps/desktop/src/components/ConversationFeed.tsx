@@ -14,15 +14,16 @@ import { ApprovalCard } from "./ApprovalCard.js";
 import { ComputerUseCard, type ComputerControlAction } from "./ComputerUseCard.js";
 import { AuditCard, ExperimentsCard } from "./InsightCards.js";
 import { Badge, Tooltip } from "../ui.js";
-import { IconAlert, IconBot, IconChevronDown, IconError, IconFork, IconHistory, IconInfo } from "../icons.js";
+import { IconAlert, IconBot, IconError, IconFork, IconInfo } from "../icons.js";
 
 /**
- * The single-column conversation feed: messages, monitoring alerts,
- * approval cards, the live computer-use card, and on-demand insight cards
- * in one chronological stream. Item kinds are pre-merged and pre-sorted by
- * conversationTimeline.ts; this component only renders.
+ * The conversation feed: messages, monitoring alerts, approval cards, the
+ * live computer-use card, and on-demand insight cards in one chronological
+ * stream. Item kinds are pre-merged and pre-sorted by
+ * conversationTimeline.ts; this component only renders. Conversation
+ * switching lives in the sidebar, not in the feed.
  */
-export function ConversationFeed({ copy, locale, timeline, experiments, audit, computerMode, guiConfigured, conversationOptions, conversationId, submitting, onSelectConversation, onFork, onRiskReview, onApprove, onCommit, onComputerControl }: {
+export function ConversationFeed({ copy, locale, timeline, experiments, audit, computerMode, guiConfigured, submitting, onFork, onRiskReview, onApprove, onCommit, onComputerControl }: {
   copy: ConsoleCopy;
   locale: AppLocale;
   timeline: TimelineItem<ConversationMessage, Approval>[];
@@ -30,10 +31,7 @@ export function ConversationFeed({ copy, locale, timeline, experiments, audit, c
   audit: Audit[];
   computerMode: ComputerExecutionStatus;
   guiConfigured: boolean;
-  conversationOptions: string[];
-  conversationId: string;
   submitting: boolean;
-  onSelectConversation: (conversationId: string) => void;
   onFork: (messageId: string) => void;
   onRiskReview: (approval: Approval) => void;
   onApprove: (approval: Approval) => void;
@@ -42,17 +40,6 @@ export function ConversationFeed({ copy, locale, timeline, experiments, audit, c
 }) {
   return (
     <section className="conversation" aria-label={copy.mission}>
-      {conversationOptions.length > 1 && (
-        <div className="conversation-bar">
-          <IconHistory size={14} />
-          <div className="select-wrap">
-            <select value={conversationId} aria-label={copy.conversation} onChange={(event) => onSelectConversation(event.target.value)}>
-              {conversationOptions.map((id) => <option key={id} value={id}>{id}</option>)}
-            </select>
-            <IconChevronDown size={12} />
-          </div>
-        </div>
-      )}
       {timeline.map((item) => {
         switch (item.kind) {
           case "alert":
