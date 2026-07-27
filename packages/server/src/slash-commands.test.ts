@@ -136,12 +136,18 @@ describe("direct-answer renderers", () => {
     expect(zh).toContain("# 能力清单");
   });
 
-  it("renders the help catalog with every command", () => {
+  it("renders the help catalog with every command, desktop-local insight commands included", () => {
     const help = renderSlashHelp("zh-CN");
-    for (const command of ["/report daily", "/report weekly", "/audit", "/approvals", "/skills", "/help"]) {
+    for (const command of ["/report daily", "/report weekly", "/audit", "/approvals", "/skills", "/experiments", "/audit-trail", "/help"]) {
       expect(help).toContain(command);
     }
-    expect(renderSlashHelp("en")).toContain("Slash commands");
+    // The two insight commands have no server handler; help must say the desktop app answers them locally.
+    expect(help).toContain("本地直答");
+    const en = renderSlashHelp("en");
+    expect(en).toContain("Slash commands");
+    expect(en).toContain("/experiments");
+    expect(en).toContain("/audit-trail");
+    expect(en).toContain("answers locally");
   });
 
   it("explains parse failures with usage and a /help hint in both locales", () => {

@@ -183,7 +183,12 @@ const zh = {
   experimentsCommand: "/experiments",
   auditCommand: "/audit-trail",
   recordsTotal: "共 {count} 条",
-  modelBannerBody: "连接对话模型后即可开始任务；模型路由在设置中配置。"
+  modelBannerBody: "连接对话模型后即可开始任务；模型路由在设置中配置。",
+  planMode: "计划模式",
+  planModeReadOnly: "计划模式 · 只读",
+  planModeHint: "只读探索：自由调查并产出编号计划，不做任何修改；关闭后计划走正常审批链执行",
+  planModePlaceholder: "计划模式：描述要调查的问题，先产出编号计划，不做任何修改…",
+  planModeError: "切换计划模式失败"
 } as const;
 
 const en: Record<keyof typeof zh, string> = {
@@ -358,7 +363,12 @@ const en: Record<keyof typeof zh, string> = {
   experimentsCommand: "/experiments",
   auditCommand: "/audit-trail",
   recordsTotal: "{count} total",
-  modelBannerBody: "Connect a chat model to start a mission. Model routing lives in Settings."
+  modelBannerBody: "Connect a chat model to start a mission. Model routing lives in Settings.",
+  planMode: "Plan mode",
+  planModeReadOnly: "Plan mode · read-only",
+  planModeHint: "Read-only exploration: investigate freely and draft a numbered plan; disable to execute it through the normal approval chain",
+  planModePlaceholder: "Plan mode: describe what to investigate and get a numbered plan — nothing changes…",
+  planModeError: "Could not switch plan mode"
 };
 
 export type ConsoleCopy = { readonly [K in keyof typeof zh]: string };

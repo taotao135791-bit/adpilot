@@ -216,3 +216,14 @@ export const IconChevronDown = createIcon(
     <path d="m6 9.5 6 6 6-6" />
   </>
 );
+
+export const IconPlan = createIcon(
+  <>
+    <path d="m4 6.2 1.3 1.3L7.6 5" />
+    <path d="M10.8 6.2h8.7" />
+    <path d="m4 12.2 1.3 1.3 2.3-2.5" />
+    <path d="M10.8 12.2h8.7" />
+    <path d="m4 18.2 1.3 1.3 2.3-2.5" />
+    <path d="M10.8 18.2h8.7" />
+  </>
+);

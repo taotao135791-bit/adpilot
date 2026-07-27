@@ -4,6 +4,7 @@ import { appendProductEvent, emptyState, type ConversationMessage, type ProductE
 import { isApprovalOpen, type Approval } from "./approvalDisclosure.js";
 import { mergeConversationTimeline, type TimelineInsight } from "./conversationTimeline.js";
 import { localInsightCommand } from "./slashCommands.js";
+import { normalizePlanMode, planModeEndpoint, planModeRequestBody } from "./planMode.js";
 import { SettingsPanel, type SettingsData, type SettingsTab } from "./SettingsPanel.js";
 import { TopBar } from "./components/TopBar.js";
 import { ConversationFeed } from "./components/ConversationFeed.js";
@@ -172,6 +173,18 @@ export function App() {
     }
   }
 
+  async function togglePlanMode() {
+    if (!clientId) return;
+    try {
+      const response = await fetch(planModeEndpoint(clientId, conversationId), { method: "POST", headers: { "content-type": "application/json" }, body: planModeRequestBody(state.planMode?.enabled !== true) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(copy.planModeError);
+      setState((current) => ({ ...current, planMode: normalizePlanMode(body) }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
   async function computerControl(action: ComputerControlAction) {
     try {
       const response = await fetch(`/api/computer/${action}`, { method: "POST" });
@@ -299,6 +312,9 @@ export function App() {
           chatConfigured={state.models.chatConfigured}
           submitting={submitting}
           onSubmit={() => void submitGoal()}
+          planMode={state.planMode?.enabled === true}
+          planModeDisabled={!clientId}
+          onTogglePlanMode={() => void togglePlanMode()}
         />
       </main>
 

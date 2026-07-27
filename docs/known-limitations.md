@@ -17,6 +17,11 @@ No known in-scope implementation item is intentionally left as a stub. The follo
 - Model and provider changes require a restart to take effect; the running server keeps the routing it started with.
 - Under `local-only` privacy mode the conversational path blocks remote providers, so a public enterprise gateway endpoint is rejected there even though it is a valid custom provider; loopback and private-network endpoints remain exempt.
 - A transitive UI-TARS dependency emits Node's `punycode` deprecation warning; it does not fail tests or execution.
+- The vendored `bash` tool is macOS-only: it executes exclusively through `/usr/bin/sandbox-exec`, so on other platforms it fails closed and never runs an unsandboxed shell.
+- The in-process `grep` evaluates model-supplied regexes with the JavaScript engine, not ripgrep's RE2; pathological patterns have no ReDoS immunity beyond the tool timeout, so patterns should stay simple.
+- Filesystem walking for `grep`/`find`/`ls` honors a fixed ignore set (`.git`, `node_modules`) rather than full `.gitignore` semantics.
+- A hard-denied bash command can appear at the tool gate as its mapped `destructive` class with a `succeeded` gate decision (the gate only checks approval authority); the full story — the deny verdict, the decisive rule and the non-execution — lives in the tool-side `bash_classify` audit entry with status `denied`.
+- The seatbelt profile intentionally leaves the system temp directories writable; write confinement is "workspace plus temp", not the workspace alone.
 
 ## Next steps
 

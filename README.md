@@ -14,8 +14,11 @@ AdPilot 是一个可本地运行、可审批、可审计的原生广告优化 Ag
 - 原生 Computer Use：产品为每个客户主动启动独立浏览器 Profile，并严格执行 `绑定 PID/窗口/Profile -> 截图 -> 单步 grounding -> 策略检查 -> 原生动作 -> 再截图 -> 独立结果验证`。窗口切换会立即返回 `BROWSER_SESSION_LOST`。
 - 11 个 typed skill 覆盖转化检查、改动评估、创意疲劳、发布检查、归因、报告与实验账本；`execute_skill` 向模型暴露由 zod 派生的输入/输出契约，每次执行校验两侧契约并把 denied/failed/succeeded 及输入输出指纹写入审计链。创建实验必须引用同客户同任务的已执行审批。
 - Runtime 写操作拦截门：模型发起的每次工具调用按声明式规则分为 read/write/destructive，统一在 `beforeToolCall` 拦截；写/破坏性调用必须携带同客户同任务的有效审批引用或令牌，未分类工具 fail-closed 按审批写处理；`commit_approved_action` 对模型保持硬阻断，最终验签仍在 `ApprovalService.consume`。
+- 通用工具与 bash：主 Agent 配备 vendored read/grep/find/ls（path-guard 限定可读根，`.adpilot` 私有子树与凭据路径拒读）、write/edit（限工作区内且过审批门）、bash（确定性命令分类器 + macOS sandbox-exec 无网络 seatbelt 沙箱，不可用即 fail-closed；网络外发、截屏、凭据、进程控制、持久化与 `rm -rf` 一律硬拒，每次分类写入审计链）。
+- 计划模式：会话级只读开关，主 Agent 工具集收缩到只读面并要求产出编号计划；desktop composer 有克制开关，开启后提示"计划模式 · 只读"，切换经 server 端点持久化并留痕审计，关闭后写操作仍走正常审批链。
 - 27 篇广告知识 playbook 在构建期内嵌进产物（`scripts/build-knowledge-data.mjs`），决策轮注入压缩目录与触发匹配、规划轮按需注入全文；它们只是参考知识，不授予任何工具、权限或执行权。
-- 斜杠命令：`/report daily|weekly` 与 `/audit` 展开为 advisory 调查指令走正常对话管线；`/approvals`、`/skills`、`/help` 由服务端直接作答，零模型调用；desktop 提供自动补全与系统卡片。会话可从带锚点的消息 fork 为独立会话，审计留痕。
+- 用户扩展层：`~/.adpilot/skills|prompts` 与工作区 `.adpilot/skills|prompts` 下的 markdown 技能与 prompt 模板（自定义斜杠命令）；同名时工作区覆盖用户级、内置命令始终优先，全部只是建议性文本，不授予任何权限。
+- 斜杠命令：`/report daily|weekly` 与 `/audit` 展开为 advisory 调查指令走正常对话管线；`/approvals`、`/skills`、`/help` 由服务端直接作答，`/experiments`、`/audit-trail` 由 desktop 从 `/api/state` 本地直答，均零模型调用；desktop 提供自动补全与系统卡片。会话可从带锚点的消息 fork 为独立会话，审计留痕。
 - 监控告警：`POST /api/clients/:id/alerts` 提交的告警作为 advisory 用户消息注入运行中会话，无会话时持久化、下轮运行回放；带去重窗口、每客户限流与审计留痕，指标数值必须绑定已验证 Fact ID，告警不授予任何审批权。desktop 有对应告警卡片。
 - 自定义模型供应商：设置页可登记 OpenAI/Anthropic 兼容端点（企业网关或本地推理），密钥保存在本地 `0600` 设置存储且永不明文返回；`local-only` 隐私模式在对话主链路同样阻断远程 provider（回环/内网豁免）。`adpilot providers` 与 `adpilot skills` 可直接查看供应商与 typed skill 清单。
 - 真实修改必须经过可复算的确定性 guardrail、Risk Reviewer、用户批准和五分钟一次性令牌。预算/出价类修改可直接引用同一任务、同一 Campaign 的 `measurement_status`、`campaign_mature`、`learning_phase` 三项已验证截图事实，也可提交转化量、观察天数、学习状态、可见测量状态等原始视觉 Fact，由确定性内核派生并持久化三项最终事实。风险复核、用户批准和执行前都会复验完整来源链；任何缺失、过期、被替代、低置信度或不一致都会停止，不会由模型补全。

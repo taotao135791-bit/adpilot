@@ -238,6 +238,8 @@ export function renderSlashHelp(locale: SlashLocale, userCommands: readonly User
         "- /audit — graded account health check (account-audit skill)",
         "- /approvals — approval history for this workspace, answered directly without a model call",
         "- /skills — capability inventory: typed skills plus the advertising playbook catalog",
+        "- /experiments — active experiments; the desktop app answers locally from workspace state, no model call",
+        "- /audit-trail — audit trace; the desktop app answers locally from workspace state, no model call",
         "- /help — this list"
       ]
     : [
@@ -248,6 +250,8 @@ export function renderSlashHelp(locale: SlashLocale, userCommands: readonly User
         "- /audit — 账户分级体检(account-audit skill)",
         "- /approvals — 查看本工作区的审批历史(服务器直接应答,不经过模型)",
         "- /skills — 能力清单:typed skills 与广告打法手册目录",
+        "- /experiments — 查看进行中的实验(桌面端从工作区状态本地直答,不经过模型)",
+        "- /audit-trail — 查看审计轨迹(桌面端从工作区状态本地直答,不经过模型)",
         "- /help — 本列表"
       ];
   if (userCommands.length) {

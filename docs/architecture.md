@@ -8,6 +8,7 @@
 4. Knowledge is evidence, Skill is a typed workflow, Tool is an executable capability. Markdown cannot grant authority.
 5. No mutation is authorized by model output. Approval state is persisted and verified outside the model.
 6. Every model-initiated tool call passes a declarative permission gate before the tool body runs. Write and destructive calls require a valid approval reference or token; unclassified tools fail closed.
+7. Bash never becomes a back channel around the visual-only red line. A deterministic classifier hard-denies network, capture, credential, process-control and persistence command classes with no approval path, and every executed command runs inside a networkless macOS seatbelt sandbox that holds even if a command was misclassified.
 
 ## Runtime flow
 
@@ -43,17 +44,18 @@ User goal
 | Package | Responsibility | Forbidden responsibility |
 | --- | --- | --- |
 | `agent-orchestrator` | One user-facing task lifecycle and specialist dispatch | Direct account mutation |
-| `application` | Dependency composition, event bus and monitoring-alert delivery | Direct account mutation |
-| `runtime` | Pi sessions, streaming, compaction, tool-permission gate, audit extension, conversation fork | GUI planning loop |
+| `application` | Dependency composition, event bus, monitoring-alert delivery and user skill/prompt-template discovery | Direct account mutation |
+| `runtime` | Pi sessions, streaming, compaction, tool-permission gate, audit extension, conversation fork, plan mode | GUI planning loop |
 | `specialist-agents` | Seven bounded expert roles | Sharing hidden session state |
 | `skills` | Typed prerequisites, outputs and failure rules; audited execution with zod-derived contracts | Direct native I/O |
-| `tools` | Workspace, metrics, approvals, experiments, visual execution | Inventing policy |
+| `tools` | Workspace, metrics, approvals, experiments, visual execution, vendored general tools with their path guards and seatbelt sandbox | Inventing policy |
 | `advertising-core` | Deterministic metrics, UAC policy and replay | Live account credentials |
 | `computer-use` | One-action visual protocol and verification | Overall task planning |
 | `visual-table-reader` | ROI table headers/cells, overlap alignment, normalization and independent review | DOM, OCR services or guessed values |
 | `approvals` | Risk/user state machine and token binding | Exposing tokens to models or HTTP clients |
 | `workspace` | Client isolation and atomic local persistence | Cross-client paths |
 | `audit` | Redacted append-only hash chain | Storing secrets |
+| `shared` | Product contracts, tool-gate rules and the deterministic bash classifier | Granting authority |
 | `server` / `desktop` / `cli` | Product interfaces | Bypassing application services |
 
 ## Persistence
@@ -94,11 +96,21 @@ The desktop user approval UI renders the complete plan plus the surface/account/
 
 A runtime audit extension chains the factual event stream into the same tamper-evident log: every tool call and result (secret-redacted and size-capped, so screenshot payloads never enter the chain), deterministic guardrail decisions, the final model routing decision per run and failed runs. Audit appends are serialized, so concurrent writers cannot fork the hash chain.
 
+## General tools, bash and plan mode
+
+The main agent additionally receives a vendored general tool set (`tools/general`, adapted from pi @ 0.80.10, MIT). `read`, `grep`, `find` and `ls` observe through one shared read-path guard: every path is confined to the client workspace plus explicitly allowed roots, lexical and symlink escapes are rejected before any byte is read, and protected paths — the `.adpilot` private subtree outside its public skills/prompts directories, credential stores, the audit chain and browser profile stores — are never tool-accessible. `write` and `edit` are confined to the workspace and approval-gated at the tool gate exactly like ledger-writing skills. Specialists receive only the read set; bash is main-agent-only.
+
+`bash` is enforced by three independent layers. First, the deterministic, LLM-free classifier in `shared` lexes the command line (quotes, pipes, redirections, command lists, substitutions), classifies every simple command and takes the most severe verdict: whitelisted read-only programs flow at the read level; anything else — redirects, package installs, inline interpreter code, unknown programs, unparseable input — floors at write and requires an executed approval reference of the same client and task; and the threat-model deny classes are refused absolutely with no approval path: network egress/ingress, screen capture and UI scripting, credential and browser profile stores, privilege escalation, process control, scheduled persistence and recursive-force deletion. Second, one protected-path policy is enforced on both sides of the surface: the workspace-aware matcher in `tools/general/protected-paths.ts` backs the path guard and the seatbelt generator, while the classifier mirrors it with root-independent token patterns. Third, execution happens exclusively through macOS `sandbox-exec` with a generated seatbelt profile — no network, writes confined to the workspace and temp directories, protected reads denied — over a child environment stripped of provider credentials. The sandbox fails closed: without `sandbox-exec` the tool refuses to execute rather than degrading to an unsandboxed shell. Every invocation's classification, allowed or denied, is chained into audit as `bash_classify`. Together the deny classes and the OS-level network floor are the mechanism behind invariant 7: bash cannot reach advertising APIs, cookies or pixels directly, so the visual-only red line and the local-only privacy semantics hold for the shell as well.
+
+Plan mode (`runtime/plan-mode.ts`) is a conversation-level read-only switch persisted as workspace metadata. While enabled, the main agent's tool set shrinks to `PLAN_MODE_READ_TOOL_NAMES`, an injected system prompt requires a numbered side-effect-free plan, and the tool gate hard-denies any non-read classification — so plan mode only ever contracts authority and never grants it. The server exposes per-conversation GET/POST plan-mode endpoints, carries the state in `/api/state`, and chains every toggle into the audit log; the desktop renders a composer toggle from that state, and disabling the mode returns the conversation to the normal pipeline where writes still traverse the approval chain.
+
 ## Skills, knowledge and slash commands
 
 Eleven typed skills define validated investigation, evaluation, reporting and experiment workflows. The `reporting_analyst` specialist owns the reporting skills (`daily-report`, `weekly-report`, `account-audit`, `generate-client-report`). The `execute_skill` tool description exposes each allowed skill's input and output contract — field paths, types, required flags and descriptions derived from its zod schema — and `SkillRegistry.execute` validates both ends and appends `denied`/`failed`/`succeeded` outcomes with input/output SHA-256 fingerprints to the audit chain. The experiment-creation skill writes the ledger and must reference the `executed` approval of the same client and task.
 
-Twenty-seven advertising knowledge playbooks are embedded at build time (`scripts/build-knowledge-data.mjs` produces `knowledge-data.generated.ts`), so they load identically from the single-file CLI bundle and the Electron asar. Decision turns inject a compressed catalog plus deterministic trigger matches; planning turns inject selected full texts on demand. Playbooks are reference material only: they grant no tools, permissions or execution authority. Slash commands split into two classes: `/report daily|weekly` and `/audit` expand into advisory investigation directives that travel the normal conversation pipeline, while `/approvals`, `/skills` and `/help` are answered directly by the server from workspace data with no model call.
+Twenty-seven advertising knowledge playbooks are embedded at build time (`scripts/build-knowledge-data.mjs` produces `knowledge-data.generated.ts`), so they load identically from the single-file CLI bundle and the Electron asar. Decision turns inject a compressed catalog plus deterministic trigger matches; planning turns inject selected full texts on demand. Playbooks are reference material only: they grant no tools, permissions or execution authority. Slash commands split into two classes: `/report daily|weekly` and `/audit` expand into advisory investigation directives that travel the normal conversation pipeline, while `/approvals`, `/skills` and `/help` are answered directly by the server from workspace data with no model call. The desktop additionally answers `/experiments` and `/audit-trail` locally from the `/api/state` payload, again with no model call.
+
+Two user extension layers (`application/user-skills.ts`, `application/prompt-templates.ts`) follow the same advisory rule. Markdown skills discovered from `~/.adpilot/skills/` and `<workspace>/.adpilot/skills/` merge into the knowledge catalog — a workspace skill overrides a user-global one, and both override a same-named embedded playbook, which is safe precisely because knowledge grants no authority. Prompt templates from the sibling `prompts/` directories become custom slash commands that expand into an advisory request; built-in commands always win a name conflict because they are bound to typed, audited pipelines while a template is prose. Invalid entries are rejected with recorded reasons, and refresh is incremental on mtime/size.
 
 ## Monitoring alerts and conversation fork
 

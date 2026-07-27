@@ -26,6 +26,16 @@ adpilot logout openai-codex
 
 Settings are stored in `<workspace>/.adpilot/settings.json`; Pi OAuth credentials are stored separately in `<workspace>/.adpilot/pi-auth.json`. Both are private `0600` files. The HTTP settings response contains only configured flags, credential types, and non-secret values.
 
+## Custom compatible providers
+
+Enterprise gateways and local inference servers (llama.cpp, Ollama, vLLM) register as custom providers in Settings → Models, or through the `ADPILOT_CUSTOM_PROVIDERS` environment variable carrying a JSON list:
+
+```dotenv
+ADPILOT_CUSTOM_PROVIDERS='[{"id":"corp-gateway","name":"Corp Gateway","baseUrl":"https://gateway.corp.example/v1","api":"openai-completions","apiKey":"gateway-secret","models":[{"id":"gpt-4o-internal"}]},{"id":"local-llama","name":"Local llama.cpp","baseUrl":"http://127.0.0.1:8080/v1","models":[{"id":"qwen3-8b","vision":true}]}]'
+```
+
+`api` is `openai-completions` (the default) or `anthropic-messages`. `apiKey` is optional for keyless local servers; the model layer then sends a placeholder bearer token. `vision: true` marks a model as image-capable so it can join the Computer Use route. Ids are lowercase slugs and must not collide with built-in Pi provider ids. Saved values live in the private settings store and the settings view exposes only `hasApiKey` per provider, never the key. Under `local-only` privacy mode a public custom endpoint is rejected on the conversational path; loopback and private-network endpoints stay exempt.
+
 ## Automatic Computer Use routing
 
 At startup AdPilot checks the selected Pi models' declared image input, provider authentication and runtime availability. The normal production route is the authenticated image-capable Daily code model, followed by a fresh screenshot/retry and the Deep code model on the third attempt. Normal settings report Computer Use readiness, the selected visual/escalation route, independent verification, browser-session state, current permission, privacy mode, and recent screenshot-disclosure audits.

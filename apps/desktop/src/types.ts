@@ -1,4 +1,5 @@
 import type { Approval } from "./approvalDisclosure.js";
+import type { PlanModeState } from "./planMode.js";
 
 export type Client = { id: string; name: string; industry: string; timezone: string };
 
@@ -75,6 +76,8 @@ export type State = {
   audit: Audit[];
   messages: ConversationMessage[];
   events: ProductEvent[];
+  /** Present only when a client is selected (see the server /api/state handler). */
+  planMode?: PlanModeState;
   computerUse?: { executionStatus?: ComputerExecutionStatus };
   models: ModelStatus;
 };
