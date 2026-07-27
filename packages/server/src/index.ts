@@ -10,6 +10,8 @@ import type { AdPilotSystem } from "@adpilot/application";
 import {
   DeletedSessionError,
   PermissionEscalationRequiresApprovalError,
+  PluginPermissionReviewError,
+  PluginRuntimeError,
   ProjectNotFoundError,
   RevisionConflictError,
   SessionModelBinding,
@@ -91,6 +93,15 @@ const SessionBranchBody = z.object({
 }).strict();
 const SessionDeleteQuery = z.object({ revision: z.coerce.number().int().positive().optional() });
 
+const PluginParams = z.object({ pid: z.string().regex(/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/) });
+const PluginMutationBody = z.object({
+  clientId: z.string().min(1).optional(),
+  actor: z.string().trim().min(1).max(120).default("workspace-owner"),
+  version: z.string().regex(/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/).optional(),
+  allowUnsigned: z.literal(true).optional(),
+  acceptPermissions: z.literal(true).optional()
+}).strict();
+
 export async function createServer(system: AdPilotSystem, options: { uiRoot?: string; onRestartRequested?: () => void } = {}) {
   const app = Fastify({ logger: false });
   type AuthSession = { id: string; providerId: string; status: "running" | "complete" | "failed"; events: AuthEvent[]; prompt?: AuthPrompt; answer?: (value: string) => void; error?: string };
@@ -103,6 +114,9 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       kpi: { primary: "CPA", target: 1, currency: "USD" }
     });
   }
+  // A client now exists: drain boot-time plugin verification findings
+  // (degraded installs, developer-mode fallback) into the audit chain.
+  await system.plugins.flushStartup();
 
   app.get("/api/health", async () => {
     const runtime = await computerUseState(system);
@@ -754,9 +768,44 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     return { clientId: params.id, pending: await system.alerts.pending(params.id) };
   });
 
+  /* ------------------------- curated plugin subsystem ------------------------- */
+
+  const pluginMutation = (
+    action: (pluginId: string, body: z.infer<typeof PluginMutationBody>) => Promise<unknown>,
+    created = false
+  ) => async (request: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => {
+    const params = PluginParams.parse(request.params);
+    const body = PluginMutationBody.parse(request.body ?? {});
+    if (body.clientId) await system.workspace.readClient(body.clientId);
+    await system.plugins.flushStartup();
+    const result = await action(params.pid, body);
+    if (created) reply.code(201);
+    return result;
+  };
+
+  app.get("/api/plugins", async () => {
+    await system.plugins.flushStartup();
+    return system.plugins.catalog();
+  });
+
+  app.get("/api/plugins/:pid", async (request) => {
+    const params = PluginParams.parse(request.params);
+    const query = z.object({ version: z.string().optional() }).parse(request.query);
+    await system.plugins.flushStartup();
+    return system.plugins.details(params.pid, query.version);
+  });
+
+  app.post("/api/plugins/:pid/install", pluginMutation((pid, body) => system.plugins.install(pid, body), true));
+  app.post("/api/plugins/:pid/uninstall", pluginMutation((pid, body) => system.plugins.uninstall(pid, body)));
+  app.post("/api/plugins/:pid/disable", pluginMutation((pid, body) => system.plugins.disable(pid, body)));
+  app.post("/api/plugins/:pid/enable", pluginMutation((pid, body) => system.plugins.enable(pid, body)));
+  app.post("/api/plugins/:pid/update", pluginMutation((pid, body) => system.plugins.update(pid, body)));
+
   app.setErrorHandler((error, _request, reply) => {
     const sessionError = sessionErrorResponse(error);
     if (sessionError) return reply.code(sessionError.status).send(sessionError.body);
+    const pluginError = pluginErrorResponse(error);
+    if (pluginError) return reply.code(pluginError.status).send(pluginError.body);
     const code = errorCode(error);
     reply.status(code === "BROWSER_SESSION_LOST" ? 409 : code === "PRIVACY_MODE_REMOTE_PROVIDER_BLOCKED" ? 403 : 400)
       .send({ error: error instanceof Error ? error.message : String(error), ...(code ? { code } : {}) });
@@ -858,6 +907,62 @@ function publicBrowserSession(session: BrowserSession) {
 function errorCode(error: unknown): string | undefined {
   if (!error || typeof error !== "object" || !("code" in error)) return undefined;
   return typeof error.code === "string" ? error.code : undefined;
+}
+
+/** Maps plugin-runtime errors onto the REST contract: 403 trust, 404 missing, 409 state, 503 degraded. */
+function pluginErrorResponse(error: unknown): { status: number; body: Record<string, unknown> } | undefined {
+  if (!(error instanceof PluginRuntimeError)) return undefined;
+  const code = error.code;
+  const body: Record<string, unknown> = { error: error.message, code };
+  if (error instanceof PluginPermissionReviewError) {
+    return { status: 409, body: { ...body, update: error.update } };
+  }
+  const notFound = new Set(["PLUGIN_NOT_FOUND", "VERSION_NOT_FOUND", "NOT_INSTALLED", "TOOL_NOT_DECLARED"]);
+  const forbidden = new Set([
+    "UNSIGNED_REJECTED",
+    "UNSIGNED_REQUIRES_DEVELOPER_MODE",
+    "SIGNATURE_INVALID",
+    "INTEGRITY_MISMATCH",
+    "UNTRUSTED_SIGNER",
+    "SIGNER_CONTINUITY_VIOLATION",
+    "ACTIVE_BUNDLE_MISMATCH",
+    "STAGED_BUNDLE_MISMATCH",
+    "CAPABILITY_DENIED",
+    "READ_ONLY_CAPABILITY_DENIED",
+    "CAPABILITY_EFFECT_DENIED",
+    "PATH_DENIED",
+    "APPROVAL_RECEIPT_INVALID",
+    "APPROVAL_RECEIPT_MISMATCH",
+    "APPROVAL_RECEIPT_REPLAY"
+  ]);
+  const conflict = new Set([
+    "ALREADY_INSTALLED",
+    "UPDATE_ALREADY_PENDING",
+    "NO_PENDING_UPDATE",
+    "DOWNGRADE_REJECTED",
+    "DATA_DOWNGRADE_REJECTED",
+    "STATE_CAS_FAILED",
+    "PLUGIN_INACTIVE",
+    "RECONCILIATION_REQUIRED",
+    "PLUGIN_MUTABLE_TOOL_GATED",
+    "VERSION_CONFLICT",
+    "APPROVAL_VERIFIER_REQUIRED",
+    "IDEMPOTENCY_KEY_REPLAY",
+    "CORRUPT_STATE",
+    "REVIEW_REQUIRED"
+  ]);
+  const unavailable = new Set([
+    "PLUGIN_CATALOG_UNAVAILABLE",
+    "CURATED_ROOT_MISSING",
+    "TRUST_STORE_MISSING",
+    "PLUGIN_SANDBOX_UNSUPPORTED",
+    "PLUGIN_HOST_MISSING"
+  ]);
+  if (notFound.has(code)) return { status: 404, body };
+  if (forbidden.has(code)) return { status: 403, body };
+  if (conflict.has(code)) return { status: 409, body };
+  if (unavailable.has(code)) return { status: 503, body };
+  return { status: 400, body };
 }
 
 /** Maps Session-authority errors onto the REST contract: 404 / 409 (+field detail). */

@@ -51,6 +51,7 @@ import { AlertMonitor, type AlertDeliveryStatus } from "./alert-monitor.js";
 import { PromptTemplateStore } from "./prompt-templates.js";
 import { createMergedAgentKnowledge, UserSkillStore } from "./user-skills.js";
 import { createSessionAuthority, type SessionAuthority } from "./session-authority.js";
+import { createPluginService, type PluginService } from "./plugins.js";
 
 export { AlertMonitor, renderAlertMessage } from "./alert-monitor.js";
 export type { AlertDeliveryStatus, AlertMonitorOptions, PendingAlertRecord } from "./alert-monitor.js";
@@ -86,6 +87,17 @@ export {
 export type { PromptTemplate, PromptTemplateSummary, PromptTemplateWarning } from "./prompt-templates.js";
 export { createMergedAgentKnowledge, matchSkillSummaries, parseSkillMarkdown, UserSkillStore } from "./user-skills.js";
 export type { UserSkill, UserSkillSource, UserSkillWarning } from "./user-skills.js";
+export { createPluginService, PluginPermissionReviewError, PluginService } from "./plugins.js";
+export type {
+  PluginCatalogResponse,
+  PluginDetailsResponse,
+  PluginMutationOptions,
+  PluginServiceDeps,
+  PluginServiceStatus,
+  PluginToolInvocation,
+  PluginVerificationDto
+} from "./plugins.js";
+export { PluginRuntimeError } from "@adpilot/plugin-runtime";
 
 export interface PublicVisualRuntimeEvent {
   type: VisualRuntimeEvent["type"];
@@ -109,6 +121,7 @@ export type ProductEvent =
   | { type: "alert"; clientId: string; status: AlertDeliveryStatus; alert: MonitoringAlert; conversationId?: string }
   | { type: "conversation"; clientId: string; conversationId: string; status: string; forkedFrom?: string }
   | { type: "session"; clientId: string; sessionId: string; status: string; session: ProductSessionEntity }
+  | { type: "plugin"; clientId: string; pluginId: string; status: string }
   | { type: "error"; clientId?: string; message: string; retryable: boolean };
 
 export class ProductEventBus {
@@ -157,6 +170,8 @@ export interface AdPilotSystem {
   userSkills: UserSkillStore;
   /** User prompt templates backing custom slash commands. */
   promptTemplates: PromptTemplateStore;
+  /** Curated plugin subsystem: catalog, lifecycle, verification, and the isolated tool boundary. */
+  plugins: PluginService;
   modelStatus: {
     fast: string;
     strong: string;
@@ -171,7 +186,7 @@ export interface AdPilotSystem {
   };
 }
 
-export async function createAdPilotSystem(options: { workspaceRoot?: string; env?: NodeJS.ProcessEnv; models?: Models; adpilotHome?: string } = {}): Promise<AdPilotSystem> {
+export async function createAdPilotSystem(options: { workspaceRoot?: string; env?: NodeJS.ProcessEnv; models?: Models; adpilotHome?: string; pluginCatalog?: { repositoryRoot?: string; curatedRoot?: string; trustRoot?: string } } = {}): Promise<AdPilotSystem> {
   const baseEnv = options.env ?? process.env;
   const workspaceRoot = options.workspaceRoot ?? baseEnv.ADPILOT_WORKSPACE ?? resolve(process.cwd(), "workspace");
   const settings = new SettingsStore(workspaceRoot, baseEnv);
@@ -414,6 +429,16 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     type: "task", clientId: task.clientId, status: task.phase, taskId: task.id,
     message: task.owner ? `${task.owner} is working` : task.nextStep ?? task.goal
   }), sharedFacts, knowledge);
+  // The plugin subsystem boots after the audit chain and event bus exist so
+  // every verification finding and lifecycle transition is recorded; a
+  // tampered curated catalog degrades the subsystem, never the product boot.
+  const plugins = await createPluginService({
+    workspace,
+    audit,
+    events,
+    env,
+    ...(options.pluginCatalog ? { roots: options.pluginCatalog } : {})
+  });
   const connectedSessions = (await browserSessions.list()).filter((session) => session.sessionStatus === "connected");
   return {
     workspace, settings, credentials, models, audit, approvals, experiments, tools, skills, runtime, planMode, autonomy, specialists, agent,
@@ -421,7 +446,7 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     alerts: alertMonitor, computer,
     browserSessions, screenshotAudits, visualTableReader, events,
     approvalTokens: new Map(),
-    knowledge, userSkills, promptTemplates,
+    knowledge, userSkills, promptTemplates, plugins,
     modelStatus: {
       fast: `${fastModel.provider}/${fastModel.id}`,
       strong: `${strongModel.provider}/${strongModel.id}`,
