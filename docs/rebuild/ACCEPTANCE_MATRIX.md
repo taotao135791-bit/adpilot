@@ -11,9 +11,9 @@ Status values: `pass`, `partial`, `fail`, `not-run`, `blocked-external`.
 | Session | rename/pin/search/filter/archive/delete/restore/duplicate | fail | not implemented |
 | Session | branch uses globally unique IDs | fail | fork currently reuses message/Pi entry IDs |
 | Session | three Sessions use three models without leakage | fail | no per-session model binding |
-| State | GUI/CLI share one daemon | fail | each constructs a system; Electron can duplicate servers |
+| State | GUI/CLI share one daemon | fail | Electron now reuses one process-lifetime server; CLI still constructs independent systems |
 | Window | expanded native traffic lights unobstructed | pass | directly inspected on current macOS baseline |
-| Window | collapsed/min/max/fullscreen/modes/Retina matrix | not-run | current CSS has collapsed-mode collision risk |
+| Window | collapsed/min/max/fullscreen/modes/Retina matrix | partial | collapsed control moved below traffic lights; full visual matrix remains |
 | Permissions | Screen Recording and Accessibility status | fail | no programmatic detection/UI |
 | Permissions | request/recheck/test/open settings | fail | docs-only manual guidance |
 | Native helper | shipped authenticated helper | fail | production uses `swift -e`/screencapture/nut.js |

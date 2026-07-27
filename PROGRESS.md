@@ -9,6 +9,8 @@ Last updated: 2026-07-27
 - [x] Run frozen install, TypeScript, 515 product tests, 410 advertising-core tests, build, Electron launch, browser capture, `.app` packaging, and codesign verification.
 - [x] Inspect the real native macOS window and traffic lights.
 - [x] Create the rebuild architecture and acceptance documents.
+- [x] Keep one Electron Runtime/Server alive across macOS window close and Dock reactivation.
+- [x] Move the collapsed native sidebar control below the macOS traffic-light zone.
 - [ ] Implement the durable Session Service and single-writer boundary.
 - [ ] Implement the authenticated native helper and Permission Center foundation.
 - [ ] Implement the curated plugin runtime foundation.

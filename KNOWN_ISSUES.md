@@ -6,7 +6,6 @@ Last updated: 2026-07-27
 
 - No single daemon/single-writer boundary; multiple runtimes can corrupt session branch selection and audit integrity.
 - Session is not yet a first-class product entity and has no metadata/lifecycle/per-session model or permission state.
-- Electron can create another system/server after its window is closed and the app is reactivated.
 - Computer Use has no shipped native helper or Permission Center.
 - Computer Use state and browser binding are global rather than session/task scoped.
 - Live View contains no live screenshot pixels.

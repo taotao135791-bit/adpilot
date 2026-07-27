@@ -299,7 +299,11 @@ select {
 }
 .shell[data-native="true"] .sidebar-head { padding-left: 88px; -webkit-app-region: drag; }
 .shell[data-native="true"] .sidebar-head button { -webkit-app-region: no-drag; }
-.shell[data-native="true"] .sidebar[data-collapsed] .sidebar-head { padding-left: 10px; }
+.shell[data-native="true"] .sidebar[data-collapsed] .sidebar-head {
+  /* In a 60px rail there is no safe horizontal slot beside all three macOS
+     traffic lights. Move the rail control below the native titlebar instead. */
+  padding: 42px 0 8px;
+}
 .sidebar-head .brand { flex: 1; min-width: 0; }
 .sidebar-toggle {
   flex: none;

@@ -4,12 +4,13 @@ import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, session, shell } from "electron";
 import { createAdPilotSystem } from "@adpilot/application";
 import { createServer } from "@adpilot/server";
+import { DesktopRuntimeLifecycle } from "./runtime-lifecycle.js";
 import { isExternalWebUrl, isTrustedDesktopUrl } from "./security.js";
 
 let mainWindow: BrowserWindow | undefined;
-let localServer: Awaited<ReturnType<typeof createServer>> | undefined;
 let isQuitting = false;
 const moduleDirectory = fileURLToPath(new URL(".", import.meta.url));
+const runtimeLifecycle = new DesktopRuntimeLifecycle<Awaited<ReturnType<typeof createServer>>>();
 
 app.setName("AdPilot");
 
@@ -28,14 +29,17 @@ function desktopUiRoot(): string {
 async function openDesktop(): Promise<void> {
   if (mainWindow) { mainWindow.show(); mainWindow.focus(); return; }
 
-  loadEnvironment();
-  const workspaceRoot = process.env.ADPILOT_WORKSPACE ?? join(app.getPath("userData"), "workspace");
-  const system = await createAdPilotSystem({ workspaceRoot });
-  localServer = await createServer(system, {
-    uiRoot: desktopUiRoot(),
-    onRestartRequested: () => { app.relaunch(); app.quit(); }
+  const runtime = await runtimeLifecycle.ensure(async () => {
+    loadEnvironment();
+    const workspaceRoot = process.env.ADPILOT_WORKSPACE ?? join(app.getPath("userData"), "workspace");
+    const system = await createAdPilotSystem({ workspaceRoot });
+    const server = await createServer(system, {
+      uiRoot: desktopUiRoot(),
+      onRestartRequested: () => { app.relaunch(); app.quit(); }
+    });
+    const url = await server.listen({ host: "127.0.0.1", port: 0 });
+    return { server, url };
   });
-  const localUrl = await localServer.listen({ host: "127.0.0.1", port: 0 });
 
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   mainWindow = new BrowserWindow({
@@ -55,7 +59,7 @@ async function openDesktop(): Promise<void> {
     }
   });
 
-  const origin = new URL(localUrl).origin;
+  const origin = new URL(runtime.url).origin;
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (isTrustedDesktopUrl(url, origin)) return { action: "allow" };
     if (isExternalWebUrl(url)) void shell.openExternal(url);
@@ -68,7 +72,7 @@ async function openDesktop(): Promise<void> {
   });
   mainWindow.once("ready-to-show", () => mainWindow?.show());
   mainWindow.on("closed", () => { mainWindow = undefined; });
-  await mainWindow.loadURL(`${localUrl}?desktop=1`);
+  await mainWindow.loadURL(`${runtime.url}?desktop=1`);
 }
 
 app.whenReady().then(async () => {
@@ -84,8 +88,8 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", (event) => {
-  if (isQuitting || !localServer) return;
+  if (isQuitting || !runtimeLifecycle.current()) return;
   event.preventDefault();
   isQuitting = true;
-  void localServer.close().finally(() => app.quit());
+  void runtimeLifecycle.close((server) => server.close()).finally(() => app.quit());
 });

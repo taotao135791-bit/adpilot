@@ -44,11 +44,11 @@ Scope: tracked product code, desktop shell, runtime, persistence, Computer Use, 
 - Recovery checkpoints are written but never read. They document a crash; they do not resume it.
 - Fork currently reuses copied Pi entry IDs and human transcript message IDs, so those IDs are not globally unique.
 - Session and audit locks are process-local. Two AdPilot runtimes writing the same workspace can fork the audit chain or lose a session branch.
-- Electron recreates a full system/server on a later app activation after the window closed without first closing the old server. CLI commands also create independent systems instead of acting as clients of one daemon.
+- Baseline finding: Electron recreated a full system/server after window close and later activation. A process-lifetime lifecycle controller now coalesces startup and reuses that Runtime; CLI commands still create independent systems instead of acting as daemon clients.
 
 ### Desktop and permissions
 
-- Expanded sidebar traffic-light spacing is currently visible, but collapsed mode removes the safe inset and can place its menu control in the native traffic-light region.
+- Baseline finding: collapsed mode removed the safe inset and could place its menu control in the native traffic-light region. The collapsed native control is now placed below the traffic-light zone; a full native visual matrix remains.
 - There is no permanent native titlebar-safe row and no real Electron visual regression suite.
 - There is no preload or narrow privileged IPC bridge.
 - There is no Permission Center, first-run permission onboarding, permission status model, recheck/test flow, or programmatic System Settings navigation.
