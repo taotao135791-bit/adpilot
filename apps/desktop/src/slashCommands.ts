@@ -24,8 +24,23 @@ export function slashCommandSpecs(locale: AppLocale): SlashCommandSpec[] {
     { name: "/audit", args: [], description: zh ? "账户分级体检(account-audit)" : "Graded account health check (account-audit)" },
     { name: "/approvals", args: [], description: zh ? "查看审批历史(直接应答)" : "Approval history (answered directly)" },
     { name: "/skills", args: [], description: zh ? "能力清单与打法手册目录" : "Capability inventory and playbook catalog" },
-    { name: "/help", args: [], description: zh ? "命令列表与用法" : "List every command with usage" }
+    { name: "/help", args: [], description: zh ? "命令列表与用法" : "List every command with usage" },
+    { name: "/experiments", args: [], description: zh ? "查看进行中的实验(本地直答)" : "Active experiments (answered locally)" },
+    { name: "/audit-trail", args: [], description: zh ? "查看审计轨迹(本地直答)" : "Audit trace (answered locally)" }
   ];
+}
+
+/**
+ * Maps a composer input to a locally answered insight card, or null when
+ * the input is not a local insight command. Insight commands have no
+ * server handler; the app answers them from /api/state data. Exact match
+ * only — arguments are not supported.
+ */
+export function localInsightCommand(input: string): "experiments" | "audit" | null {
+  const trimmed = input.trim();
+  if (trimmed === "/experiments") return "experiments";
+  if (trimmed === "/audit-trail") return "audit";
+  return null;
 }
 
 export interface SlashCompletion {

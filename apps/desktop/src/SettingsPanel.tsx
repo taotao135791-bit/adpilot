@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "./ui.js";
 import { IconDismiss } from "./icons.js";
-import { settingsCopy, type AppLocale } from "./labels.js";
+import { computerUseCopy, localizeRuntimeValue, settingsCopy, type AppLocale } from "./labels.js";
 import { ComputerUseSettings } from "./ComputerUseSettings.js";
 
 type SettingsField = { env: string; label: { zh: string; en: string }; secret: boolean; required?: boolean; placeholder?: string };
@@ -220,6 +220,9 @@ export function SettingsPanel({ open, data, clientId, initialTab = "general", lo
               <ModelRoute label={text.strongRoute} hint={text.strongHint} selection={models.strong} providers={data.catalog.providers} providerLabel={text.provider} modelLabel={text.model} visionLabel={text.visionCapability} onProvider={(provider) => changeProvider("strong", provider)} onModel={(model) => setModels({ ...models, strong: { ...models.strong, model } })} />
             </div>
             <div className="settings-divider" />
+            <div className="subsection-heading"><div><span>{text.runtimeRoutes}</span><h3>{text.runtimeRoutesTitle}</h3></div></div>
+            <RuntimeRoutes runtime={data.runtimeModels} locale={locale} />
+            <div className="settings-divider" />
             <div className="subsection-heading"><div><span>{text.providerConnection}</span><h3>{text.credentials}</h3></div><small>{data.catalog.providers.length} {text.providers}</small></div>
             <label className="settings-field"><span>{text.provider}</span><select value={credentialProvider} onChange={(event) => setCredentialProvider(event.target.value)}>{data.catalog.providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></label>
             {selectedProvider && <div className="provider-summary"><div><strong>{selectedProvider.name}</strong><span>{selectedProvider.models.length} {text.modelsCount} · {selectedProvider.auth.apiKey ? text.apiKey : ""}{selectedProvider.auth.apiKey && selectedProvider.auth.oauth ? " · " : ""}{selectedProvider.auth.oauth ? "OAuth" : ""}</span></div><i data-ready={Boolean(data.providerConfigured[selectedProvider.id])} /></div>}
@@ -259,6 +262,23 @@ function Segmented({ value, options, onChange }: { value: string; options: Array
 function ModelRoute({ label, hint, selection, providers, providerLabel, modelLabel, visionLabel, onProvider, onModel }: { label: string; hint: string; selection: { provider: string; model: string }; providers: CatalogProvider[]; providerLabel: string; modelLabel: string; visionLabel: string; onProvider: (provider: string) => void; onModel: (model: string) => void }) {
   const provider = providers.find((item) => item.id === selection.provider);
   return <article className="route-card"><header><span>{label}</span><small>{hint}</small></header><label><span>{providerLabel}</span><select value={selection.provider} onChange={(event) => onProvider(event.target.value)}>{providers.filter((item) => item.models.length).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label><span>{modelLabel}</span><select value={selection.model} onChange={(event) => onModel(event.target.value)}>{provider?.models.map((model) => <option key={model.id} value={model.id}>{model.name} · {Math.round(model.contextWindow / 1000)}k{model.vision ? ` · ${visionLabel}` : ""}</option>)}</select></label></article>;
+}
+
+/** Read-only view of the runtime's effective routing (the former rail model grid). */
+function RuntimeRoutes({ runtime, locale }: { runtime: SettingsData["runtimeModels"]; locale: AppLocale }) {
+  const computerText = computerUseCopy(locale);
+  const routes = [
+    { label: computerText.dailyModel, value: runtime.fast, configured: runtime.chatConfigured },
+    { label: computerText.deepModel, value: runtime.strong, configured: Boolean(runtime.strong) },
+    { label: computerText.groundingModel, value: runtime.gui, configured: runtime.guiConfigured },
+    { label: computerText.verificationModel, value: runtime.guiStrong, configured: runtime.guiConfigured }
+  ];
+  return <div className="runtime-route-grid">
+    {routes.map((route) => <div className="runtime-route-item" key={route.label} data-ready={route.configured}>
+      <span>{route.label}</span>
+      <strong>{localizeRuntimeValue(route.value, locale)}</strong>
+    </div>)}
+  </div>;
 }
 
 function OAuthConnection({ session, connected, input, text, onInput, onStart, onRespond, onDisconnect }: { session: AuthSession | undefined; connected: boolean; input: string; text: ReturnType<typeof settingsCopy>; onInput: (value: string) => void; onStart: () => void; onRespond: (value: string) => void; onDisconnect: () => void }) {

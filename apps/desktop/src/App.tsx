@@ -1,19 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCopy, phaseLabel, phaseTone, nextStepLabel, roleLabel, formatTime, type AppLocale } from "./labels.js";
-import { appendProductEvent, emptyState, type ProductEvent, type State } from "./types.js";
-import type { Approval } from "./approvalDisclosure.js";
-import { mergeConversationTimeline } from "./conversationTimeline.js";
+import { appendProductEvent, emptyState, type ConversationMessage, type ProductEvent, type State } from "./types.js";
+import { isApprovalOpen, type Approval } from "./approvalDisclosure.js";
+import { mergeConversationTimeline, type TimelineInsight } from "./conversationTimeline.js";
+import { localInsightCommand } from "./slashCommands.js";
 import { SettingsPanel, type SettingsData, type SettingsTab } from "./SettingsPanel.js";
-import { TopBar, NavRail, type NavTarget } from "./components/TopBar.js";
+import { TopBar } from "./components/TopBar.js";
 import { ConversationFeed } from "./components/ConversationFeed.js";
 import { Composer } from "./components/Composer.js";
 import { MissionZero } from "./components/MissionZero.js";
-import { ComputerUsePanel, type ComputerControlAction } from "./components/ComputerUsePanel.js";
-import { AgentRail, Empty } from "./components/AgentRail.js";
-import { ApprovalQueue } from "./components/ApprovalCard.js";
+import type { ComputerControlAction } from "./components/ComputerUseCard.js";
 import { Badge, Button } from "./ui.js";
-import { IconError } from "./icons.js";
+import { IconError, IconSettings } from "./icons.js";
 
+/**
+ * Single-column IA: the conversation feed is the whole product. Approvals,
+ * the live computer-use session, and on-demand experiment/audit cards all
+ * render inline in the feed; there is no navigation rail or operations
+ * rail. Model routing lives in Settings; model readiness only appears as
+ * an in-feed banner when chat is not configured.
+ */
 export function App() {
   const isNativeDesktop = new URLSearchParams(window.location.search).get("desktop") === "1";
   const [locale, setLocale] = useState<AppLocale>(() => localStorage.getItem("adpilot-locale") === "en" ? "en" : "zh-CN");
@@ -25,6 +31,7 @@ export function App() {
   const [clientId, setClientId] = useState("");
   const [conversationId, setConversationId] = useState("primary");
   const [goal, setGoal] = useState("");
+  const [insights, setInsights] = useState<TimelineInsight[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -71,9 +78,9 @@ export function App() {
   /**
    * Live updates, differentiated by event type:
    * - `alert` and `computer` events are high-frequency, self-contained
-   *   payloads (the timeline folds alert transitions by id; the computer
-   *   panel only reads the latest event), so they merge into the local
-   *   event buffer with no network round-trip.
+   *   payloads (the timeline folds alert transitions by id and computer
+   *   bursts into one pinned card), so they merge into the local event
+   *   buffer with no network round-trip.
    * - `task` / `approval` / `conversation` / `error` events mutate
    *   server-side resources the client cannot reconstruct, so they trigger
    *   a state refetch, debounced to one fetch per 250ms burst.
@@ -108,17 +115,19 @@ export function App() {
   }, [clientId]);
 
   const currentTask = state.tasks[0];
-  const latestComputer = [...state.events].reverse().find((item) => item.type === "computer")?.event;
-  const latestShot = [...state.events].reverse().find((item) => item.type === "computer" && item.event?.type === "screenshot")?.event?.screenshot;
-  const timeline = useMemo(() => mergeConversationTimeline(state.messages, state.events, conversationId), [state.messages, state.events, conversationId]);
-  const conversationOptions = useMemo(() => [...new Set([...(state.conversations ?? []), conversationId])], [state.conversations, conversationId]);
-  const activeAgents = useMemo(() => {
-    const roles = new Set(state.tasks.map((task) => task.owner).filter(Boolean) as string[]);
-    if (currentTask && !["completed", "blocked", "cancelled"].includes(currentTask.phase)) roles.add("adpilot_agent");
-    return [...roles];
-  }, [state.tasks, currentTask]);
-  const pendingApprovals = state.approvals.filter((item) => !["executed", "rejected", "failed"].includes(item.status)).length;
   const computerMode = state.computerUse?.executionStatus ?? "unavailable";
+  const computerActive = computerMode === "running" || computerMode === "paused";
+  const timeline = useMemo(
+    () => mergeConversationTimeline<ConversationMessage, Approval>(state.messages, state.events, conversationId, {
+      approvals: state.approvals,
+      approvalAt: (approval) => approval.createdAt ?? approval.executionPlan?.createdAt ?? approval.guardrail?.evaluatedAt,
+      computerActive,
+      insights
+    }),
+    [state.messages, state.events, state.approvals, conversationId, computerActive, insights]
+  );
+  const conversationOptions = useMemo(() => [...new Set([...(state.conversations ?? []), conversationId])], [state.conversations, conversationId]);
+  const openApprovals = useMemo(() => state.approvals.filter((item) => isApprovalOpen(item.status)), [state.approvals]);
 
   function applySettings(data: SettingsData) {
     setSettingsData(data);
@@ -130,10 +139,16 @@ export function App() {
   }
 
   async function submitGoal() {
-    const isSlashCommand = goal.trim().startsWith("/");
-    if (!state.models.chatConfigured && !isSlashCommand) { setSettingsTab("models"); setSettingsOpen(true); return; }
-    if (!goal.trim()) return;
     const message = goal.trim();
+    if (!message) return;
+    const insightKind = localInsightCommand(message);
+    if (insightKind) {
+      setGoal("");
+      setInsights((current) => [...current, { id: `insight-${Date.now()}`, kind: insightKind, at: new Date().toISOString() }]);
+      return;
+    }
+    const isSlashCommand = message.startsWith("/");
+    if (!state.models.chatConfigured && !isSlashCommand) { setSettingsTab("models"); setSettingsOpen(true); return; }
     setSubmitting(true); setError("");
     setGoal("");
     setState((current) => ({ ...current, messages: [...current.messages, { id: `local-${Date.now()}`, clientId: clientId || "personal", conversationId, role: "user", content: message, status: "complete", at: new Date().toISOString() }] }));
@@ -184,10 +199,10 @@ export function App() {
     await response.json(); if (!response.ok) setError(copy.executionError); await loadState(clientId);
   }
 
-  function handleNavigate(target: NavTarget) {
-    const selector = target === "mission" ? ".main-column" : target === "tests" ? ".experiments-panel" : target === "review" ? ".queue-panel" : ".audit-panel";
-    if (target === "mission") document.querySelector(".main-column")?.scrollTo({ top: 0, behavior: "smooth" });
-    else document.querySelector(selector)?.scrollIntoView({ behavior: "smooth" });
+  function jumpToApprovals() {
+    const target = openApprovals[0] ?? state.approvals[0];
+    if (!target) return;
+    document.querySelector(`[data-approval="${CSS.escape(target.id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
   function openSettings(tab: SettingsTab) {
@@ -210,18 +225,10 @@ export function App() {
         copy={copy}
         clients={state.clients}
         clientId={clientId}
-        chatConfigured={state.models.chatConfigured}
-        onSelectClient={(next) => { setClientId(next); setConversationId("primary"); void loadState(next, "primary"); }}
+        pendingApprovals={openApprovals.length}
+        onSelectClient={(next) => { setClientId(next); setConversationId("primary"); setInsights([]); void loadState(next, "primary"); }}
+        onJumpToApprovals={jumpToApprovals}
         onOpenSettings={() => openSettings("general")}
-      />
-
-      <NavRail
-        copy={copy}
-        testsCount={state.experiments.length}
-        reviewCount={pendingApprovals}
-        ledgerCount={state.audit.length}
-        onNavigate={handleNavigate}
-        onOpenAbout={() => openSettings("about")}
       />
 
       <main className="main-column">
@@ -230,6 +237,17 @@ export function App() {
             <IconError size={15} />
             <span>{error}</span>
             <Button size="sm" variant="subtle" onClick={() => void loadState()}>{copy.retry}</Button>
+          </div>
+        )}
+
+        {!state.models.chatConfigured && (
+          <div className="model-banner" role="status">
+            <span className="model-banner-dot" aria-hidden="true" />
+            <div>
+              <strong>{copy.modelRequired}</strong>
+              <p>{copy.modelBannerBody}</p>
+            </div>
+            <Button size="sm" variant="outline" icon={<IconSettings size={13} />} onClick={() => openSettings("models")}>{copy.configureModel}</Button>
           </div>
         )}
 
@@ -252,16 +270,24 @@ export function App() {
           </>
         ) : state.messages.length === 0 ? <MissionZero onPick={setGoal} guiReady={state.models.guiConfigured} clients={state.clients.length} locale={locale} /> : null}
 
-        {(state.messages.length > 0 || submitting) && (
+        {(timeline.length > 0 || submitting) && (
           <ConversationFeed
             copy={copy}
             locale={locale}
             timeline={timeline}
+            experiments={state.experiments}
+            audit={state.audit}
+            computerMode={computerMode}
+            guiConfigured={state.models.guiConfigured}
             conversationOptions={conversationOptions}
             conversationId={conversationId}
             submitting={submitting}
             onSelectConversation={(next) => { setConversationId(next); void loadState(clientId, next); }}
             onFork={(messageId) => void forkMessage(messageId)}
+            onRiskReview={(approval) => void riskReview(approval)}
+            onApprove={(approval) => void approve(approval)}
+            onCommit={(approval) => void commit(approval)}
+            onComputerControl={(action) => void computerControl(action)}
           />
         )}
 
@@ -275,42 +301,6 @@ export function App() {
           onSubmit={() => void submitGoal()}
         />
       </main>
-
-      <aside className="operation-rail">
-        <div className="rail-heading">
-          <div><span className="section-kicker">{copy.liveOperations}</span><h2>{copy.executionStack}</h2></div>
-          <span className="rail-clock">{new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date())}</span>
-        </div>
-
-        <ComputerUsePanel
-          copy={copy}
-          locale={locale}
-          mode={computerMode}
-          latest={latestComputer}
-          latestShot={latestShot}
-          guiConfigured={state.models.guiConfigured}
-          onControl={(action) => void computerControl(action)}
-        />
-
-        <ApprovalQueue
-          approvals={state.approvals}
-          copy={copy}
-          locale={locale}
-          onRiskReview={(approval) => void riskReview(approval)}
-          onApprove={(approval) => void approve(approval)}
-          onCommit={(approval) => void commit(approval)}
-        />
-
-        <AgentRail
-          copy={copy}
-          locale={locale}
-          activeAgents={activeAgents}
-          models={state.models}
-          taskActive={Boolean(currentTask)}
-          experiments={state.experiments}
-          audit={state.audit}
-        />
-      </aside>
 
       <SettingsPanel
         open={settingsOpen}

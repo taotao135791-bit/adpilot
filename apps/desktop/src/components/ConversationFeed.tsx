@@ -7,20 +7,38 @@ import {
   type AppLocale,
   type ConsoleCopy
 } from "../labels.js";
-import type { ConversationMessage } from "../types.js";
+import type { Approval } from "../approvalDisclosure.js";
+import type { Audit, ComputerExecutionStatus, ConversationMessage, Experiment } from "../types.js";
 import type { TimelineAlert, TimelineItem } from "../conversationTimeline.js";
+import { ApprovalCard } from "./ApprovalCard.js";
+import { ComputerUseCard, type ComputerControlAction } from "./ComputerUseCard.js";
+import { AuditCard, ExperimentsCard } from "./InsightCards.js";
 import { Badge, Tooltip } from "../ui.js";
 import { IconAlert, IconBot, IconChevronDown, IconError, IconFork, IconHistory, IconInfo } from "../icons.js";
 
-export function ConversationFeed({ copy, locale, timeline, conversationOptions, conversationId, submitting, onSelectConversation, onFork }: {
+/**
+ * The single-column conversation feed: messages, monitoring alerts,
+ * approval cards, the live computer-use card, and on-demand insight cards
+ * in one chronological stream. Item kinds are pre-merged and pre-sorted by
+ * conversationTimeline.ts; this component only renders.
+ */
+export function ConversationFeed({ copy, locale, timeline, experiments, audit, computerMode, guiConfigured, conversationOptions, conversationId, submitting, onSelectConversation, onFork, onRiskReview, onApprove, onCommit, onComputerControl }: {
   copy: ConsoleCopy;
   locale: AppLocale;
-  timeline: TimelineItem<ConversationMessage>[];
+  timeline: TimelineItem<ConversationMessage, Approval>[];
+  experiments: Experiment[];
+  audit: Audit[];
+  computerMode: ComputerExecutionStatus;
+  guiConfigured: boolean;
   conversationOptions: string[];
   conversationId: string;
   submitting: boolean;
   onSelectConversation: (conversationId: string) => void;
   onFork: (messageId: string) => void;
+  onRiskReview: (approval: Approval) => void;
+  onApprove: (approval: Approval) => void;
+  onCommit: (approval: Approval) => void;
+  onComputerControl: (action: ComputerControlAction) => void;
 }) {
   return (
     <section className="conversation" aria-label={copy.mission}>
@@ -35,9 +53,22 @@ export function ConversationFeed({ copy, locale, timeline, conversationOptions, 
           </div>
         </div>
       )}
-      {timeline.map((item) => item.kind === "alert"
-        ? <AlertCard alert={item.alert} locale={locale} copy={copy} key={item.id} />
-        : <MessageItem message={item.message} locale={locale} copy={copy} onFork={onFork} key={item.id} />)}
+      {timeline.map((item) => {
+        switch (item.kind) {
+          case "alert":
+            return <AlertCard alert={item.alert} locale={locale} copy={copy} key={item.id} />;
+          case "approval":
+            return <ApprovalCard approval={item.approval} locale={locale} copy={copy} onRiskReview={onRiskReview} onApprove={onApprove} onCommit={onCommit} key={item.id} />;
+          case "computer":
+            return <ComputerUseCard copy={copy} locale={locale} mode={computerMode} computer={item.computer} guiConfigured={guiConfigured} onControl={onComputerControl} key={item.id} />;
+          case "insight":
+            return item.insight.kind === "experiments"
+              ? <ExperimentsCard copy={copy} locale={locale} experiments={experiments} at={item.insight.at} key={item.id} />
+              : <AuditCard copy={copy} locale={locale} audit={audit} at={item.insight.at} key={item.id} />;
+          default:
+            return <MessageItem message={item.message} locale={locale} copy={copy} onFork={onFork} key={item.id} />;
+        }
+      })}
       {submitting && <div className="thinking"><span className="thinking-pulse" aria-hidden="true" /><span>{copy.investigating}</span></div>}
     </section>
   );

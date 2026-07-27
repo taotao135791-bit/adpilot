@@ -804,3 +804,61 @@ describe("writeExperiment approval enforcement", () => {
     expect(succeeded[0]?.details).toMatchObject({ experimentId: experiment.id, variable: "daily_budget" });
   });
 });
+
+describe("generalAgentTools (main-agent write-side set)", () => {
+  async function fixture() {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-agent-tools-audit-"));
+    const workspace = new WorkspaceStore(root);
+    await workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
+    const audit = new AuditLog(workspace);
+    const tools = new AdPilotTools(workspace, audit, new ApprovalService(workspace, "0123456789abcdef0123456789abcdef"), new ExperimentStore(workspace));
+    const context = { clientId: "client-a", taskId: crypto.randomUUID(), actor: "tester", permission: "OBSERVE" as const };
+    return { root, workspace, audit, tools, context };
+  }
+
+  it("exposes read/grep/find/ls/write/edit/bash only on the main-agent surface", async () => {
+    const { tools, context } = await fixture();
+    const agent = tools.generalAgentTools(context);
+    expect(agent.map((tool) => tool.name)).toEqual(["read", "grep", "find", "ls", "write", "edit", "bash"]);
+    // Specialists keep the read-only subset.
+    expect(tools.generalReadTools().map((tool) => tool.name)).toEqual(["read", "grep", "find", "ls"]);
+  });
+
+  it("chains every bash classification (allowed and denied) into the audit log with the run context", async () => {
+    const { audit, tools, context } = await fixture();
+    const bash = tools.generalAgentTools(context).find((tool) => tool.name === "bash")!;
+    const run = (command: string) =>
+      (bash.execute as (id: string, params: unknown) => Promise<unknown>)("call-1", { command });
+    // Hard-denied command: refused, audited as denied, never executed.
+    await expect(run("curl https://ads.google.com")).rejects.toThrow("denied by AdPilot policy");
+    // Whitelisted read command: executes (sandboxed on macOS), audited as succeeded.
+    if (process.platform === "darwin") {
+      const result = (await run("pwd")) as { content: Array<{ text?: string }> };
+      expect(result.content.map((item) => item.text ?? "").join("\n")).toContain("adpilot-agent-tools-audit-");
+    }
+    const events = (await audit.list("client-a")).filter((event) => event.action === "bash_classify");
+    expect(events).toHaveLength(process.platform === "darwin" ? 2 : 1);
+    expect(events[0]).toMatchObject({
+      clientId: "client-a",
+      taskId: context.taskId,
+      actor: "tester",
+      status: "denied",
+      details: { verdict: "deny", executed: false }
+    });
+    const deniedCommands = events[0]?.details.commands as Array<{ program: string; rule: string }>;
+    expect(deniedCommands[0]).toMatchObject({ program: "curl", rule: "network_egress" });
+    if (process.platform === "darwin") {
+      expect(events[1]).toMatchObject({ status: "succeeded", details: { verdict: "read", executed: true } });
+    }
+    expect(await audit.verify("client-a")).toBe(true);
+  });
+
+  it("fails closed with an explicit error when the sandbox is unavailable", async () => {
+    const { tools, context } = await fixture();
+    const bash = tools.generalAgentTools(context).find((tool) => tool.name === "bash")!;
+    if (process.platform === "darwin") return; // sandbox-exec exists; the fail-closed unit tests cover the missing case
+    await expect(
+      (bash.execute as (id: string, params: unknown) => Promise<unknown>)("call-1", { command: "ls" })
+    ).rejects.toThrow("fail-closed");
+  });
+});

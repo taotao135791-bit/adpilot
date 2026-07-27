@@ -23,12 +23,19 @@
 import { realpathSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { createProtectedPathMatcher, PROTECTED_PATH_MESSAGE, type ProtectedPathMatcher } from "./protected-paths.js";
 
 export interface ReadAccessPolicy {
   /** Readable roots. The first entry is the primary root: relative tool paths resolve against it. */
   allow: readonly string[];
   /** Unreadable subtrees. A longer matching allow rule still wins (see module docs). */
   deny?: readonly string[];
+  /**
+   * Protected paths denied even inside an allowed root (approval secret,
+   * credentials, audit chain, browser profile stores). workspaceReadPolicy
+   * attaches the standard matcher automatically.
+   */
+  protect?: ProtectedPathMatcher;
 }
 
 export interface ReadPathGuard {
@@ -43,9 +50,16 @@ export interface ReadPathGuard {
   /**
    * Policy check for an already-canonical absolute path. Used by the
    * directory walkers, which start at a resolved root and never follow
-   * symlinked directories, so a realpath per entry is unnecessary.
+   * symlinked directories, so a realpath per entry is unnecessary. Protected
+   * paths report as not allowed, so walkers skip them entirely.
    */
   isAllowed(canonicalAbsolutePath: string): boolean;
+  /**
+   * Returns the matched protected-path rule id, or null. Write-side tools and
+   * the bash classifier use this to reject with the unified message even for
+   * paths that sit inside an allowed root.
+   */
+  protection(canonicalAbsolutePath: string): string | null;
   /** Human-readable root summary for tool descriptions and error messages. */
   describeRoots(): string;
 }
@@ -111,7 +125,8 @@ export function createReadPathGuard(policy: ReadAccessPolicy): ReadPathGuard {
   return {
     primaryRoot,
     describeRoots: () => rules.filter((rule) => rule.allow).map((rule) => rule.path).join(", "),
-    isAllowed: evaluate,
+    isAllowed: (canonicalAbsolutePath: string) => evaluate(canonicalAbsolutePath) && !policy.protect?.match(canonicalAbsolutePath),
+    protection: (canonicalAbsolutePath: string) => policy.protect?.match(canonicalAbsolutePath) ?? null,
     async resolve(input: string): Promise<string> {
       if (typeof input !== "string" || input.length === 0 || input.includes("\u0000")) {
         throw new Error("path must be a non-empty string");
@@ -126,6 +141,10 @@ export function createReadPathGuard(policy: ReadAccessPolicy): ReadPathGuard {
         const via = real === lexical ? "" : ` (resolves to ${real})`;
         throw new Error(`${PATH_ESCAPE_MESSAGE}: ${input}${via} (readable roots: ${rules.filter((rule) => rule.allow).map((rule) => rule.path).join(", ")})`);
       }
+      const protectionRule = policy.protect?.match(real);
+      if (protectionRule) {
+        throw new Error(`${PROTECTED_PATH_MESSAGE}: ${input} (rule: ${protectionRule})`);
+      }
       return real;
     }
   };
@@ -136,11 +155,24 @@ export function createReadPathGuard(policy: ReadAccessPolicy): ReadPathGuard {
  * except its private `.adpilot` subtree (settings.json, pi-auth.json and the
  * approval secret live there); extra roots the operator explicitly allows
  * (for example the user and workspace skill/prompt directories) are appended
- * and win over the `.adpilot` denial when they sit inside it.
+ * and win over the `.adpilot` denial when they sit inside it. The protected
+ * path matcher (approval secret, credentials, audit chain, browser profile
+ * stores) is attached on top and denies even inside allowed roots.
  */
-export function workspaceReadPolicy(workspaceRoot: string, extraAllow: readonly string[] = []): ReadAccessPolicy {
+export function workspaceReadPolicy(workspaceRoot: string, extraAllow: readonly string[] = [], homeDir?: string): ReadAccessPolicy {
   return {
     allow: [resolve(workspaceRoot), ...extraAllow.map((path) => resolve(path))],
-    deny: [resolve(workspaceRoot, ".adpilot")]
+    deny: [resolve(workspaceRoot, ".adpilot")],
+    protect: createProtectedPathMatcher({ workspaceRoot, ...(homeDir ? { homeDir } : {}) })
   };
+}
+
+/**
+ * Write-side confinement for the write/edit tools: strictly the workspace
+ * root, no extra roots — the readable `.adpilot/skills` and `.adpilot/prompts`
+ * exceptions are read-only, and the whole `.adpilot` subtree plus every
+ * protected path stays unwritable.
+ */
+export function workspaceWritePolicy(workspaceRoot: string, homeDir?: string): ReadAccessPolicy {
+  return workspaceReadPolicy(workspaceRoot, [], homeDir);
 }

@@ -8,6 +8,7 @@ import { WorkspaceStore } from "@adpilot/workspace";
 import { AdPilotSessionStorage, resolvePiSessionId } from "./session-storage.js";
 import { ToolPermissionGate } from "./tool-gate.js";
 import { conversationMessageLabel, forkConversationStorage, type ConversationForkResult } from "./conversation-fork.js";
+import { isPlanModeSkill, isPlanModeTool, PLAN_MODE_SYSTEM_PROMPT, PlanModeStore, type PlanModeProbe } from "./plan-mode.js";
 
 export { AdPilotSessionStorage, resolvePiSessionId } from "./session-storage.js";
 export type { AdPilotSessionMetadata } from "./session-storage.js";
@@ -15,6 +16,8 @@ export { ToolPermissionGate } from "./tool-gate.js";
 export { AuditRuntimeExtension, sanitizeForAudit } from "./audit-extension.js";
 export { FORK_CUSTOM_ENTRY_TYPE, conversationMessageLabel, forkConversationStorage, resolveForkLeafId } from "./conversation-fork.js";
 export type { ConversationForkResult } from "./conversation-fork.js";
+export { PlanModeState, PlanModeStore, PLAN_MODE_SYSTEM_PROMPT, isPlanModeSkill, isPlanModeTool } from "./plan-mode.js";
+export type { PlanModeProbe } from "./plan-mode.js";
 
 export interface RuntimeExtension {
   name: string;
@@ -105,6 +108,13 @@ export interface PiAgentRuntimeOptions {
    * whitelist) and skill-less conversational decision runs are untouched.
    */
   generalReadTools?: AgentTool[];
+  /**
+   * Conversation-level plan-mode probe. When present and enabled for the
+   * run's conversation, the tool set shrinks to the read-only surface, the
+   * plan-mode instructions are appended to the system prompt, and the tool
+   * gate denies every non-read classification.
+   */
+  planMode?: PlanModeProbe;
 }
 
 export interface RuntimeRecoveryCheckpoint {
@@ -136,6 +146,7 @@ export class PiAgentRuntime {
   private readonly compactionSettings: CompactionSettings;
   private readonly compactionInstructions: string;
   private readonly generalReadTools: AgentTool[];
+  private readonly planMode: PlanModeProbe | undefined;
   private readonly sessionLocks = new Map<string, Promise<void>>();
   private readonly activeSessions = new Map<string, TrackedSession>();
   private readonly toolGate: ToolPermissionGate;
@@ -152,7 +163,8 @@ export class PiAgentRuntime {
     this.compactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, ...options.compaction };
     this.compactionInstructions = options.compactionInstructions ?? DEFAULT_ADPILOT_COMPACTION_INSTRUCTIONS;
     this.generalReadTools = options.generalReadTools ?? [];
-    this.toolGate = new ToolPermissionGate(tools.approvals, tools.audit);
+    this.planMode = options.planMode;
+    this.toolGate = new ToolPermissionGate(tools.approvals, tools.audit, this.planMode);
   }
 
   async run(request: RuntimeRequest): Promise<RuntimeResult> {
@@ -350,7 +362,14 @@ export class PiAgentRuntime {
   }
 
   private async execute(request: ResolvedRuntimeRequest, model: Model<Api>, tier: string, recovered: boolean): Promise<RuntimeResult> {
-    const skillsPrompt = this.buildSkillsPrompt(request.allowedSkills ?? []);
+    // Plan mode is conversation-scoped: the read-only tool shrink and the
+    // prompt instruction apply to every run of the conversation; the gate
+    // backstop (ToolPermissionGate) independently denies non-read calls.
+    const planModeOn = this.planMode
+      ? await this.planMode.isEnabled(request.context.clientId, request.context.conversationId).catch(() => false)
+      : false;
+    const allowedSkills = planModeOn ? (request.allowedSkills ?? []).filter(isPlanModeSkill) : (request.allowedSkills ?? []);
+    const skillsPrompt = this.buildSkillsPrompt(allowedSkills);
     const storage = await AdPilotSessionStorage.openOrCreate(this.workspace, request.context.clientId, request.context.conversationId);
     const session = new Session(storage);
     if ((await session.getEntries()).length === 0 && request.priorMessages?.length) {
@@ -360,16 +379,18 @@ export class PiAgentRuntime {
     let compacted = Boolean(lastCompactionEntryId);
     const persistedContext = await session.buildContext();
     const events: AgentEvent[] = [];
-    const tools = [...(request.tools ?? [])];
-    if ((request.allowedSkills?.length ?? 0) > 0) {
-      tools.push(this.createSkillTool(request.context, request.allowedSkills ?? []));
+    const tools = planModeOn
+      ? (request.tools ?? []).filter((tool) => isPlanModeTool(tool.name))
+      : [...(request.tools ?? [])];
+    if (allowedSkills.length > 0) {
+      tools.push(this.createSkillTool(request.context, allowedSkills));
       // Skill-bearing runs (the specialists) also receive the confined general
       // read-only tools; explicit whitelists and skill-less runs never do.
-      tools.push(...this.generalReadTools);
+      tools.push(...(planModeOn ? this.generalReadTools.filter((tool) => isPlanModeTool(tool.name)) : this.generalReadTools));
     }
     const agent = new Agent({
       initialState: {
-        systemPrompt: `${request.systemPrompt}\n\n${skillsPrompt}`,
+        systemPrompt: `${request.systemPrompt}${planModeOn ? `\n\n${PLAN_MODE_SYSTEM_PROMPT}` : ""}\n\n${skillsPrompt}`,
         model,
         tools,
         messages: persistedContext.messages

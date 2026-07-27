@@ -40,6 +40,9 @@ export type Approval = {
   clientId: string;
   taskId: string;
   status: string;
+  /** Server-side record timestamps, used to place the card on the timeline. */
+  createdAt?: string;
+  updatedAt?: string;
   executionPlan: ExecutionPlan | null;
   executionPlanFingerprint: string | null;
   guardrailFingerprint: string | null;
@@ -182,6 +185,20 @@ function formatRisk(value: string, locale: AppLocale): string {
     ? { observe: "只读", interact: "交互", mutate: "修改", destructive: "破坏性操作" }
     : { observe: "Observe", interact: "Interact", mutate: "Mutate", destructive: "Destructive" };
   return labels[value as keyof typeof labels] ?? getCopy(locale).notAvailable;
+}
+
+/** Localized risk-level label for compact badges (collapsed approval card). */
+export function riskLevelLabel(value: string, locale: AppLocale): string {
+  return formatRisk(value, locale);
+}
+
+/**
+ * An approval is "open" while it still needs attention or can be executed.
+ * Terminal statuses (executed/rejected/failed/expired/cancelled) stay in the
+ * feed as history but leave the pending count.
+ */
+export function isApprovalOpen(status: string): boolean {
+  return status === "pending_risk_review" || status === "pending_user" || status === "approved" || status === "executing";
 }
 
 function formatPageType(value: string, locale: AppLocale): string {

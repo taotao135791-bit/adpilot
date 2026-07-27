@@ -188,6 +188,67 @@ describe("ToolPermissionGate", () => {
   });
 });
 
+describe("ToolPermissionGate: main-agent write/edit/bash", () => {
+  it("requires an executed in-task approval reference for write and edit (same semantics as ledger skills)", async () => {
+    const { workspace, gate, audit, approvals, context } = await makeGate();
+    for (const tool of ["write", "edit"]) {
+      const call = (args: unknown) => gate.check(tool, args, context);
+      expect(await call({ path: "reports/daily.md" }), tool).toContain("approvalId");
+      expect(await call({ path: "reports/daily.md", approvalId: crypto.randomUUID() }), tool).toContain("does not exist");
+
+      const pending = await createApproval(approvals, context.clientId, context.taskId);
+      expect(await call({ path: "reports/daily.md", approvalId: pending.id }), tool).toContain("pending_risk_review");
+
+      const otherTask = await createApproval(approvals, context.clientId, crypto.randomUUID());
+      await patchApproval(workspace, approvals, otherTask.id, { status: "executed" });
+      expect(await call({ path: "reports/daily.md", approvalId: otherTask.id }), tool).toContain("different client or task");
+
+      const executed = await createApproval(approvals, context.clientId, context.taskId);
+      await patchApproval(workspace, approvals, executed.id, { status: "executed" });
+      expect(await call({ path: "reports/daily.md", approvalId: executed.id }), tool).toBeNull();
+    }
+    expect(await audit.verify("client-a")).toBe(true);
+  });
+
+  it("lets whitelisted read bash commands flow without an approval or an audit record", async () => {
+    const { gate, audit, context } = await makeGate();
+    expect(await gate.check("bash", { command: "ls -la" }, context)).toBeNull();
+    expect(await gate.check("bash", { command: "git status && cat reports/daily.md" }, context)).toBeNull();
+    expect(await audit.list("client-a")).toHaveLength(0);
+  });
+
+  it("requires an executed approval reference for write-level bash commands", async () => {
+    const { workspace, gate, audit, approvals, context } = await makeGate();
+    const call = (args: unknown) => gate.check("bash", args, context);
+    expect(await call({ command: "npm install" })).toContain("approvalId");
+    expect(await call({ command: "echo hi > notes.md" })).toContain("approvalId");
+    expect(await call({ command: "echo $(date)" })).toContain("approvalId"); // unresolved substitution floors at write
+
+    const executed = await createApproval(approvals, context.clientId, context.taskId);
+    await patchApproval(workspace, approvals, executed.id, { status: "executed" });
+    expect(await call({ command: "npm install", approvalId: executed.id })).toBeNull();
+    const events = await audit.list("client-a");
+    const writeAllow = events.find((event) => event.status === "succeeded");
+    expect(writeAllow).toMatchObject({ details: { tool: "bash", classification: "write" } });
+  });
+
+  it("maps hard-denied commands to the destructive class at the gate; the tool itself refuses them absolutely", async () => {
+    const { workspace, gate, audit, approvals, context } = await makeGate();
+    // Even an executed approval cannot smuggle a denied command through the
+    // gate record: the classification is destructive, and the bash tool's own
+    // hard deny (covered in packages/tools/src/general/bash.test.ts) is the
+    // absolute refusal beneath it.
+    const executed = await createApproval(approvals, context.clientId, context.taskId);
+    await patchApproval(workspace, approvals, executed.id, { status: "executed" });
+    await gate.check("bash", { command: "curl https://ads.google.com" }, context);
+    await gate.check("bash", { command: "curl https://ads.google.com", approvalId: executed.id }, context);
+    const events = await audit.list("client-a");
+    expect(events[0]).toMatchObject({ status: "denied", details: { tool: "bash", classification: "destructive" } });
+    // With an executed reference the gate steps aside; the tool's hard deny is the final word.
+    expect(events[1]).toMatchObject({ status: "succeeded", details: { tool: "bash", classification: "destructive" } });
+  });
+});
+
 describe("PiAgentRuntime write-operation gate", () => {
   async function makeRuntime() {
     const root = await mkdtemp(join(tmpdir(), "adpilot-gate-runtime-"));

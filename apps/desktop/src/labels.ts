@@ -174,7 +174,16 @@ const zh = {
   forkError: "会话分叉失败",
   commands: "斜杠命令",
   alert: "监控告警",
-  alertMetrics: "绑定 {count} 个已验证指标"
+  alertMetrics: "绑定 {count} 个已验证指标",
+  details: "详情",
+  collapse: "收起",
+  technicalDetails: "技术细节",
+  pendingApprovals: "待审批",
+  jumpToApproval: "定位到最早待审批的卡片",
+  experimentsCommand: "/experiments",
+  auditCommand: "/audit-trail",
+  recordsTotal: "共 {count} 条",
+  modelBannerBody: "连接对话模型后即可开始任务；模型路由在设置中配置。"
 } as const;
 
 const en: Record<keyof typeof zh, string> = {
@@ -340,7 +349,16 @@ const en: Record<keyof typeof zh, string> = {
   forkError: "Could not fork the conversation",
   commands: "Slash commands",
   alert: "Monitoring alert",
-  alertMetrics: "{count} verified metric(s) bound"
+  alertMetrics: "{count} verified metric(s) bound",
+  details: "Details",
+  collapse: "Collapse",
+  technicalDetails: "Technical details",
+  pendingApprovals: "Pending approvals",
+  jumpToApproval: "Jump to the oldest pending approval card",
+  experimentsCommand: "/experiments",
+  auditCommand: "/audit-trail",
+  recordsTotal: "{count} total",
+  modelBannerBody: "Connect a chat model to start a mission. Model routing lives in Settings."
 };
 
 export type ConsoleCopy = { readonly [K in keyof typeof zh]: string };
@@ -408,8 +426,8 @@ export function experimentStatusLabel(status: string, locale: AppLocale): string
 }
 
 export function operationLabel(operation: string, locale: AppLocale): string {
-  const zhLabels: Record<string, string> = { set_daily_budget: "设置每日预算" };
-  const enLabels: Record<string, string> = { set_daily_budget: "Set daily budget" };
+  const zhLabels: Record<string, string> = { set_daily_budget: "设置每日预算", update_daily_budget: "更新每日预算", update_campaign_budget: "更新广告系列预算", update_target_cpa: "更新目标 CPA", pause_campaign: "暂停广告系列", resume_campaign: "恢复广告系列" };
+  const enLabels: Record<string, string> = { set_daily_budget: "Set daily budget", update_daily_budget: "Update daily budget", update_campaign_budget: "Update campaign budget", update_target_cpa: "Update target CPA", pause_campaign: "Pause campaign", resume_campaign: "Resume campaign" };
   return (locale === "zh-CN" ? zhLabels : enLabels)[operation] ?? (locale === "zh-CN" ? "自定义账户操作" : humanize(operation));
 }
 
@@ -457,6 +475,12 @@ export function approvalStatusTone(status: string): StatusTone {
   return "accent";
 }
 
+export function riskLevelTone(riskLevel: string): StatusTone {
+  if (riskLevel === "destructive") return "danger";
+  if (riskLevel === "mutate") return "warning";
+  return "accent";
+}
+
 export function alertSeverityTone(severity: string): StatusTone {
   if (severity === "critical") return "danger";
   if (severity === "warning") return "warning";
@@ -484,6 +508,7 @@ const settingsZh = {
   title: "设置", close: "关闭设置", navigation: "设置导航", general: "通用", models: "模型", computer: "电脑控制", about: "关于", connections: "已配置连接", loading: "正在读取安全配置", loadingFailed: "无法读取设置", retry: "重试",
   generalTitle: "语言与外观", generalBody: "界面在任一时刻只使用一种语言。产品名和模型名保持原名。", language: "界面语言", languageHint: "应用到操作台和设置页", appearance: "显示模式", appearanceHint: "选择深色、浅色或跟随系统", dark: "深色", light: "浅色", system: "跟随系统", localeRule: "保存后界面会立即切换；模型配置需要重启运行时。",
   modelsTitle: "模型路由", modelsBody: "选择日常对话模型和高强度推理模型；支持看图的代码模型会自动作为电脑控制的视觉模型。", fastRoute: "日常模型", fastHint: "自然对话、分类、报告与普通任务", strongRoute: "深度模型", strongHint: "因果分析、风险复核与失败升级",
+  runtimeRoutes: "运行时", runtimeRoutesTitle: "当前生效的模型路由",
   providerConnection: "供应商连接", credentials: "凭据", providers: "个供应商", provider: "供应商", model: "模型", visionCapability: "视觉", apiKey: "API 密钥", modelsCount: "个模型", noStaticModels: "该供应商使用动态模型目录，首次认证后获取。",
   oauthTitle: "订阅账户登录", oauthBody: "通过 Pi 的原生授权流程连接订阅账户；访问令牌只保存在本机工作区。", oauthConnected: "OAuth 已连接", connect: "连接账户", connecting: "连接中", disconnect: "断开连接", openAuthorization: "请在浏览器中完成授权。", openBrowser: "打开浏览器", deviceCode: "在授权页面输入此代码", choose: "请选择", continue: "继续", oauthWaiting: "正在等待授权供应商响应。", oauthSelectPrompt: "请选择授权账户。", oauthCodePrompt: "请输入授权页面显示的代码。", oauthSecretPrompt: "请输入授权流程要求的安全值。", oauthInputPrompt: "请输入授权流程要求的信息。", oauthInputPlaceholder: "在此输入", oauthComplete: "授权完成，重启后即可使用。", oauthFailed: "OAuth 授权失败",
   computerTitle: "电脑控制", computerBody: "使用日常与深度代码模型完成看图、定位和复核。专用视觉端点属于可选的高级设置。", computerNote: "系统每次只执行一个可校验动作。账户修改仍需要实时窗口绑定、独立身份校验、风险复核和一次性批准。", showAdvanced: "显示高级开发者设置", hideAdvanced: "收起高级开发者设置",
@@ -496,6 +521,7 @@ const settingsEn: Record<keyof typeof settingsZh, string> = {
   title: "Settings", close: "Close settings", navigation: "Settings navigation", general: "General", models: "Models", computer: "Computer use", about: "About", connections: "Configured connections", loading: "Loading secure settings", loadingFailed: "Could not load settings", retry: "Retry",
   generalTitle: "Language and appearance", generalBody: "The interface uses one language at a time. Product and model names retain their proper names.", language: "Interface language", languageHint: "Applies to the console and settings", appearance: "Appearance", appearanceHint: "Choose dark, light, or system mode", dark: "Dark", light: "Light", system: "System", localeRule: "The interface changes immediately after saving. Model settings require a runtime restart.",
   modelsTitle: "Model routing", modelsBody: "Choose daily and high-assurance reasoning models. Image-capable code models become the Computer Use vision models automatically.", fastRoute: "Daily model", fastHint: "Natural conversation, classification, reports, and routine work", strongRoute: "Deep model", strongHint: "Causal analysis, risk review, and failure escalation",
+  runtimeRoutes: "Runtime", runtimeRoutesTitle: "Effective model routing",
   providerConnection: "Provider connection", credentials: "Credentials", providers: "providers", provider: "Provider", model: "Model", visionCapability: "vision", apiKey: "API key", modelsCount: "models", noStaticModels: "This provider uses a dynamic model catalog fetched after authentication.",
   oauthTitle: "Subscription login", oauthBody: "Connect a subscription account through Pi's native authorization flow. Tokens remain in the local workspace.", oauthConnected: "OAuth connected", connect: "Connect account", connecting: "Connecting", disconnect: "Disconnect", openAuthorization: "Complete authorization in your browser.", openBrowser: "Open browser", deviceCode: "Enter this code on the authorization page", choose: "Choose an option", continue: "Continue", oauthWaiting: "Waiting for the provider to continue authorization.", oauthSelectPrompt: "Choose the account to authorize.", oauthCodePrompt: "Enter the code shown on the authorization page.", oauthSecretPrompt: "Enter the secure value requested by the authorization flow.", oauthInputPrompt: "Enter the information requested by the authorization flow.", oauthInputPlaceholder: "Enter here", oauthComplete: "Authorization complete. Restart to use this connection.", oauthFailed: "OAuth authorization failed",
   computerTitle: "Computer use", computerBody: "Daily and Deep code models handle screenshots, grounding, and verification. Dedicated vision endpoints are optional advanced settings.", computerNote: "AdPilot performs one verifiable action at a time. Account changes still require live-window binding, independent identity checks, risk review, and one-time approval.", showAdvanced: "Show advanced developer settings", hideAdvanced: "Hide advanced developer settings",

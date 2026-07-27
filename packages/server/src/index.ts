@@ -121,9 +121,10 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const computerUse = await computerUseState(system, clientId);
     const models = { ...system.modelStatus, browserSession: computerUse.browserStatus };
     if (!clientId) return { clients, tasks: [], approvals: [], experiments: [], audit: [], messages: [], browserSessions: computerUse.sessions, computerUse, events: [], models };
-    const [tasks, approvals, experiments, audit, messages, settings] = await Promise.all([
+    const [tasks, approvals, experiments, audit, messages, settings, planMode] = await Promise.all([
       system.workspace.listTasks(clientId), system.approvals.list(clientId), system.experiments.list(clientId), system.audit.list(clientId),
-      system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage), system.settings.publicView()
+      system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage), system.settings.publicView(),
+      system.planMode.get(clientId, query.conversationId)
     ]);
     return {
       clients,
@@ -133,6 +134,7 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       approvals,
       experiments,
       audit,
+      planMode,
       conversations: [...new Set(messages.map((message) => message.conversationId))],
       messages: messages.filter((message) => message.conversationId === query.conversationId).map((message) => sanitizeLegacyConversationError(message, settings.locale)),
       browserSessions: computerUse.sessions,
@@ -417,6 +419,24 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       }
       throw error;
     }
+  });
+
+  const planModeParams = z.object({ id: z.string().min(1), cid: z.string().trim().min(1).max(120) });
+
+  app.get("/api/clients/:id/conversations/:cid/plan-mode", async (request) => {
+    const params = planModeParams.parse(request.params);
+    await system.workspace.readClient(params.id);
+    const state = await system.planMode.get(params.id, params.cid);
+    return { clientId: params.id, conversationId: params.cid, ...state };
+  });
+
+  app.post("/api/clients/:id/conversations/:cid/plan-mode", async (request) => {
+    const params = planModeParams.parse(request.params);
+    const body = z.object({ enabled: z.boolean(), actor: z.string().trim().min(1).max(120).default("workspace-owner") }).parse(request.body);
+    await system.workspace.readClient(params.id);
+    const state = await system.planMode.set(params.id, params.cid, body.enabled, body.actor);
+    system.events.publish({ type: "conversation", clientId: params.id, conversationId: params.cid, status: body.enabled ? "plan_mode_enabled" : "plan_mode_disabled" });
+    return { clientId: params.id, conversationId: params.cid, ...state };
   });
 
   app.post("/api/clients/:id/alerts", async (request, reply) => {

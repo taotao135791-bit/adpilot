@@ -219,8 +219,9 @@ export class AdPilotAgent {
     let modelResult: MainAgentOutput;
     const knowledgeContext = await this.knowledge.context(await this.knowledge.match(goal));
     try {
+      const runContext = { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE" as const };
       modelResult = await this.runtime.runStructured({
-        context: { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE", sessionId: conversationId, conversationId, role: "adpilot_agent" },
+        context: { ...runContext, sessionId: conversationId, conversationId, role: "adpilot_agent" },
         systemPrompt: [
           "You are AdPilot Agent, the single user-facing owner of an advertising account.",
           "Maintain the goal and investigation tree, proactively gather evidence, use specialists as bounded experts, and make the final synthesis yourself.",
@@ -238,7 +239,7 @@ export class AdPilotAgent {
           ...(knowledgeContext ? [knowledgeContext] : [])
         ].join("\n"),
         prompt: JSON.stringify({ goal, projectContext, currentTask: task }),
-        signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool, ...this.tools.generalReadTools()]
+        signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool, ...this.tools.generalAgentTools(runContext)]
       }, MainAgentOutput);
     } catch (error) {
       const blocker = error instanceof Error ? error.message : String(error);

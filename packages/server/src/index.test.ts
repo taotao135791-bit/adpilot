@@ -569,3 +569,47 @@ describe("product server", () => {
     await server.close();
   });
 });
+
+describe("plan-mode endpoints", () => {
+  it("reads and toggles the conversation-level switch, persists it, and audits both directions", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-plan-mode-server-"));
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+    const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
+
+    // Default: disabled.
+    const initial = await server.inject({ method: "GET", url: "/api/clients/personal/conversations/primary/plan-mode" });
+    expect(initial.statusCode).toBe(200);
+    expect(initial.json()).toMatchObject({ clientId: "personal", conversationId: "primary", enabled: false });
+
+    // Toggle on: the switch persists and shows up in the state payload.
+    const enabled = await server.inject({
+      method: "POST",
+      url: "/api/clients/personal/conversations/primary/plan-mode",
+      payload: { enabled: true, actor: "operator" }
+    });
+    expect(enabled.statusCode).toBe(200);
+    expect(enabled.json()).toMatchObject({ enabled: true, actor: "operator" });
+    const state = await server.inject({ method: "GET", url: "/api/state?clientId=personal&conversationId=primary" });
+    expect(state.json().planMode).toMatchObject({ enabled: true, actor: "operator" });
+    // Conversation-scoped: another conversation stays disabled.
+    const otherState = await server.inject({ method: "GET", url: "/api/state?clientId=personal&conversationId=other" });
+    expect(otherState.json().planMode).toMatchObject({ enabled: false });
+
+    // Toggle off again; both directions are chained into the audit log.
+    await server.inject({
+      method: "POST",
+      url: "/api/clients/personal/conversations/primary/plan-mode",
+      payload: { enabled: false, actor: "operator" }
+    });
+    const audit = (await system.audit.list("personal")).filter((event) => event.action.startsWith("plan_mode_"));
+    expect(audit.map((event) => event.action)).toEqual(["plan_mode_enabled", "plan_mode_disabled"]);
+    expect(await system.audit.verify("personal")).toBe(true);
+
+    // Input validation and unknown clients are rejected.
+    const badBody = await server.inject({ method: "POST", url: "/api/clients/personal/conversations/primary/plan-mode", payload: {} });
+    expect(badBody.statusCode).toBe(400);
+    const unknownClient = await server.inject({ method: "GET", url: "/api/clients/nope/conversations/primary/plan-mode" });
+    expect(unknownClient.statusCode).toBeGreaterThanOrEqual(400);
+    await server.close();
+  });
+});

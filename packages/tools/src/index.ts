@@ -49,10 +49,10 @@ import {
   type VisualTableImagePreparer,
   type VisualTableSurface
 } from "@adpilot/visual-table-reader";
-import { createGeneralReadTools, workspaceReadPolicy } from "./general/index.js";
+import { createGeneralAgentTools, createGeneralReadTools, workspaceReadPolicy, type BashToolAuditEntry } from "./general/index.js";
 
-export { createGeneralReadTools, workspaceReadPolicy, GENERAL_READ_TOOL_NAMES, PATH_ESCAPE_MESSAGE } from "./general/index.js";
-export type { GeneralReadToolsOptions, ReadAccessPolicy, ReadPathGuard } from "./general/index.js";
+export { createGeneralReadTools, createGeneralAgentTools, workspaceReadPolicy, workspaceWritePolicy, GENERAL_READ_TOOL_NAMES, GENERAL_AGENT_TOOL_NAMES, PATH_ESCAPE_MESSAGE, PROTECTED_PATH_MESSAGE, BASH_DENY_MESSAGE, SANDBOX_UNAVAILABLE_MESSAGE, createBashTool, createProtectedPathMatcher, buildSeatbeltProfile, resolveSandboxExec } from "./general/index.js";
+export type { GeneralReadToolsOptions, GeneralAgentToolsOptions, ReadAccessPolicy, ReadPathGuard, ProtectedPathMatcher, BashToolAuditEntry, BashToolOptions, SandboxAvailability, SeatbeltProfileOptions } from "./general/index.js";
 
 const ExecutionValue = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
 
@@ -194,6 +194,45 @@ export class AdPilotTools {
       this.generalTools = createGeneralReadTools({ policy: workspaceReadPolicy(this.workspace.root, this.generalReadRoots) });
     }
     return this.generalTools;
+  }
+
+  /**
+   * The main-agent tool set: the confined read-only tools plus write/edit
+   * (strictly workspace-confined, approval-gated at the tool gate) and bash
+   * (deterministically classified, sandbox-exec confined, fail-closed).
+   * Specialists never receive this set; the bash classification of every
+   * invocation is chained into the audit log under the given context.
+   */
+  generalAgentTools(context: ToolContext): AgentTool[] {
+    return createGeneralAgentTools({
+      workspaceRoot: this.workspace.root,
+      readPolicy: workspaceReadPolicy(this.workspace.root, this.generalReadRoots),
+      bash: {
+        onClassified: async (entry: BashToolAuditEntry) => {
+          await this.audit.append({
+            clientId: context.clientId,
+            taskId: context.taskId,
+            actor: context.actor,
+            action: "bash_classify",
+            status: entry.classification.verdict === "deny" ? "denied" : "succeeded",
+            details: {
+              command: entry.commandPreview,
+              verdict: entry.classification.verdict,
+              parseable: entry.classification.parseable,
+              reason: entry.classification.reason,
+              commands: entry.classification.commands.map((item) => ({
+                command: item.command,
+                program: item.program,
+                verdict: item.verdict,
+                rule: item.rule
+              })),
+              sandboxPath: entry.sandboxPath,
+              executed: entry.executed
+            }
+          });
+        }
+      }
+    });
   }
 
   async readWorkspace(context: ToolContext) {

@@ -261,16 +261,17 @@ select {
 .boot p { font-size: var(--text-sm); color: var(--ink-3); }
 
 /* --------------------------------------------------------------------------
-   Shell layout: topbar / left dock / conversation column / operations rail.
+   Shell layout: topbar over a single conversation column. The feed is the
+   product — no navigation rail, no operations rail.
    -------------------------------------------------------------------------- */
 .shell {
   height: 100dvh;
   display: grid;
   grid-template-areas:
-    "topbar topbar topbar"
-    "sidebar main rail";
+    "topbar"
+    "main";
   grid-template-rows: 56px minmax(0, 1fr);
-  grid-template-columns: 64px minmax(0, 1fr) 384px;
+  grid-template-columns: minmax(0, 1fr);
   font-size: var(--text-md);
 }
 
@@ -311,76 +312,29 @@ select {
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); }
 .status-dot[data-live="true"] { background: var(--success); }
 
-.top-status { margin-left: auto; display: flex; align-items: center; gap: 12px; }
-.live-label { display: flex; align-items: center; gap: 7px; font-size: var(--text-xs); color: var(--ink-2); }
-.live-label i { width: 6px; height: 6px; border-radius: 50%; background: var(--warning); }
-.live-label i[data-ready="true"] { background: var(--accent); }
+.top-status { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 .top-status .icon-button { width: 30px; height: 30px; }
 
-/* Left dock — quiet vertical nav. */
-.sidebar {
-  grid-area: sidebar;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  padding: 12px 8px;
-  background: var(--bg);
-  border-right: 1px solid var(--line);
-}
-.sidebar nav { display: grid; gap: 2px; }
-.nav-item {
-  position: relative;
-  display: flex;
-  flex-direction: column;
+/* Pending-approval badge — quiet pill, count carries the only warm tone. */
+.approval-badge {
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 9px 2px 7px;
-  border-radius: var(--r-md);
-  color: var(--ink-3);
-  font-size: var(--text-xs);
-  font-weight: 500;
-  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease), transform var(--dur) var(--ease);
-}
-.nav-item:hover { background: var(--surface-2); color: var(--ink); }
-.nav-item:not(:disabled):active { transform: scale(.97); }
-.nav-item.active { background: var(--surface-2); color: var(--ink); }
-.nav-item.active::before {
-  content: "";
-  position: absolute;
-  left: -8px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 2px;
-  height: 18px;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
   border-radius: var(--r-pill);
-  background: var(--accent);
+  color: var(--ink-2);
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
-.nav-item b {
-  min-width: 15px;
-  padding: 1px 4px;
-  border-radius: var(--r-pill);
-  background: var(--accent-soft);
-  color: var(--accent);
+.approval-badge:hover { background: var(--surface-2); color: var(--ink); border-color: var(--ink-3); }
+.approval-badge b {
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--text-xs);
   font-weight: 600;
-  line-height: 1.4;
-  text-align: center;
+  color: var(--warning);
+  font-variant-numeric: tabular-nums;
 }
-.dock-help {
-  margin-top: auto;
-  align-self: center;
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--line);
-  border-radius: 50%;
-  color: var(--ink-3);
-  transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease), transform var(--dur) var(--ease);
-}
-.dock-help:hover { border-color: var(--line-strong); color: var(--ink); }
-.dock-help:active { transform: scale(.94); }
 
 /* Conversation column. Block flow (not grid): grid tracks would let
    overflow:hidden children collapse to their zero automatic minimum when
@@ -392,24 +346,6 @@ select {
 }
 .main-column > * { width: 100%; max-width: 760px; margin-inline: auto; }
 .main-column > * + * { margin-top: 20px; }
-
-/* Operations rail. */
-.operation-rail {
-  grid-area: rail;
-  z-index: var(--z-rail);
-  overflow-y: auto;
-  background: var(--bg-subtle);
-  border-left: 1px solid var(--line);
-}
-.rail-heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 16px 18px 14px;
-}
-.rail-heading h2 { font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
-.rail-clock { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--ink-3); font-variant-numeric: tabular-nums; }
 
 .section-kicker {
   display: block;
@@ -436,6 +372,21 @@ select {
   font-size: var(--text-sm);
 }
 .error-banner > span { flex: 1; color: var(--ink); }
+
+/* Model-readiness banner — only present while chat is unconfigured. */
+.model-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+}
+.model-banner > div { flex: 1; min-width: 0; }
+.model-banner strong { font-size: var(--text-sm); font-weight: 600; }
+.model-banner p { margin-top: 2px; font-size: var(--text-xs); color: var(--ink-3); }
+.model-banner-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--warning); }
 
 .task-header {
   display: flex;
@@ -475,8 +426,9 @@ select {
 }
 
 /* Mission zero — the empty state. One headline, one starter list, one
-   readiness strip. No orbital decoration, no giant display type. */
-.mission-zero { padding-top: clamp(24px, 7vh, 64px); }
+   readiness strip. Centered and narrower than the feed: with no rails, the
+   empty state should read as a focused starting point, not a stretched one. */
+.mission-zero { max-width: 640px; padding-top: clamp(24px, 7vh, 64px); }
 .mission-copy h1 {
   font-size: var(--text-2xl);
   font-weight: 700;
@@ -663,28 +615,33 @@ select {
 .slash-suggestions span { flex: 1; font-size: var(--text-xs); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* --------------------------------------------------------------------------
-   Operations rail — panels are quiet stacked sections with hairline
-   separators; surfaces appear only where they carry meaning (approvals,
-   viewports, actionable rows).
+   Inline feed cards — approvals, the live computer session, and on-demand
+   insight cards share the message-row layout (avatar + main column) and one
+   quiet surface. There are no rail panels or permanent dashboards; cards
+   appear in the feed only while they carry meaning.
    -------------------------------------------------------------------------- */
-.panel { padding: 14px 18px 16px; border-top: 1px solid var(--line); }
-.panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
-.panel-title { display: flex; align-items: center; gap: 7px; color: var(--ink-3); }
-.panel-title h2 { font-size: var(--text-sm); font-weight: 700; color: var(--ink); }
-.panel-count {
-  min-width: 20px;
-  padding: 2px 6px;
-  border-radius: var(--r-pill);
-  background: var(--surface-2);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  font-weight: 500;
-  color: var(--ink-2);
-  text-align: center;
-  font-variant-numeric: tabular-nums;
+.approval-card, .computer-card, .insight-card {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  margin-block: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
 }
+.approval-card[data-open="true"] { border-left: 2px solid var(--warning); }
+.approval-card[data-open="true"] .approval-avatar { color: var(--warning); }
+.approval-card .message-meta, .computer-card .message-meta, .insight-card .message-meta {
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.insight-command { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--ink-3); }
+.insight-total { display: block; margin-top: 7px; font-size: var(--text-xs); color: var(--ink-3); }
 
 /* Computer use. */
+.computer-card .screen-frame { margin-top: 10px; }
+.computer-card .control-row { max-width: 420px; }
 .mode-pill {
   display: inline-flex;
   align-items: center;
@@ -754,25 +711,7 @@ select {
 .control-row { display: flex; gap: 8px; margin-top: 12px; }
 .control-row .btn { flex: 1 1 0; }
 
-/* Agent network. */
-.agent-network { display: grid; gap: 3px; }
-.agent-network strong { font-size: var(--text-sm); font-weight: 600; }
-.agent-network span { font-size: var(--text-xs); color: var(--ink-3); }
-.model-grid { margin-top: 12px; border-top: 1px solid var(--line); }
-.model-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 6px 0; }
-.model-row span { flex: none; font-size: var(--text-xs); color: var(--ink-2); }
-.model-row strong {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.model-row strong.warn { color: var(--warning); }
-.model-row strong.empty { color: var(--ink-3); }
-
-/* Experiments + audit. */
+/* Experiments + audit rows inside insight cards. */
 .experiment-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 9px 0; }
 .experiment-row + .experiment-row { border-top: 1px solid var(--line); }
 .experiment-row > div { display: grid; gap: 3px; min-width: 0; }
@@ -794,26 +733,16 @@ select {
 .empty strong { font-size: var(--text-sm); font-weight: 600; color: var(--ink-2); }
 .empty span { font-size: var(--text-xs); line-height: 1.55; color: var(--ink-3); }
 
-/* Approval gate. */
-.approval-item {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 10px;
-  padding: 13px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-}
-.approval-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.approval-head strong { font-size: 13.5px; font-weight: 700; letter-spacing: -.01em; }
-.approval-campaign { font-size: var(--text-sm); color: var(--ink-2); }
-.approval-delta { display: flex; align-items: center; gap: 12px; }
+/* Approval card — collapsed by default; disclosure and engineering fields
+   open one level at a time. */
+.approval-campaign { margin-top: 4px; font-size: var(--text-sm); color: var(--ink-2); }
+.approval-delta { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
 .approval-delta > div { display: grid; gap: 2px; }
 .approval-delta dt { font-size: var(--text-xs); color: var(--ink-3); }
 .approval-delta dd { font-family: var(--font-mono); font-size: var(--text-md); font-weight: 600; font-variant-numeric: tabular-nums; }
 .delta-arrow { color: var(--ink-3); }
 
-.approval-disclosure { border-top: 1px solid var(--line); }
+.approval-disclosure { margin-top: 12px; border-top: 1px solid var(--line); }
 .approval-disclosure-section { padding: 10px 0; }
 .approval-disclosure-section + .approval-disclosure-section { border-top: 1px solid var(--line); }
 .approval-disclosure-section h3 {
@@ -841,7 +770,23 @@ select {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.approval-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.approval-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
+.approval-technical-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--ink-2);
+  transition: color var(--dur) var(--ease);
+}
+.approval-technical-toggle:hover { color: var(--ink); }
+.approval-technical-toggle svg { transition: transform var(--dur) var(--ease); }
+.approval-technical-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
 
 /* --------------------------------------------------------------------------
    Settings dialog.
@@ -1196,9 +1141,9 @@ select {
 /* --------------------------------------------------------------------------
    Scrollbars, reduced motion.
    -------------------------------------------------------------------------- */
-.main-column, .operation-rail, .settings-content { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
-.main-column::-webkit-scrollbar, .operation-rail::-webkit-scrollbar, .settings-content::-webkit-scrollbar { width: 8px; }
-.main-column::-webkit-scrollbar-thumb, .operation-rail::-webkit-scrollbar-thumb, .settings-content::-webkit-scrollbar-thumb {
+.main-column, .settings-content { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+.main-column::-webkit-scrollbar, .settings-content::-webkit-scrollbar { width: 8px; }
+.main-column::-webkit-scrollbar-thumb, .settings-content::-webkit-scrollbar-thumb {
   background: var(--line-strong);
   border-radius: var(--r-pill);
 }

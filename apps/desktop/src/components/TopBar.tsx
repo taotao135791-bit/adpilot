@@ -1,16 +1,21 @@
 import type { ConsoleCopy } from "../labels.js";
 import type { Client } from "../types.js";
 import { Button, Tooltip } from "../ui.js";
-import { IconChat, IconChevronDown, IconHelp, IconLedger, IconSettings, IconShieldCheck, IconTarget } from "../icons.js";
+import { IconChevronDown, IconSettings, IconShieldCheck } from "../icons.js";
 
-export type NavTarget = "mission" | "tests" | "review" | "ledger";
-
-export function TopBar({ copy, clients, clientId, chatConfigured, onSelectClient, onOpenSettings }: {
+/**
+ * Product chrome, kept to three jobs: workspace switching, the pending-
+ * approval badge (scrolls to the oldest open approval card in the feed),
+ * and the settings entry. Model readiness is intentionally not reported
+ * here — it appears as an in-feed banner only when chat is unconfigured.
+ */
+export function TopBar({ copy, clients, clientId, pendingApprovals, onSelectClient, onJumpToApprovals, onOpenSettings }: {
   copy: ConsoleCopy;
   clients: Client[];
   clientId: string;
-  chatConfigured: boolean;
+  pendingApprovals: number;
   onSelectClient: (clientId: string) => void;
+  onJumpToApprovals: () => void;
   onOpenSettings: () => void;
 }) {
   return (
@@ -35,52 +40,23 @@ export function TopBar({ copy, clients, clientId, chatConfigured, onSelectClient
         ) : <strong>{copy.noWorkspace}</strong>}
       </div>
       <div className="top-status">
-        <span className="live-label"><i data-ready={chatConfigured} aria-hidden="true" />{chatConfigured ? copy.conversationReady : copy.modelRequired}</span>
+        {pendingApprovals > 0 && (
+          <Tooltip content={copy.jumpToApproval} side="bottom">
+            <button
+              type="button"
+              className="approval-badge"
+              aria-label={`${copy.pendingApprovals} ${pendingApprovals}`}
+              onClick={onJumpToApprovals}
+            >
+              <IconShieldCheck size={14} />
+              <b>{pendingApprovals}</b>
+            </button>
+          </Tooltip>
+        )}
         <Tooltip content={copy.settings} side="bottom">
           <Button variant="subtle" className="icon-button" icon={<IconSettings size={17} />} aria-label={copy.settings} onClick={onOpenSettings} />
         </Tooltip>
       </div>
     </header>
-  );
-}
-
-export function NavRail({ copy, testsCount, reviewCount, ledgerCount, onNavigate, onOpenAbout }: {
-  copy: ConsoleCopy;
-  testsCount: number;
-  reviewCount: number;
-  ledgerCount: number;
-  onNavigate: (target: NavTarget) => void;
-  onOpenAbout: () => void;
-}) {
-  return (
-    <aside className="sidebar">
-      <nav aria-label={copy.navigation}>
-        <NavItem icon={<IconChat size={17} />} label={copy.mission} active onClick={() => onNavigate("mission")} />
-        <NavItem icon={<IconTarget size={17} />} label={copy.tests} count={testsCount} onClick={() => onNavigate("tests")} />
-        <NavItem icon={<IconShieldCheck size={17} />} label={copy.review} count={reviewCount} onClick={() => onNavigate("review")} />
-        <NavItem icon={<IconLedger size={17} />} label={copy.ledger} count={ledgerCount} onClick={() => onNavigate("ledger")} />
-      </nav>
-      <Tooltip content={copy.settings} side="right">
-        <button className="dock-help" onClick={onOpenAbout} aria-label={copy.settings}>
-          <IconHelp size={14} />
-        </button>
-      </Tooltip>
-    </aside>
-  );
-}
-
-function NavItem({ icon, label, count, active = false, onClick }: {
-  icon: React.ReactNode;
-  label: string;
-  count?: number;
-  active?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button className={`nav-item${active ? " active" : ""}`} onClick={onClick}>
-      {icon}
-      <span>{label}</span>
-      {count !== undefined && count > 0 && <b>{count}</b>}
-    </button>
   );
 }

@@ -9,6 +9,8 @@ import {
   isLocalModelEndpoint,
   migrateLegacyFactDispatch,
   PermissionLevel,
+  PLAN_MODE_READ_TOOL_NAMES,
+  READ_ONLY_SKILL_NAMES,
   SharedFact,
   SharedFactLedger,
   SharedFactStatus,
@@ -225,11 +227,54 @@ describe("tool permission gate table", () => {
     expect(classifyToolCall("read_workspace", {}).defaulted).toBe(false);
   });
 
+  it("classifies the main-agent write/edit tools as executed-approval writes, never defaulted", () => {
+    for (const name of ["write", "edit"]) {
+      const classification = classifyToolCall(name, { path: "reports/daily.md" });
+      expect(classification.class, name).toBe("write");
+      expect(classification.defaulted, name).toBe(false);
+      expect(classification.rule.authority, name).toBe("approval_reference");
+      expect(classification.rule.referenceStatuses, name).toEqual(["executed"]);
+    }
+  });
+
+  it("classifies bash per command: whitelisted reads flow, writes need the executed approval, deny maps to destructive", () => {
+    for (const command of ["ls -la", "git status", "cat reports/daily.md | grep CPA"]) {
+      const classification = classifyToolCall("bash", { command });
+      expect(classification.class, command).toBe("read");
+      expect(classification.defaulted, command).toBe(false);
+    }
+    for (const command of ["npm install", "echo hi > notes.md", "node scripts/build.mjs"]) {
+      expect(classifyToolCall("bash", { command }).class, command).toBe("write");
+    }
+    for (const command of ["curl https://ads.google.com", "screencapture /tmp/x.png", "sudo ls", "rm -rf /", "cat .adpilot/approval-secret"]) {
+      expect(classifyToolCall("bash", { command }).class, command).toBe("destructive");
+    }
+    const rule = TOOL_GATE_RULES.bash;
+    expect(rule?.authority).toBe("approval_reference");
+    expect(rule?.referenceStatuses).toEqual(["executed"]);
+    // The gate-level pass runs without args or a workspace root and never floors to read.
+    expect(classifyToolCall("bash", {}).class).toBe("write");
+    expect(classifyToolCall("bash", { command: "echo $(date)" }).class).toBe("write");
+  });
+
   it("covers every Pi tool name with a rule that has a reason", () => {
     for (const name of ["read_workspace", "analyze_campaign_metrics", "evaluate_change_guardrail", "read_visual_table",
-      "read", "grep", "find", "ls",
+      "read", "grep", "find", "ls", "write", "edit", "bash",
       "dispatch_specialist", "prepare_approval", "execute_skill", "commit_approved_action"]) {
       expect(TOOL_GATE_RULES[name]?.reason.length, name).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps the plan-mode read tool set inside the classified tool surface", () => {
+    for (const name of PLAN_MODE_READ_TOOL_NAMES) {
+      expect(TOOL_GATE_RULES[name], name).toBeDefined();
+    }
+    for (const removed of ["write", "edit", "bash", "prepare_approval", "commit_approved_action"]) {
+      expect(PLAN_MODE_READ_TOOL_NAMES, removed).not.toContain(removed);
+    }
+    expect(READ_ONLY_SKILL_NAMES.length).toBeGreaterThan(0);
+    for (const skill of READ_ONLY_SKILL_NAMES) {
+      expect(classifyToolCall("execute_skill", { name: skill, input: {} }).class, skill).toBe("read");
     }
   });
 

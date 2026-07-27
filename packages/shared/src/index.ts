@@ -1,4 +1,18 @@
 import { z } from "zod";
+import { bashVerdictToGateClass, classifyBashToolArgs } from "./bash-classifier.js";
+
+export {
+  bashVerdictToGateClass,
+  classifyBashCommand,
+  classifyBashToolArgs,
+  isProtectedToken
+} from "./bash-classifier.js";
+export type {
+  BashClassification,
+  BashClassifierOptions,
+  BashCommandVerdict,
+  SimpleCommandVerdict
+} from "./bash-classifier.js";
 
 export const PermissionLevel = z.enum(["OBSERVE", "INTERACT", "MUTATE", "DESTRUCTIVE"]);
 export type PermissionLevel = z.infer<typeof PermissionLevel>;
@@ -632,6 +646,29 @@ const READ_SKILL_NAMES: readonly string[] = [
   "account-audit"
 ];
 
+/** Read-only skills are the only ones plan mode keeps available. */
+export const READ_ONLY_SKILL_NAMES: readonly string[] = READ_SKILL_NAMES;
+
+/**
+ * Tool names plan mode keeps for the main agent: the confined read-only set
+ * plus the deterministic analysis tools and read-classified dispatches. Every
+ * other tool (write, edit, bash, prepare_approval, commit_approved_action) is
+ * removed, and the runtime gate additionally denies any non-read
+ * classification while plan mode is on.
+ */
+export const PLAN_MODE_READ_TOOL_NAMES: readonly string[] = [
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "read_workspace",
+  "read_visual_table",
+  "analyze_campaign_metrics",
+  "evaluate_change_guardrail",
+  "dispatch_specialist",
+  "execute_skill"
+];
+
 function classifyExecuteSkill(args: unknown): ToolPermissionClass {
   const name = recordAt(args, "name");
   if (typeof name === "string" && READ_SKILL_NAMES.includes(name)) return "read";
@@ -648,8 +685,9 @@ function classifyDispatchSpecialist(args: unknown): ToolPermissionClass {
 /**
  * Every tool a model can invoke through PiAgentRuntime, classified.
  * Names must stay in sync with AdPilotTools.toPiTools (including the vendored
- * general read-only set read/grep/find/ls), the execute_skill tool, and the
- * orchestrator tools; unlisted names fall back to DEFAULT_TOOL_GATE_RULE.
+ * general read-only set read/grep/find/ls), the main-agent-only general
+ * write/edit/bash set, the execute_skill tool, and the orchestrator tools;
+ * unlisted names fall back to DEFAULT_TOOL_GATE_RULE.
  */
 export const TOOL_GATE_RULES: Readonly<Record<string, ToolGateRule>> = {
   read_workspace: {
@@ -676,6 +714,24 @@ export const TOOL_GATE_RULES: Readonly<Record<string, ToolGateRule>> = {
     classify: "read",
     authority: "self_gated",
     reason: "Lists directory entries inside the same confined roots as read; no writes."
+  },
+  write: {
+    classify: "write",
+    authority: "approval_reference",
+    referenceStatuses: ["executed"],
+    reason: "Writes a file inside the workspace (never outside it, never into .adpilot, never onto a protected path). Persists operational state, so it must reference the executed approval of the same client and task, exactly like ledger-writing skills."
+  },
+  edit: {
+    classify: "write",
+    authority: "approval_reference",
+    referenceStatuses: ["executed"],
+    reason: "Targeted in-place rewrite of a workspace file under the same confinement and executed-approval semantics as write."
+  },
+  bash: {
+    classify: (args: unknown): ToolPermissionClass => bashVerdictToGateClass(classifyBashToolArgs(args).verdict),
+    authority: "approval_reference",
+    referenceStatuses: ["executed"],
+    reason: "Deterministic per-command classification: whitelisted read commands flow; writes (redirects, installs, unknown programs, unparseable input) require an executed approval reference; network egress, screen capture, credential/profile-store access, privilege/process control and rm -rf are mapped to destructive and additionally hard-denied inside the tool before any execution, with every decision audited."
   },
   analyze_campaign_metrics: {
     classify: "read",

@@ -2,6 +2,7 @@ import { AuditLog } from "@adpilot/audit";
 import type { ApprovalService } from "@adpilot/approvals";
 import type { ToolContext } from "@adpilot/tools";
 import { classifyToolCall, extractApprovalCredentials, stableJson, type ToolGateRule } from "@adpilot/shared";
+import type { PlanModeProbe } from "./plan-mode.js";
 
 /**
  * Deterministic write-operation gate enforced in Agent.beforeToolCall.
@@ -13,11 +14,17 @@ import { classifyToolCall, extractApprovalCredentials, stableJson, type ToolGate
  * into the tamper-evident audit log. This removes the previous reliance on each
  * tool policing itself (architecture invariant: model output never bypasses the
  * deterministic guardrails).
+ *
+ * Plan mode is the one session-level override: while it is enabled for the
+ * conversation, every non-read classification is denied outright (the
+ * read-only tool shrink is the primary mechanism; this is the deterministic
+ * backstop for anything that still reached the model's tool list).
  */
 export class ToolPermissionGate {
   constructor(
     private readonly approvals: ApprovalService,
-    private readonly audit: AuditLog
+    private readonly audit: AuditLog,
+    private readonly planMode?: PlanModeProbe
   ) {}
 
   /**
@@ -25,10 +32,15 @@ export class ToolPermissionGate {
    * when it may proceed. Allowed write/destructive decisions and every denial
    * are appended to the audit hash chain.
    */
-  async check(toolName: string, args: unknown, context: ToolContext): Promise<string | null> {
+  async check(toolName: string, args: unknown, context: ToolContext & { conversationId?: string }): Promise<string | null> {
     const { rule, class: classification, defaulted } = classifyToolCall(toolName, args);
     if (classification === "read") return null;
-    const denial = await this.authorize(rule, toolName, args, context);
+    const planModeOn = this.planMode && typeof context.conversationId === "string"
+      ? await this.planMode.isEnabled(context.clientId, context.conversationId).catch(() => false)
+      : false;
+    const denial = planModeOn
+      ? `Plan mode is active for this conversation: ${toolName} is a ${classification} operation and only read-only tools are available. Present the numbered plan and ask the user to disable plan mode to execute it.`
+      : await this.authorize(rule, toolName, args, context);
     await this.audit.append({
       clientId: context.clientId,
       taskId: context.taskId,
@@ -40,6 +52,7 @@ export class ToolPermissionGate {
         classification,
         authority: rule.authority,
         defaulted,
+        ...(planModeOn ? { planMode: true } : {}),
         ...(denial ? { reason: denial } : { referenceStatuses: rule.referenceStatuses ?? [] })
       }
     });
