@@ -30,6 +30,18 @@ Preview bytes are served only from the loopback desktop origin, are bounded in s
 carry `no-store`, and are rejected when the requested session/generation is stale.
 The ordinary product event stream continues to omit screenshot bytes.
 
+### As-built mapping (verified 2026-07-28)
+
+The implemented envelope is `DesktopLiveFrame` in `packages/server/src/desktop-native.ts`:
+`frameId` (sha256 of the preview bytes), `browserSessionId`, `dataUrl` (JPEG ≤ 1920×1080,
+8 MiB cap), `source` (native capture size), `application`/`window`/`browser.pageIdentity`,
+and an optional in-window `cursor`. It is served by `GET /api/desktop-native/live-frame`
+behind the per-instance cookie guard, deduplicated by `DesktopLiveFrameBroker`, and
+produced by `ElectronDesktopNativeBridge.captureLiveFrame`, which rejects any frame whose
+window/process/bundle lease differs from the requested binding. Session/generation
+staleness is enforced by the Product+Browser session binding on the route rather than a
+frame field. `scripts/live-view-e2e.ts` proves this chain on real hardware.
+
 ## Overlay coordinates
 
 Overlays use source-frame pixels. The renderer fits the frame with a single uniform
