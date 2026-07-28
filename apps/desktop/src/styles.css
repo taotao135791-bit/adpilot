@@ -1,8 +1,9 @@
 /* ==========================================================================
    AdPilot desktop — token-driven design system.
-   Restrained, conversation-first, tool-grade. One accent hue (chartreuse,
-   inherited from the app icon), one cool neutral gray family, one definition
-   per semantic color. Dark theme is primary; light theme is a full citizen.
+   Restrained, conversation-first, tool-grade. Monochrome ink accent (Codex/
+   Kimi-style near-black on light, near-white on dark), one cool neutral gray
+   family, one definition per semantic color. Dark theme is primary; light
+   theme is a full citizen.
    ========================================================================== */
 
 :root {
@@ -64,15 +65,15 @@ code, pre { font-family: var(--font-mono); }
   --line: hsl(220 12% 12% / 9%);
   --line-strong: hsl(220 12% 12% / 16%);
 
-  --accent: hsl(79 70% 34%);
-  --accent-strong: hsl(79 72% 28%);
+  --accent: #181B1E;
+  --accent-strong: #000000;
   --accent-ink: #FFFFFF;
-  --accent-soft: hsl(79 60% 40% / 10%);
+  --accent-soft: hsl(220 12% 12% / 7%);
 
-  --success: hsl(152 55% 32%);
+  --success: hsl(210 75% 42%);
   --warning: hsl(33 80% 36%);
   --danger: hsl(5 62% 46%);
-  --success-soft: hsl(152 55% 35% / 10%);
+  --success-soft: hsl(210 75% 42% / 10%);
   --warning-soft: hsl(33 80% 40% / 10%);
   --danger-soft: hsl(5 62% 46% / 9%);
 
@@ -95,15 +96,15 @@ code, pre { font-family: var(--font-mono); }
   --line: hsl(0 0% 100% / 7%);
   --line-strong: hsl(0 0% 100% / 14%);
 
-  --accent: hsl(79 74% 60%);
-  --accent-strong: hsl(79 78% 67%);
-  --accent-ink: hsl(80 50% 8%);
-  --accent-soft: hsl(79 74% 60% / 12%);
+  --accent: #E8EAED;
+  --accent-strong: #FFFFFF;
+  --accent-ink: hsl(220 12% 10%);
+  --accent-soft: hsl(0 0% 100% / 8%);
 
-  --success: hsl(152 45% 55%);
+  --success: hsl(210 80% 62%);
   --warning: hsl(38 75% 60%);
   --danger: hsl(5 70% 64%);
-  --success-soft: hsl(152 45% 55% / 13%);
+  --success-soft: hsl(210 80% 62% / 13%);
   --warning-soft: hsl(38 75% 60% / 13%);
   --danger-soft: hsl(5 70% 64% / 12%);
 
@@ -1493,3 +1494,16 @@ select {
 .plugin-confirm p { font-size: var(--text-sm); color: var(--ink-2); }
 .plugin-confirm-reason { font-family: var(--font-mono); font-size: var(--text-xs) !important; color: var(--ink-3) !important; word-break: break-all; }
 .plugin-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* Settings: checkbox toggle row (dual-model, reasoning) */
+.settings-toggle { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; margin-top: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); cursor: pointer; }
+.settings-toggle input { margin-top: 3px; accent-color: var(--accent); }
+.settings-toggle strong { display: block; font-size: var(--text-sm); font-weight: 600; }
+.settings-toggle span { display: block; margin-top: 2px; font-size: var(--text-xs); color: var(--ink-3); }
+
+/* Task header actions + workspace modal fields */
+.task-header-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.workspace-field { display: flex; flex-direction: column; gap: 6px; }
+.workspace-field span { font-size: var(--text-xs); color: var(--ink-3); }
+.workspace-field input { height: 34px; padding: 0 10px; font-size: var(--text-sm); color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-md); }
+.workspace-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }

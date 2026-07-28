@@ -10,7 +10,8 @@ type CatalogProvider = { id: string; name: string; baseUrl?: string; auth: { api
 export type SettingsData = {
   locale: AppLocale;
   appearance: "dark" | "light" | "system";
-  models: { fast: { provider: string; model: string }; strong: { provider: string; model: string } };
+  models: { fast: { provider: string; model: string }; strong: { provider: string; model: string }; strongConfigured?: boolean };
+  reasoning?: { effort: "off" | "low" | "medium" | "high"; scope: "strong" | "all" };
   values: Record<string, string>;
   configured: Record<string, boolean>;
   catalog: { providers: CatalogProvider[]; computerFields: SettingsField[] };
@@ -56,6 +57,9 @@ export function SettingsPanel({ open, data, clientId, initialTab = "general", lo
   const [locale, setLocale] = useState<AppLocale>(data?.locale ?? "zh-CN");
   const [appearance, setAppearance] = useState<"dark" | "light" | "system">(data?.appearance ?? "dark");
   const [models, setModels] = useState(data?.models);
+  const [dualModel, setDualModel] = useState(data?.models.strongConfigured ?? true);
+  const [reasoningEffort, setReasoningEffort] = useState<"off" | "low" | "medium" | "high">(data?.reasoning?.effort ?? "off");
+  const [reasoningScope, setReasoningScope] = useState<"strong" | "all">(data?.reasoning?.scope ?? "strong");
   const [credentialProvider, setCredentialProvider] = useState(data?.models.fast.provider ?? "openai");
   const [envDraft, setEnvDraft] = useState<Record<string, string>>({});
   const [cleared, setCleared] = useState<Set<string>>(new Set());
@@ -77,6 +81,9 @@ export function SettingsPanel({ open, data, clientId, initialTab = "general", lo
     setLocale(data.locale);
     setAppearance(data.appearance);
     setModels(data.models);
+    setDualModel(data.models.strongConfigured ?? true);
+    setReasoningEffort(data.reasoning?.effort ?? "off");
+    setReasoningScope(data.reasoning?.scope ?? "strong");
     setCredentialProvider(data.models.fast.provider);
     setEnvDraft(data.values);
     setCleared(new Set());
@@ -134,7 +141,7 @@ export function SettingsPanel({ open, data, clientId, initialTab = "general", lo
   }
 
   async function save() {
-    if (!data || !models?.fast.model || !models.strong.model) return;
+    if (!data || !models?.fast.model || (dualModel && !models.strong.model)) return;
     setSaving(true); setMessage("");
     try {
       const fields = data.catalog.providers.flatMap((provider) => provider.fields).concat(data.catalog.computerFields);
@@ -144,7 +151,9 @@ export function SettingsPanel({ open, data, clientId, initialTab = "general", lo
         else if (item.secret) { if (envDraft[item.env]?.trim()) env[item.env] = envDraft[item.env]!.trim(); }
         else env[item.env] = envDraft[item.env] ?? "";
       }
-      const response = await fetch("/api/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ locale, appearance, models, env }) });
+      // Single-model mode: omitting `strong` makes every role share `fast`.
+      const modelPayload = { fast: models.fast, ...(dualModel ? { strong: models.strong } : {}) };
+      const response = await fetch("/api/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ locale, appearance, models: modelPayload, reasoning: { effort: reasoningEffort, scope: reasoningScope }, env }) });
       const body = await response.json();
       if (!response.ok) throw new Error(text.saveFailed);
       const refreshed = await fetch("/api/settings");
@@ -217,8 +226,19 @@ export function SettingsPanel({ open, data, clientId, initialTab = "general", lo
           {data && tab === "models" && models && <SettingsSection title={text.modelsTitle} body={text.modelsBody}>
             <div className="route-grid">
               <ModelRoute label={text.fastRoute} hint={text.fastHint} selection={models.fast} providers={data.catalog.providers} providerLabel={text.provider} modelLabel={text.model} visionLabel={text.visionCapability} onProvider={(provider) => changeProvider("fast", provider)} onModel={(model) => setModels({ ...models, fast: { ...models.fast, model } })} />
-              <ModelRoute label={text.strongRoute} hint={text.strongHint} selection={models.strong} providers={data.catalog.providers} providerLabel={text.provider} modelLabel={text.model} visionLabel={text.visionCapability} onProvider={(provider) => changeProvider("strong", provider)} onModel={(model) => setModels({ ...models, strong: { ...models.strong, model } })} />
+              {dualModel && <ModelRoute label={text.strongRoute} hint={text.strongHint} selection={models.strong} providers={data.catalog.providers} providerLabel={text.provider} modelLabel={text.model} visionLabel={text.visionCapability} onProvider={(provider) => changeProvider("strong", provider)} onModel={(model) => setModels({ ...models, strong: { ...models.strong, model } })} />}
             </div>
+            <label className="settings-toggle"><input type="checkbox" checked={dualModel} onChange={(event) => setDualModel(event.target.checked)} /><div><strong>{text.dualModel}</strong><span>{text.dualModelHint}</span></div></label>
+            <div className="settings-divider" />
+            <div className="subsection-heading"><div><span>{text.reasoningTitle}</span><h3>{text.reasoningEffort}</h3></div></div>
+            <p className="settings-note"><i />{text.reasoningBody}</p>
+            <SettingBlock label={text.reasoningEffort} hint={text.reasoningScope}>
+              <Segmented value={reasoningEffort} options={[{ value: "off", label: text.effortOff }, { value: "low", label: text.effortLow }, { value: "medium", label: text.effortMedium }, { value: "high", label: text.effortHigh }]} onChange={(value) => setReasoningEffort(value as typeof reasoningEffort)} />
+            </SettingBlock>
+            <SettingBlock label={text.reasoningScope} hint="">
+              <Segmented value={reasoningScope} options={[{ value: "strong", label: text.scopeStrong }, { value: "all", label: text.scopeAll }]} onChange={(value) => setReasoningScope(value as typeof reasoningScope)} />
+            </SettingBlock>
+            {reasoningEffort !== "off" && !supportsReasoning(data, models, dualModel) && <div className="settings-note important"><i />{text.reasoningUnsupported}</div>}
             <div className="settings-divider" />
             <div className="subsection-heading"><div><span>{text.runtimeRoutes}</span><h3>{text.runtimeRoutesTitle}</h3></div></div>
             <RuntimeRoutes runtime={data.runtimeModels} locale={locale} />
@@ -294,8 +314,15 @@ function OAuthConnection({ session, connected, input, text, onInput, onStart, on
   </div>;
 }
 
-function CredentialField({ field, locale, configured, value, cleared, onChange, onClear }: { field: SettingsField; locale: AppLocale; configured?: boolean; value: string; cleared: boolean; onChange: (value: string) => void; onClear: () => void }) {
-  const isZh = locale === "zh-CN";
+function CredentialField({ field, locale, configured, value, cleared, onChange, onClear }: { field: SettingsField; locale: AppLocale; configured?: boolean; value: string; cleared: boolean; onChange: (value: string) => void; onClear: () => void }) {  const isZh = locale === "zh-CN";
   return <label className="settings-field"><span>{isZh ? field.label.zh : field.label.en}{field.required && <b>{isZh ? "必填" : "Required"}</b>}</span><div className="field-control"><input type={field.secret ? "password" : "text"} value={value} placeholder={field.secret && configured && !cleared ? (isZh ? "已安全保存；留空则保持不变" : "Saved securely; leave blank to keep") : field.placeholder ?? ""} onChange={(event) => onChange(event.target.value)} />{field.secret && configured && !cleared && <button type="button" onClick={onClear}>{isZh ? "清除" : "Clear"}</button>}</div><small>{field.env}{configured && !cleared ? ` · ${isZh ? "已配置" : "Configured"}` : ""}{cleared ? ` · ${isZh ? "保存后清除" : "Will be cleared"}` : ""}</small></label>;
 }
 
+
+/** True when any model that would receive the reasoning effort supports it —
+    the deep-role model when scope is "strong" (or dual-model), else the shared one. */
+function supportsReasoning(data: SettingsData, models: SettingsData["models"], dualModel: boolean): boolean {
+  const has = (selection: { provider: string; model: string }) =>
+    data.catalog.providers.find((provider) => provider.id === selection.provider)?.models.some((model) => model.id === selection.model && model.reasoning) ?? false;
+  return has(models.fast) || (dualModel && has(models.strong));
+}

@@ -22,8 +22,8 @@ import { Composer } from "./components/Composer.js";
 import { MissionZero } from "./components/MissionZero.js";
 import { PluginsView } from "./components/PluginsView.js";
 import type { ComputerControlAction } from "./components/ComputerUseCard.js";
-import { Badge, Button } from "./ui.js";
-import { IconError, IconSettings } from "./icons.js";
+import { Badge, Button, Tooltip } from "./ui.js";
+import { IconDismiss, IconError, IconSettings } from "./icons.js";
 
 /**
  * Codex-style skeleton: a collapsible sidebar (brand, new conversation,
@@ -64,6 +64,10 @@ export function App() {
   const [mainView, setMainView] = useState<"chat" | "plugins">("chat");
   /** Bumped on every plugin SSE event; PluginsView refetches on change. */
   const [pluginTick, setPluginTick] = useState(0);
+  /** Workspace-creation modal. */
+  const [workspaceModalOpen, setWorkspaceModalOpen] = useState(false);
+  const [workspaceDraft, setWorkspaceDraft] = useState({ id: "", name: "", target: "20" });
+  const [workspaceSaving, setWorkspaceSaving] = useState(false);
   const copy = getCopy(locale);
 
   /** One-time adoption of the server-selected (or most recent) session per client. */
@@ -330,6 +334,7 @@ export function App() {
   }
 
   function selectClient(next: string) {
+    if (next === "__new_workspace__") { setWorkspaceModalOpen(true); return; }
     setClientId(next);
     setSelectedSessionId(null);
     setConversationId("primary");
@@ -465,6 +470,37 @@ export function App() {
     document.querySelector(`[data-approval="${CSS.escape(target.id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
+  /** Dismiss a blocked/completed task banner — archives server-side (audited, restorable), then refetches. */
+  async function dismissTask(taskId: string) {
+    try {
+      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/archive`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId }) });
+      if (!response.ok) throw new Error(copy.taskError);
+      await loadState(clientId);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  async function createWorkspace() {
+    const id = workspaceDraft.id.trim();
+    const name = workspaceDraft.name.trim() || id;
+    const target = Number(workspaceDraft.target);
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(id) || !Number.isFinite(target) || target <= 0 || workspaceSaving) return;
+    setWorkspaceSaving(true);
+    try {
+      const response = await fetch("/api/clients", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ profile: { id, name }, kpi: { primary: "CPA", target, currency: "USD" } }) });
+      const body = await response.json().catch(() => undefined) as { id?: string; error?: string } | undefined;
+      if (!response.ok || !body?.id) throw new Error(body?.error ?? copy.taskError);
+      setWorkspaceModalOpen(false);
+      setWorkspaceDraft({ id: "", name: "", target: "20" });
+      selectClient(body.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setWorkspaceSaving(false);
+    }
+  }
+
   function openSettings(tab: SettingsTab) {
     setSettingsTab(tab);
     setSettingsOpen(true);
@@ -543,7 +579,12 @@ export function App() {
                   <h1>{currentTask.goal}</h1>
                   <p>{currentTask.nextStep ? nextStepLabel(currentTask.nextStep, locale) : copy.preparingEvidence}</p>
                 </div>
-                <Badge tone={phaseTone(currentTask.phase)} variant="soft">{phaseLabel(currentTask.phase, locale)}</Badge>
+                <div className="task-header-actions">
+                  <Badge tone={phaseTone(currentTask.phase)} variant="soft">{phaseLabel(currentTask.phase, locale)}</Badge>
+                  <Tooltip content={copy.dismissTask} side="top">
+                    <Button size="sm" variant="subtle" className="icon-button" aria-label={copy.dismissTask} icon={<IconDismiss size={13} />} onClick={() => void dismissTask(currentTask.id)} />
+                  </Tooltip>
+                </div>
               </section>
               <section className="task-ledger" aria-label={copy.activeMission}>
                 <Metric label={copy.evidenceSteps} value={String(currentTask.completedSteps.length).padStart(2, "0")} />
@@ -614,6 +655,30 @@ export function App() {
         onClose={() => setSettingsOpen(false)}
         onSaved={applySettings}
       />
+
+      {workspaceModalOpen && (
+        <div className="plugin-confirm-overlay" role="presentation" onClick={() => setWorkspaceModalOpen(false)}>
+          <div className="plugin-confirm" role="dialog" aria-modal="true" aria-label={copy.createWorkspaceTitle} onClick={(event) => event.stopPropagation()}>
+            <h2>{copy.createWorkspaceTitle}</h2>
+            <label className="workspace-field">
+              <span>{copy.workspaceIdLabel}</span>
+              <input value={workspaceDraft.id} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, id: event.target.value })} placeholder="demo-client" autoFocus />
+            </label>
+            <label className="workspace-field">
+              <span>{copy.workspaceNameLabel}</span>
+              <input value={workspaceDraft.name} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, name: event.target.value })} placeholder="Demo Client" />
+            </label>
+            <label className="workspace-field">
+              <span>{copy.workspaceKpiLabel} (CPA · USD)</span>
+              <input value={workspaceDraft.target} inputMode="decimal" onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, target: event.target.value })} />
+            </label>
+            <div className="plugin-confirm-actions">
+              <Button size="sm" variant="subtle" onClick={() => setWorkspaceModalOpen(false)}>{pluginsCopy(locale).cancel}</Button>
+              <Button size="sm" variant="primary" disabled={workspaceSaving || !/^[a-z0-9][a-z0-9-]*$/.test(workspaceDraft.id.trim())} onClick={() => void createWorkspace()}>{copy.createAction}</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

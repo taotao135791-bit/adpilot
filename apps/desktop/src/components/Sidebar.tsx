@@ -243,6 +243,7 @@ export function Sidebar({ copy, locale, clients, clientId, sessions, searching, 
             <div className="select-wrap">
               <select id="sidebar-client-select" value={clientId} onChange={(event) => onSelectClient(event.target.value)}>
                 {clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
+                <option value="__new_workspace__">{copy.newWorkspace}</option>
               </select>
               <IconChevronDown size={12} />
             </div>
