@@ -71,6 +71,7 @@ struct WindowSurfaceIdentity: Equatable, Sendable {
 
 struct WindowSurfaceLease: Equatable, Sendable {
     let generation: String
+    let sessionId: String
     let identity: WindowSurfaceIdentity
     let capturePixelWidth: Int
     let capturePixelHeight: Int
@@ -80,6 +81,7 @@ struct WindowSurfaceLease: Equatable, Sendable {
     var dictionary: [String: Any] {
         [
             "generation": generation,
+            "sessionId": sessionId,
             "target": "window",
             "windowId": identity.windowId,
             "ownerPid": identity.ownerPid,
@@ -107,6 +109,7 @@ struct WindowSurfaceLease: Equatable, Sendable {
             object,
             allowed: [
                 "generation",
+                "sessionId",
                 "target",
                 "windowId",
                 "ownerPid",
@@ -123,6 +126,14 @@ struct WindowSurfaceLease: Equatable, Sendable {
         guard let generation = object["generation"] as? String,
               UUID(uuidString: generation) != nil else {
             throw HelperFailure("INVALID_PARAMS", "surfaceLease.generation must be a UUID")
+        }
+        guard let sessionId = object["sessionId"] as? String,
+              !sessionId.isEmpty,
+              sessionId.utf8.count <= 128 else {
+            throw HelperFailure(
+                "INVALID_PARAMS",
+                "surfaceLease.sessionId must be a bounded non-empty string"
+            )
         }
         let windowId = try boundedInteger(
             object["windowId"],
@@ -163,6 +174,7 @@ struct WindowSurfaceLease: Equatable, Sendable {
         }
         return WindowSurfaceLease(
             generation: generation.lowercased(),
+            sessionId: sessionId,
             identity: WindowSurfaceIdentity(
                 windowId: windowId,
                 ownerPid: ownerPid,
@@ -205,6 +217,7 @@ actor SurfaceLeaseStore {
 
     func issue(
         identity: WindowSurfaceIdentity,
+        sessionId: String,
         capturePixelWidth: Int,
         capturePixelHeight: Int,
         durationMs: Int,
@@ -217,6 +230,7 @@ actor SurfaceLeaseStore {
         }
         let lease = WindowSurfaceLease(
             generation: UUID().uuidString.lowercased(),
+            sessionId: sessionId,
             identity: identity,
             capturePixelWidth: capturePixelWidth,
             capturePixelHeight: capturePixelHeight,
@@ -227,11 +241,21 @@ actor SurfaceLeaseStore {
         return lease
     }
 
-    func resolve(_ descriptor: WindowSurfaceLease, nowUnixMs: Int64 = unixMilliseconds()) throws -> WindowSurfaceLease {
+    func resolve(
+        _ descriptor: WindowSurfaceLease,
+        sessionId: String,
+        nowUnixMs: Int64 = unixMilliseconds()
+    ) throws -> WindowSurfaceLease {
         guard let stored = leases[descriptor.generation], stored == descriptor else {
             throw HelperFailure(
                 "SURFACE_LEASE_INVALID",
                 "surface lease is unknown, consumed, or does not match its issued generation"
+            )
+        }
+        guard stored.sessionId == sessionId else {
+            throw HelperFailure(
+                "SESSION_MISMATCH",
+                "surface lease belongs to a different computer session"
             )
         }
         guard nowUnixMs <= stored.expiresAtUnixMs else {

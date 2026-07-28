@@ -4,6 +4,7 @@ dist/
 release/
 coverage/
 artifacts/
+/build/native-helper/
 *.log
 .DS_Store
 .env

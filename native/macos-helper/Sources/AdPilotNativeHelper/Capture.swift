@@ -13,21 +13,31 @@ enum CaptureService {
     private enum RequestedTarget {
         case window(Int)
         case screen(Int?)
+        case region(Int?, CGRect)
     }
 
     static func capture(
         _ params: [String: Any],
+        sessionId: String,
         deadlineUnixMs: Int64,
         surfaceLeaseStore: SurfaceLeaseStore
     ) async throws -> [String: Any] {
         try strictKeys(
             params,
-            allowed: ["target", "windowId", "displayId", "includeCursor", "leaseDurationMs"]
+            allowed: [
+                "target",
+                "windowId",
+                "displayId",
+                "bounds",
+                "includeCursor",
+                "leaseDurationMs"
+            ]
         )
         try requireDeadline(deadlineUnixMs)
 
-        guard let target = params["target"] as? String, ["window", "screen"].contains(target) else {
-            throw HelperFailure("INVALID_PARAMS", "target must be window or screen")
+        guard let target = params["target"] as? String,
+              ["window", "screen", "region"].contains(target) else {
+            throw HelperFailure("INVALID_PARAMS", "target must be window, screen, or region")
         }
         let includeCursor = try boolean(
             params["includeCursor"],
@@ -37,8 +47,11 @@ enum CaptureService {
         let requestedTarget: RequestedTarget
         let leaseDurationMs: Int?
         if target == "window" {
-            guard params["displayId"] == nil else {
-                throw HelperFailure("INVALID_PARAMS", "displayId is not valid for a window capture")
+            guard params["displayId"] == nil, params["bounds"] == nil else {
+                throw HelperFailure(
+                    "INVALID_PARAMS",
+                    "displayId and bounds are not valid for a window capture"
+                )
             }
             leaseDurationMs = try boundedInteger(
                 params["leaseDurationMs"],
@@ -53,9 +66,12 @@ enum CaptureService {
                     range: 1...Int(UInt32.max)
                 )
             )
-        } else {
+        } else if target == "screen" {
             guard params["windowId"] == nil else {
                 throw HelperFailure("INVALID_PARAMS", "windowId is not valid for a screen capture")
+            }
+            guard params["bounds"] == nil else {
+                throw HelperFailure("INVALID_PARAMS", "bounds is only valid for a region capture")
             }
             guard params["leaseDurationMs"] == nil else {
                 throw HelperFailure("INVALID_PARAMS", "leaseDurationMs is only valid for a window capture")
@@ -72,6 +88,30 @@ enum CaptureService {
             } else {
                 requestedTarget = .screen(nil)
             }
+        } else {
+            guard params["windowId"] == nil, params["leaseDurationMs"] == nil else {
+                throw HelperFailure(
+                    "INVALID_PARAMS",
+                    "windowId and leaseDurationMs are not valid for a region capture"
+                )
+            }
+            guard let rawBounds = params["bounds"] as? [String: Any] else {
+                throw HelperFailure("INVALID_PARAMS", "bounds is required for a region capture")
+            }
+            try strictKeys(rawBounds, allowed: ["x", "y", "width", "height"])
+            let bounds = try captureRectangle(rawBounds)
+            let displayId: Int?
+            if let rawDisplayId = params["displayId"] {
+                displayId = try boundedInteger(
+                    rawDisplayId,
+                    named: "displayId",
+                    range: 0...Int(UInt32.max)
+                )
+            } else {
+                displayId = nil
+            }
+            leaseDurationMs = nil
+            requestedTarget = .region(displayId, bounds)
         }
 
         guard CGPreflightScreenCaptureAccess() else {
@@ -126,9 +166,17 @@ enum CaptureService {
                 )
             }
             filter = SCContentFilter(desktopIndependentWindow: window)
-            let scale = content.displays
-                .first(where: { $0.frame.intersects(window.frame) })
-                .map { displayScale($0.displayID) } ?? 1
+            let mainDisplayId = NSScreen.main?
+                .deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+            let preferredDisplayId = preferredDisplayIdentifier(
+                windowBounds: window.frame,
+                displays: content.displays.map {
+                    (id: Int($0.displayID), bounds: $0.frame)
+                },
+                mainDisplayId: mainDisplayId.map { Int($0.uint32Value) }
+            )
+            let scale = preferredDisplayId
+                .map { displayScale(CGDirectDisplayID($0)) } ?? 1
             let dimensions = boundedCaptureDimensions(
                 width: window.frame.width * scale,
                 height: window.frame.height * scale
@@ -168,6 +216,35 @@ enum CaptureService {
             configuration.width = dimensions.width
             configuration.height = dimensions.height
             source = ["target": "screen", "displayId": Int(display.displayID)]
+        case .region(let requestedDisplayId, let globalBounds):
+            let display = try displayForRegion(
+                displays: content.displays,
+                requestedDisplayId: requestedDisplayId,
+                globalBounds: globalBounds
+            )
+            let localBounds = try captureLocalRegion(
+                globalBounds: globalBounds,
+                displayBounds: display.frame
+            )
+            filter = SCContentFilter(display: display, excludingWindows: [])
+            configuration.sourceRect = localBounds
+            let scale = displayScale(display.displayID)
+            let dimensions = boundedCaptureDimensions(
+                width: globalBounds.width * scale,
+                height: globalBounds.height * scale
+            )
+            configuration.width = dimensions.width
+            configuration.height = dimensions.height
+            source = [
+                "target": "region",
+                "displayId": Int(display.displayID),
+                "bounds": [
+                    "x": globalBounds.origin.x,
+                    "y": globalBounds.origin.y,
+                    "width": globalBounds.width,
+                    "height": globalBounds.height
+                ]
+            ]
         }
 
         let image: CGImage
@@ -220,6 +297,7 @@ enum CaptureService {
             }
             let lease = await surfaceLeaseStore.issue(
                 identity: current,
+                sessionId: sessionId,
                 capturePixelWidth: image.width,
                 capturePixelHeight: image.height,
                 durationMs: leaseDurationMs
@@ -278,6 +356,77 @@ enum CaptureService {
         let nsError = error as NSError
         return "\(nsError.domain):\(nsError.code)"
     }
+}
+
+func captureLocalRegion(globalBounds: CGRect, displayBounds: CGRect) throws -> CGRect {
+    guard globalBounds.width > 0,
+          globalBounds.height > 0,
+          displayBounds.width > 0,
+          displayBounds.height > 0,
+          displayBounds.contains(globalBounds) else {
+        throw HelperFailure(
+            "REGION_OUTSIDE_DISPLAY",
+            "capture region must be entirely inside one active display"
+        )
+    }
+    return CGRect(
+        x: globalBounds.minX - displayBounds.minX,
+        y: globalBounds.minY - displayBounds.minY,
+        width: globalBounds.width,
+        height: globalBounds.height
+    )
+}
+
+func preferredDisplayIdentifier(
+    windowBounds: CGRect,
+    displays: [(id: Int, bounds: CGRect)],
+    mainDisplayId: Int?
+) -> Int? {
+    let center = CGPoint(x: windowBounds.midX, y: windowBounds.midY)
+    if let centered = displays.first(where: { $0.bounds.contains(center) }) {
+        return centered.id
+    }
+    if let mainDisplayId,
+       displays.contains(where: { $0.id == mainDisplayId }) {
+        return mainDisplayId
+    }
+    return displays.first?.id
+}
+
+private func captureRectangle(_ object: [String: Any]) throws -> CGRect {
+    let x = try finiteDouble(object["x"], named: "bounds.x")
+    let y = try finiteDouble(object["y"], named: "bounds.y")
+    let width = try finiteDouble(object["width"], named: "bounds.width")
+    let height = try finiteDouble(object["height"], named: "bounds.height")
+    guard width > 0, height > 0 else {
+        throw HelperFailure("INVALID_PARAMS", "bounds width and height must be positive")
+    }
+    return CGRect(x: x, y: y, width: width, height: height)
+}
+
+private func displayForRegion(
+    displays: [SCDisplay],
+    requestedDisplayId: Int?,
+    globalBounds: CGRect
+) throws -> SCDisplay {
+    if let requestedDisplayId {
+        guard let display = displays.first(where: { Int($0.displayID) == requestedDisplayId }) else {
+            throw HelperFailure(
+                "DISPLAY_NOT_FOUND",
+                "the requested display is not currently shareable",
+                retryable: true
+            )
+        }
+        _ = try captureLocalRegion(globalBounds: globalBounds, displayBounds: display.frame)
+        return display
+    }
+    guard let display = displays.first(where: { $0.frame.contains(globalBounds) }) else {
+        throw HelperFailure(
+            "REGION_OUTSIDE_DISPLAY",
+            "capture region spans displays or is outside the active display layout"
+        )
+    }
+    return display
 }
 
 private func requireDeadline(_ deadlineUnixMs: Int64) throws {

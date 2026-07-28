@@ -17,6 +17,8 @@ struct AdPilotNativeHelper {
         unsetenv(authenticationEnvironmentKey)
 
         var lastSequence: Int64 = 0
+        var replayNonces = ReplayNonceStore()
+        var actionClaims = ActionClaimStore()
         var framer = BoundedJSONLineFramer(maximumLineBytes: maximumRequestBytes)
         let surfaceLeaseStore = SurfaceLeaseStore()
         do {
@@ -28,6 +30,8 @@ struct AdPilotNativeHelper {
                             data,
                             token: token,
                             lastSequence: &lastSequence,
+                            replayNonces: &replayNonces,
+                            actionClaims: &actionClaims,
                             surfaceLeaseStore: surfaceLeaseStore
                         )
                     case .oversized:
@@ -91,6 +95,8 @@ struct AdPilotNativeHelper {
         _ data: Data,
         token: String,
         lastSequence: inout Int64,
+        replayNonces: inout ReplayNonceStore,
+        actionClaims: inout ActionClaimStore,
         surfaceLeaseStore: SurfaceLeaseStore
     ) async {
         do {
@@ -103,6 +109,10 @@ struct AdPilotNativeHelper {
                 )
             }
             lastSequence = request.sequence
+            try replayNonces.insert(request.nonce)
+            if actionMethods.contains(request.method), let actionId = request.actionId {
+                try actionClaims.claim(sessionId: request.sessionId, actionId: actionId)
+            }
             try request.requireUnexpired()
             let result = try await dispatch(request, surfaceLeaseStore: surfaceLeaseStore)
             writeResponse(successResponse(for: request, result: result))
@@ -139,40 +149,85 @@ struct AdPilotNativeHelper {
                 "helperVersion": helperVersion,
                 "pid": ProcessInfo.processInfo.processIdentifier,
                 "platform": "darwin",
-                "capabilities": supportedMethods
+                "capabilities": supportedMethods,
+                "identity": HelperProcessIdentity.current().dictionary
             ]
         case "permissions.status":
             try strictKeys(request.params, allowed: [])
             return PermissionService.status()
         case "permissions.request":
             return try PermissionService.request(request.params)
+        case "permissions.openSettings":
+            return try PermissionService.openSettings(request.params)
+        case "displays.list":
+            return try DisplayService.list(request.params)
         case "windows.list":
             return try WindowService.list(request.params)
         case "frontmost":
             return try WindowService.frontmost(request.params)
+        case "application.activate":
+            return try ApplicationService.activate(request.params)
+        case "window.focus":
+            return try AccessibilityService.focusWindow(request.params)
+        case "accessibility.snapshot":
+            return try AccessibilityService.snapshot(request.params)
+        case "accessibility.focusedElement":
+            return try AccessibilityService.focusedElement(request.params)
         case "capture":
             return try await CaptureService.capture(
                 request.params,
+                sessionId: request.sessionId,
+                deadlineUnixMs: request.deadlineUnixMs,
+                surfaceLeaseStore: surfaceLeaseStore
+            )
+        case "input.activity":
+            return try InputActivityService.status(request.params)
+        case "input.move":
+            return try await InputService.move(
+                request.params,
+                sessionId: request.sessionId,
                 deadlineUnixMs: request.deadlineUnixMs,
                 surfaceLeaseStore: surfaceLeaseStore
             )
         case "input.click":
             return try await InputService.click(
                 request.params,
+                sessionId: request.sessionId,
+                deadlineUnixMs: request.deadlineUnixMs,
+                surfaceLeaseStore: surfaceLeaseStore
+            )
+        case "input.drag":
+            return try await InputService.drag(
+                request.params,
+                sessionId: request.sessionId,
                 deadlineUnixMs: request.deadlineUnixMs,
                 surfaceLeaseStore: surfaceLeaseStore
             )
         case "input.type":
             return try await InputService.typeText(
                 request.params,
+                sessionId: request.sessionId,
+                deadlineUnixMs: request.deadlineUnixMs,
+                surfaceLeaseStore: surfaceLeaseStore
+            )
+        case "input.keypress":
+            return try await InputService.keypress(
+                request.params,
+                sessionId: request.sessionId,
                 deadlineUnixMs: request.deadlineUnixMs,
                 surfaceLeaseStore: surfaceLeaseStore
             )
         case "input.scroll":
             return try await InputService.scroll(
                 request.params,
+                sessionId: request.sessionId,
                 deadlineUnixMs: request.deadlineUnixMs,
                 surfaceLeaseStore: surfaceLeaseStore
+            )
+        case "wait":
+            return try await WaitService.wait(
+                request.params,
+                deadlineUnixMs: request.deadlineUnixMs
             )
         default:
             throw HelperFailure(

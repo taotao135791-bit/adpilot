@@ -1,4 +1,5 @@
 import ApplicationServices
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -59,8 +60,42 @@ enum PermissionService {
         return [
             "promptAttempted": promptAttempted,
             "grantedAfterRequest": grantedAfterRequest,
-            "status": status()
+            "status": status(),
+            // Apple documents that ScreenCaptureKit capture may require an app
+            // restart after the first grant. The caller must present this as a
+            // recommendation, not claim that the permission is already usable.
+            "restartRecommended": requested.contains("screenCapture")
+                && (grantedAfterRequest["screenCapture"] ?? false)
+                && !CGPreflightScreenCaptureAccess()
         ]
+    }
+
+    static func openSettings(_ params: [String: Any]) throws -> [String: Any] {
+        try strictKeys(params, allowed: ["permission"])
+        guard let permission = params["permission"] as? String else {
+            throw HelperFailure("INVALID_PARAMS", "permission must be a string")
+        }
+        let urlString: String
+        switch permission {
+        case "screenCapture":
+            urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        case "accessibility":
+            urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        default:
+            throw HelperFailure(
+                "INVALID_PARAMS",
+                "permission must be screenCapture or accessibility"
+            )
+        }
+        guard let url = URL(string: urlString), NSWorkspace.shared.open(url) else {
+            throw HelperFailure(
+                "SYSTEM_SETTINGS_UNAVAILABLE",
+                "macOS could not open the requested Privacy & Security pane",
+                retryable: true,
+                details: ["permission": permission]
+            )
+        }
+        return ["opened": true, "permission": permission]
     }
 
     private static func permission(_ granted: Bool) -> [String: Any] {

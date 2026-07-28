@@ -1,13 +1,26 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { access, lstat, realpath, stat } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { z } from "zod";
 
-export const NATIVE_COMPUTER_PROTOCOL_VERSION = 2 as const;
+export const NATIVE_COMPUTER_PROTOCOL_VERSION = 3 as const;
 export const NATIVE_HELPER_TOKEN_ENV = "ADPILOT_NATIVE_HELPER_TOKEN" as const;
-const MUTATING_METHODS = new Set<NativeMethod>(["input.click", "input.type", "input.scroll"]);
+export const NATIVE_HELPER_BUNDLE_ID = "com.adpilot.computer-helper" as const;
+export const PACKAGED_NATIVE_HELPER_RELATIVE_PATH =
+  "native/AdPilot Computer Helper.app/Contents/MacOS/adpilot-native-helper" as const;
+const ACTION_METHODS = new Set<NativeMethod>([
+  "application.activate",
+  "window.focus",
+  "input.move",
+  "input.click",
+  "input.drag",
+  "input.type",
+  "input.keypress",
+  "input.scroll"
+]);
+const MUTATING_METHODS = ACTION_METHODS;
 const ALLOWED_HELPER_ENVIRONMENT_KEYS = new Set([
   "LANG",
   "LC_ALL",
@@ -20,12 +33,23 @@ export const NativeMethodSchema = z.enum([
   "hello",
   "permissions.status",
   "permissions.request",
+  "permissions.openSettings",
+  "displays.list",
   "windows.list",
   "frontmost",
+  "application.activate",
+  "window.focus",
+  "accessibility.snapshot",
+  "accessibility.focusedElement",
   "capture",
+  "input.activity",
+  "input.move",
   "input.click",
+  "input.drag",
   "input.type",
-  "input.scroll"
+  "input.keypress",
+  "input.scroll",
+  "wait"
 ]);
 export type NativeMethod = z.infer<typeof NativeMethodSchema>;
 
@@ -59,7 +83,8 @@ export const PermissionsRequestResultSchema = z.object({
     accessibility: z.boolean()
   }).strict(),
   grantedAfterRequest: PermissionSelectionSchema,
-  status: PermissionsStatusSchema
+  status: PermissionsStatusSchema,
+  restartRecommended: z.boolean()
 }).strict();
 export type PermissionsRequestResult = z.infer<typeof PermissionsRequestResultSchema>;
 
@@ -70,6 +95,29 @@ export const NativeRectangleSchema = z.object({
   height: z.number().finite().positive()
 }).strict();
 export type NativeRectangle = z.infer<typeof NativeRectangleSchema>;
+
+export const HelperProcessIdentitySchema = z.object({
+  pid: z.number().int().positive(),
+  bundleIdentifier: z.string().max(1_024),
+  bundleName: z.string().min(1).max(1_024),
+  executableName: z.string().min(1).max(1_024),
+  signingIdentifier: z.string().max(1_024)
+}).strict();
+export type HelperProcessIdentity = z.infer<typeof HelperProcessIdentitySchema>;
+
+export const NativeDisplaySchema = z.object({
+  displayId: z.number().int().nonnegative().max(4_294_967_295),
+  isMain: z.boolean(),
+  isBuiltin: z.boolean(),
+  rotationDegrees: z.number().finite(),
+  scaleFactor: z.number().finite().positive(),
+  bounds: NativeRectangleSchema,
+  pixels: z.object({
+    width: z.number().int().positive(),
+    height: z.number().int().positive()
+  }).strict()
+}).strict();
+export type NativeDisplay = z.infer<typeof NativeDisplaySchema>;
 
 const CapturePixelsSchema = z.object({
   width: z.number().int().positive().max(8_192),
@@ -99,6 +147,7 @@ export type FrontmostResult = z.infer<typeof FrontmostResultSchema>;
 
 export const NativeWindowSurfaceLeaseSchema = z.object({
   generation: z.string().uuid(),
+  sessionId: z.string().min(1).max(128),
   target: z.literal("window"),
   windowId: z.number().int().positive().max(4_294_967_295),
   ownerPid: z.number().int().positive().max(2_147_483_647),
@@ -149,6 +198,14 @@ export const CaptureResultSchema = z.union([
       displayId: z.number().int().nonnegative()
     }).strict(),
     surfaceLease: z.null()
+  }).strict(),
+  CaptureResultBaseSchema.extend({
+    source: z.object({
+      target: z.literal("region"),
+      displayId: z.number().int().nonnegative(),
+      bounds: NativeRectangleSchema
+    }).strict(),
+    surfaceLease: z.null()
   }).strict()
 ]);
 export type CaptureResult = z.infer<typeof CaptureResultSchema>;
@@ -158,7 +215,8 @@ export const HelloResultSchema = z.object({
   helperVersion: z.string().min(1),
   pid: z.number().int().positive(),
   platform: z.literal("darwin"),
-  capabilities: z.array(NativeMethodSchema)
+  capabilities: z.array(NativeMethodSchema),
+  identity: HelperProcessIdentitySchema
 }).strict().superRefine((value, context) => {
   const capabilities = new Set(value.capabilities);
   const missing = NativeMethodSchema.options.filter((method) => !capabilities.has(method));
@@ -179,6 +237,24 @@ const PostedInputResultSchema = z.object({
   utf8Bytes: z.number().int().nonnegative().optional()
 }).strict();
 
+const AccessibilityNodeSchema = z.object({
+  role: z.string(),
+  subrole: z.string(),
+  title: z.string(),
+  description: z.string(),
+  enabled: z.boolean(),
+  focused: z.boolean(),
+  redacted: z.boolean(),
+  bounds: NativeRectangleSchema.nullable(),
+  value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+  children: z.array(z.unknown())
+}).strict();
+
+const InputActivityCountersSchema = z.record(
+  z.string(),
+  z.number().int().nonnegative()
+);
+
 export const NativeMethodSchemas = {
   hello: {
     params: EmptyParamsSchema,
@@ -198,6 +274,17 @@ export const NativeMethodSchemas = {
     }).strict(),
     result: PermissionsRequestResultSchema
   },
+  "permissions.openSettings": {
+    params: z.object({ permission: PermissionNameSchema }).strict(),
+    result: z.object({
+      opened: z.literal(true),
+      permission: PermissionNameSchema
+    }).strict()
+  },
+  "displays.list": {
+    params: EmptyParamsSchema,
+    result: z.array(NativeDisplaySchema)
+  },
   "windows.list": {
     params: z.object({
       includeOffscreen: z.boolean().optional(),
@@ -208,6 +295,54 @@ export const NativeMethodSchemas = {
   frontmost: {
     params: EmptyParamsSchema,
     result: FrontmostResultSchema
+  },
+  "application.activate": {
+    params: z.object({
+      pid: z.number().int().positive().max(2_147_483_647),
+      bundleId: z.string().min(1).max(1_024)
+    }).strict(),
+    result: z.object({
+      activated: z.literal(true),
+      pid: z.number().int().positive(),
+      bundleId: z.string(),
+      frontmost: z.boolean()
+    }).strict()
+  },
+  "window.focus": {
+    params: z.object({
+      windowId: z.number().int().positive().max(4_294_967_295),
+      ownerPid: z.number().int().positive().max(2_147_483_647),
+      bundleId: z.string().min(1).max(1_024)
+    }).strict(),
+    result: z.object({
+      focused: z.literal(true),
+      windowId: z.number().int().positive(),
+      ownerPid: z.number().int().positive(),
+      bundleId: z.string()
+    }).strict()
+  },
+  "accessibility.snapshot": {
+    params: z.object({
+      pid: z.number().int().positive().max(2_147_483_647),
+      maxDepth: z.number().int().min(0).max(16).optional(),
+      maxNodes: z.number().int().min(1).max(4_000).optional()
+    }).strict(),
+    result: z.object({
+      pid: z.number().int().positive(),
+      generatedAt: z.string().datetime(),
+      nodeCount: z.number().int().positive().max(4_000),
+      truncated: z.boolean(),
+      root: AccessibilityNodeSchema
+    }).strict()
+  },
+  "accessibility.focusedElement": {
+    params: z.object({
+      pid: z.number().int().positive().max(2_147_483_647).optional()
+    }).strict(),
+    result: z.object({
+      pid: z.number().int().positive(),
+      element: AccessibilityNodeSchema
+    }).strict()
   },
   capture: {
     params: z.discriminatedUnion("target", [
@@ -221,9 +356,45 @@ export const NativeMethodSchemas = {
         target: z.literal("screen"),
         displayId: z.number().int().nonnegative().max(4_294_967_295).optional(),
         includeCursor: z.boolean().optional()
+      }).strict(),
+      z.object({
+        target: z.literal("region"),
+        displayId: z.number().int().nonnegative().max(4_294_967_295).optional(),
+        bounds: NativeRectangleSchema,
+        includeCursor: z.boolean().optional()
       }).strict()
     ]),
     result: CaptureResultSchema
+  },
+  "input.activity": {
+    params: EmptyParamsSchema,
+    result: z.object({
+      sampledAtUnixMs: z.number().int().positive(),
+      cursor: z.object({
+        x: z.number().finite(),
+        y: z.number().finite()
+      }).strict(),
+      counters: InputActivityCountersSchema,
+      helperPostedCounters: InputActivityCountersSchema
+    }).strict()
+  },
+  "input.move": {
+    params: z.object({
+      pixelX: z.number().finite().nonnegative(),
+      pixelY: z.number().finite().nonnegative(),
+      surfaceLease: NativeWindowSurfaceLeaseSchema
+    }).strict().superRefine((value, context) => {
+      if (
+        value.pixelX >= value.surfaceLease.capturePixels.width
+        || value.pixelY >= value.surfaceLease.capturePixels.height
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "move coordinates must be inside surfaceLease.capturePixels"
+        });
+      }
+    }),
+    result: PostedInputResultSchema
   },
   "input.click": {
     params: z.object({
@@ -245,12 +416,50 @@ export const NativeMethodSchemas = {
     }),
     result: PostedInputResultSchema
   },
+  "input.drag": {
+    params: z.object({
+      fromPixelX: z.number().finite().nonnegative(),
+      fromPixelY: z.number().finite().nonnegative(),
+      toPixelX: z.number().finite().nonnegative(),
+      toPixelY: z.number().finite().nonnegative(),
+      button: z.enum(["left", "right"]).optional(),
+      durationMs: z.number().int().min(0).max(2_000).optional(),
+      surfaceLease: NativeWindowSurfaceLeaseSchema
+    }).strict().superRefine((value, context) => {
+      const { width, height } = value.surfaceLease.capturePixels;
+      if (
+        value.fromPixelX >= width
+        || value.toPixelX >= width
+        || value.fromPixelY >= height
+        || value.toPixelY >= height
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "drag coordinates must be inside surfaceLease.capturePixels"
+        });
+      }
+    }),
+    result: PostedInputResultSchema
+  },
   "input.type": {
     params: z.object({
       text: z.string().min(1).refine(
         (value) => Buffer.byteLength(value, "utf8") <= 16_384,
         "text must not exceed 16384 UTF-8 bytes"
       ),
+      surfaceLease: NativeWindowSurfaceLeaseSchema
+    }).strict(),
+    result: PostedInputResultSchema
+  },
+  "input.keypress": {
+    params: z.object({
+      key: z.string().min(1).max(64),
+      modifiers: z.array(
+        z.enum(["command", "shift", "option", "control", "capsLock", "function"])
+      ).max(6).refine(
+        (values) => new Set(values).size === values.length,
+        "modifiers must not contain duplicates"
+      ).optional(),
       surfaceLease: NativeWindowSurfaceLeaseSchema
     }).strict(),
     result: PostedInputResultSchema
@@ -281,6 +490,15 @@ export const NativeMethodSchemas = {
       }
     }),
     result: PostedInputResultSchema
+  },
+  wait: {
+    params: z.object({
+      durationMs: z.number().int().min(0).max(30_000)
+    }).strict(),
+    result: z.object({
+      waited: z.literal(true),
+      durationMs: z.number().int().min(0).max(30_000)
+    }).strict()
   }
 } as const;
 
@@ -306,12 +524,23 @@ export type NativeHelperError = z.infer<typeof NativeHelperErrorSchema>;
 export const NativeWireRequestSchema = z.object({
   protocolVersion: z.literal(NATIVE_COMPUTER_PROTOCOL_VERSION),
   id: z.string().min(1).max(128),
+  sessionId: z.string().min(1).max(128),
+  actionId: z.string().min(1).max(128).optional(),
+  nonce: z.string().uuid(),
   sequence: z.number().int().positive(),
   deadlineUnixMs: z.number().int().positive(),
   authToken: z.string().min(32),
   method: NativeMethodSchema,
   params: z.record(z.unknown())
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (ACTION_METHODS.has(value.method) && !value.actionId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `${value.method} requires actionId`,
+      path: ["actionId"]
+    });
+  }
+});
 
 export const NativeWireResponseSchema = z.discriminatedUnion("ok", [
   z.object({
@@ -345,17 +574,26 @@ export interface NativeComputerHostOptions {
   startupTimeoutMs?: number | undefined;
   maxMessageBytes?: number | undefined;
   maxQueueDepth?: number | undefined;
+  sessionId?: string | undefined;
+  expectedIdentity?: {
+    bundleIdentifier: string;
+    signingIdentifier?: string | undefined;
+  } | undefined;
   logger?: NativeHostLogger | undefined;
 }
 
 export interface NativeRequestOptions {
   timeoutMs?: number | undefined;
   signal?: AbortSignal | undefined;
+  sessionId?: string | undefined;
+  actionId?: string | undefined;
 }
 
 type PendingRequest = {
   id: string;
   sequence: number;
+  sessionId: string;
+  actionId?: string | undefined;
   method: NativeMethod;
   startedAt: number;
   deadlineUnixMs: number;
@@ -448,6 +686,7 @@ export class NativeComputerHost {
   readonly #defaultTimeoutMs: number;
   readonly #maxMessageBytes: number;
   readonly #maxQueueDepth: number;
+  readonly #defaultSessionId: string;
   readonly #logger: NativeHostLogger;
   readonly #pending = new Map<string, PendingRequest>();
   readonly #queue: string[] = [];
@@ -458,6 +697,7 @@ export class NativeComputerHost {
   #stdoutBuffer = Buffer.alloc(0);
   #closed = false;
   #stderrBytes = 0;
+  #hello: HelloResult | undefined;
 
   private constructor(
     options: NativeComputerHostOptions,
@@ -468,6 +708,10 @@ export class NativeComputerHost {
     this.#defaultTimeoutMs = boundedOption(options.defaultTimeoutMs ?? 10_000, "defaultTimeoutMs", 1, 300_000);
     this.#maxMessageBytes = boundedOption(options.maxMessageBytes ?? 96 * 1024 * 1024, "maxMessageBytes", 1_024, 256 * 1024 * 1024);
     this.#maxQueueDepth = boundedOption(options.maxQueueDepth ?? 32, "maxQueueDepth", 1, 1_024);
+    this.#defaultSessionId = boundedIdentifier(
+      options.sessionId ?? randomUUID(),
+      "sessionId"
+    );
     this.#logger = options.logger ?? {};
     this.#exitPromise = new Promise((resolve) => {
       this.#resolveExit = resolve;
@@ -489,7 +733,13 @@ export class NativeComputerHost {
     const authToken = randomBytes(32).toString("base64url");
     const host = new NativeComputerHost(options, executablePath, authToken);
     try {
-      await host.request("hello", {}, { timeoutMs: options.startupTimeoutMs ?? 5_000 });
+      const hello = await host.request(
+        "hello",
+        {},
+        { timeoutMs: options.startupTimeoutMs ?? 5_000 }
+      );
+      validateExpectedIdentity(hello.identity, options.expectedIdentity);
+      host.#hello = hello;
       return host;
     } catch (error) {
       await host.close().catch(() => undefined);
@@ -503,6 +753,16 @@ export class NativeComputerHost {
 
   get closed(): boolean {
     return this.#closed;
+  }
+
+  get hello(): HelloResult {
+    if (!this.#hello) {
+      throw new NativeComputerHostError(
+        "HOST_NOT_READY",
+        "native helper handshake has not completed"
+      );
+    }
+    return this.#hello;
   }
 
   request<M extends NativeMethod>(
@@ -538,6 +798,26 @@ export class NativeComputerHost {
       return Promise.reject(error);
     }
 
+    const sessionId = boundedIdentifier(
+      options.sessionId ?? this.#defaultSessionId,
+      "sessionId"
+    );
+    const actionId = ACTION_METHODS.has(method)
+      ? boundedIdentifier(options.actionId ?? randomUUID(), "actionId")
+      : options.actionId === undefined
+        ? undefined
+        : boundedIdentifier(options.actionId, "actionId");
+    const inputLease = (
+      parsedParams as { surfaceLease?: NativeWindowSurfaceLease | undefined }
+    ).surfaceLease;
+    if (inputLease !== undefined && inputLease.sessionId !== sessionId) {
+      return Promise.reject(
+        new NativeComputerHostError(
+          "SESSION_MISMATCH",
+          "surface lease belongs to a different computer session"
+        )
+      );
+    }
     const sequence = ++this.#sequence;
     const id = randomUUID();
     const startedAt = Date.now();
@@ -545,6 +825,9 @@ export class NativeComputerHost {
     const wireRequest = NativeWireRequestSchema.parse({
       protocolVersion: NATIVE_COMPUTER_PROTOCOL_VERSION,
       id,
+      sessionId,
+      ...(actionId === undefined ? {} : { actionId }),
+      nonce: randomUUID(),
       sequence,
       deadlineUnixMs,
       authToken: this.#authToken,
@@ -565,6 +848,8 @@ export class NativeComputerHost {
       const pending: PendingRequest = {
         id,
         sequence,
+        sessionId,
+        ...(actionId === undefined ? {} : { actionId }),
         method,
         startedAt,
         deadlineUnixMs,
@@ -749,10 +1034,28 @@ export class NativeComputerHost {
       this.#terminate(error, pending.id);
       return;
     }
+    if (pending.method === "capture") {
+      const capture = CaptureResultSchema.parse(result.data);
+      if (
+        capture.source.target === "window"
+        && capture.surfaceLease !== null
+        && capture.surfaceLease.sessionId !== pending.sessionId
+      ) {
+        this.#terminate(
+          new NativeHostProtocolError(
+            "native helper returned a surface lease for a different session"
+          ),
+          pending.id
+        );
+        return;
+      }
+    }
     this.#removePending(pending);
     this.#log("debug", "native-helper.response", {
       id: pending.id,
       sequence: pending.sequence,
+      sessionId: pending.sessionId,
+      actionId: pending.actionId,
       method: pending.method,
       durationMs
     });
@@ -804,6 +1107,8 @@ export class NativeComputerHost {
       this.#log("debug", "native-helper.request", {
         id,
         sequence: pending.sequence,
+        sessionId: pending.sessionId,
+        actionId: pending.actionId,
         method: pending.method,
         deadlineUnixMs: pending.deadlineUnixMs
       });
@@ -1014,4 +1319,82 @@ function boundedOption(value: number, name: string, minimum: number, maximum: nu
     );
   }
   return value;
+}
+
+function boundedIdentifier(value: string, name: string): string {
+  if (value.length === 0 || Buffer.byteLength(value, "utf8") > 128) {
+    throw new NativeComputerHostError(
+      "INVALID_CONFIGURATION",
+      `${name} must be a non-empty string of at most 128 UTF-8 bytes`
+    );
+  }
+  return value;
+}
+
+function validateExpectedIdentity(
+  actual: HelperProcessIdentity,
+  expected: NativeComputerHostOptions["expectedIdentity"]
+): void {
+  if (!expected) {
+    return;
+  }
+  if (actual.bundleIdentifier !== expected.bundleIdentifier) {
+    throw new NativeComputerHostError(
+      "HELPER_IDENTITY_MISMATCH",
+      "native helper bundle identifier does not match the packaged AdPilot helper"
+    );
+  }
+  if (
+    expected.signingIdentifier !== undefined
+    && actual.signingIdentifier !== expected.signingIdentifier
+  ) {
+    throw new NativeComputerHostError(
+      "HELPER_IDENTITY_MISMATCH",
+      "native helper signing identifier does not match the packaged AdPilot helper"
+    );
+  }
+}
+
+export interface ResolveNativeHelperExecutableOptions {
+  explicitPath?: string | undefined;
+  resourcesPath?: string | undefined;
+  repositoryRoot?: string | undefined;
+}
+
+/**
+ * Resolves only the two supported stable helper locations. An explicit
+ * override never falls back if it is absent or insecure; this prevents a
+ * misspelled production override from silently launching a development copy.
+ */
+export async function resolveNativeHelperExecutable(
+  options: ResolveNativeHelperExecutableOptions
+): Promise<string | undefined> {
+  if (options.explicitPath !== undefined) {
+    return validateExecutablePath(options.explicitPath);
+  }
+
+  const candidates = [
+    options.resourcesPath === undefined
+      ? undefined
+      : resolve(options.resourcesPath, PACKAGED_NATIVE_HELPER_RELATIVE_PATH),
+    options.repositoryRoot === undefined
+      ? undefined
+      : resolve(
+          options.repositoryRoot,
+          "native",
+          "macos-helper",
+          "dist",
+          "adpilot-native-helper"
+        )
+  ].filter((candidate): candidate is string => candidate !== undefined);
+
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, fsConstants.X_OK);
+    } catch {
+      continue;
+    }
+    return validateExecutablePath(candidate);
+  }
+  return undefined;
 }

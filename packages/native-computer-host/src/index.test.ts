@@ -13,6 +13,8 @@ import {
   NativeHostQueueFullError,
   NativeHostRemoteError,
   NativeHostTimeoutError,
+  resolveNativeHelperExecutable,
+  type NativeComputerHostOptions,
   type NativeHostLogger,
   type NativeWindowSurfaceLease
 } from "./index.js";
@@ -22,13 +24,18 @@ const readline = require("node:readline");
 const config = JSON.parse(process.argv[1] || "{}");
 const token = process.env.ADPILOT_NATIVE_HELPER_TOKEN;
 let lastSequence = 0;
+const claimedActions = new Set();
+const actionMethods = new Set([
+  "application.activate", "window.focus", "input.move", "input.click",
+  "input.drag", "input.type", "input.keypress", "input.scroll"
+]);
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const success = (request, result) => send({
-  protocolVersion: 2, id: request.id, sequence: request.sequence, ok: true, result
+  protocolVersion: 3, id: request.id, sequence: request.sequence, ok: true, result
 });
 const failure = (request, code, message, retryable = false, details) => send({
-  protocolVersion: 2, id: request.id, sequence: request.sequence, ok: false,
+  protocolVersion: 3, id: request.id, sequence: request.sequence, ok: false,
   error: { code, message, retryable, ...(details === undefined ? {} : { details }) }
 });
 rl.on("line", (line) => {
@@ -46,13 +53,33 @@ rl.on("line", (line) => {
     return;
   }
   lastSequence = request.sequence;
+  if (actionMethods.has(request.method)) {
+    const actionKey = request.sessionId + "\n" + request.actionId;
+    if (claimedActions.has(actionKey)) {
+      failure(request, "ACTION_REPLAY_DETECTED", "action already claimed");
+      return;
+    }
+    claimedActions.add(actionKey);
+  }
   if (request.method === config.hangMethod) return;
   if (request.method === config.exitMethod) process.exit(0);
   if (request.method === "hello") {
     success(request, {
-      protocolVersion: 2, helperVersion: "fake-2", pid: process.pid, platform: "darwin",
-      capabilities: ["hello", "permissions.status", "permissions.request", "windows.list",
-        "frontmost", "capture", "input.click", "input.type", "input.scroll"]
+      protocolVersion: 3, helperVersion: "fake-3", pid: process.pid, platform: "darwin",
+      capabilities: [
+        "hello", "permissions.status", "permissions.request", "permissions.openSettings",
+        "displays.list", "windows.list", "frontmost", "application.activate", "window.focus",
+        "accessibility.snapshot", "accessibility.focusedElement", "capture", "input.activity",
+        "input.move", "input.click", "input.drag", "input.type", "input.keypress",
+        "input.scroll", "wait"
+      ],
+      identity: config.identity || {
+        pid: process.pid,
+        bundleIdentifier: "",
+        bundleName: "Fake AdPilot Helper",
+        executableName: "node",
+        signingIdentifier: ""
+      }
     });
     if (config.closeInputAfterHello) {
       rl.close();
@@ -89,7 +116,7 @@ rl.on("line", (line) => {
   if (request.method === "input.type") {
     if (config.wrongSequenceMethod === request.method) {
       send({
-        protocolVersion: 2,
+        protocolVersion: 3,
         id: request.id,
         sequence: request.sequence + 1,
         ok: true,
@@ -112,6 +139,7 @@ rl.on("line", (line) => {
 
 const surfaceLease: NativeWindowSurfaceLease = {
   generation: "00000000-0000-4000-8000-000000000001",
+  sessionId: "session-test",
   target: "window",
   windowId: 77,
   ownerPid: 42,
@@ -127,6 +155,13 @@ type FakeConfig = {
   exitMethod?: string;
   hangMethod?: string;
   invalidInputResult?: boolean;
+  identity?: {
+    pid: number;
+    bundleIdentifier: string;
+    bundleName: string;
+    executableName: string;
+    signingIdentifier: string;
+  };
   leakToken?: boolean;
   remoteError?: boolean;
   wrongSequenceMethod?: string;
@@ -148,12 +183,16 @@ function logger(entries: LogEntry[]): NativeHostLogger {
 async function launch(
   config: FakeConfig = {},
   entries: LogEntry[] = [],
-  options: { maxQueueDepth?: number; env?: Readonly<Record<string, string>> } = {}
+  options: Pick<
+    NativeComputerHostOptions,
+    "maxQueueDepth" | "env" | "expectedIdentity"
+  > = {}
 ): Promise<NativeComputerHost> {
   return NativeComputerHost.launch({
     executablePath: process.execPath,
     args: ["-e", fakeHelper, JSON.stringify(config)],
     defaultTimeoutMs: 1_000,
+    sessionId: "session-test",
     logger: logger(entries),
     ...options
   });
@@ -178,6 +217,96 @@ describe("NativeComputerHost protocol actor", () => {
     expect(requests.every((entry) => Number(entry.fields.deadlineUnixMs) > 0)).toBe(true);
     expect(JSON.stringify(entries)).not.toContain("authToken");
     await host.close();
+  });
+
+  it("binds every action to an explicit session and action id", async () => {
+    const entries: LogEntry[] = [];
+    const host = await launch({}, entries);
+    await host.request(
+      "input.type",
+      { text: "value", surfaceLease },
+      { sessionId: "session-test", actionId: "action-explicit" }
+    );
+    const request = entries.find(
+      (entry) => entry.event === "native-helper.request"
+        && entry.fields.method === "input.type"
+    );
+    expect(request?.fields).toMatchObject({
+      sessionId: "session-test",
+      actionId: "action-explicit"
+    });
+    await host.close();
+  });
+
+  it("never permits the same semantic action id to execute twice", async () => {
+    const host = await launch();
+    const options = {
+      sessionId: "session-test",
+      actionId: "mutation-once"
+    } as const;
+    await expect(
+      host.request("input.type", { text: "first", surfaceLease }, options)
+    ).resolves.toMatchObject({ posted: true });
+    await expect(
+      host.request("input.type", { text: "second", surfaceLease }, options)
+    ).rejects.toMatchObject({
+      code: "ACTION_REPLAY_DETECTED",
+      retryable: false
+    });
+    expect(host.closed).toBe(false);
+    await host.close();
+  });
+
+  it("rejects a surface lease from another session before writing input", async () => {
+    const entries: LogEntry[] = [];
+    const host = await launch({}, entries);
+    await expect(
+      host.request(
+        "input.click",
+        { pixelX: 10, pixelY: 10, surfaceLease },
+        { sessionId: "different-session", actionId: "wrong-session-action" }
+      )
+    ).rejects.toMatchObject({ code: "SESSION_MISMATCH" });
+    expect(
+      entries.some(
+        (entry) => entry.event === "native-helper.request"
+          && entry.fields.actionId === "wrong-session-action"
+      )
+    ).toBe(false);
+    expect(host.closed).toBe(false);
+    await host.close();
+  });
+
+  it("enforces the packaged helper bundle and signing identity at handshake", async () => {
+    await expect(
+      launch(
+        {
+          identity: {
+            pid: 42,
+            bundleIdentifier: "com.attacker.helper",
+            bundleName: "Attacker",
+            executableName: "node",
+            signingIdentifier: "com.attacker.helper"
+          }
+        },
+        [],
+        {
+          expectedIdentity: {
+            bundleIdentifier: "com.adpilot.computer-helper",
+            signingIdentifier: "com.adpilot.computer-helper"
+          }
+        }
+      )
+    ).rejects.toMatchObject({ code: "HELPER_IDENTITY_MISMATCH" });
+  });
+
+  it("resolves and validates an explicit helper executable without fallback", async () => {
+    await expect(
+      resolveNativeHelperExecutable({ explicitPath: "relative/helper" })
+    ).rejects.toMatchObject({ code: "INVALID_CONFIGURATION" });
+    await expect(
+      resolveNativeHelperExecutable({ explicitPath: process.execPath })
+    ).resolves.toBe(process.execPath);
   });
 
   it("rejects caller-supplied authentication fields before writing a command", async () => {
