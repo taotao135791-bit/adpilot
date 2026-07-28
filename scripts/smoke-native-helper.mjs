@@ -16,6 +16,7 @@ const helperPath = process.env.ADPILOT_NATIVE_HELPER_PATH
     "adpilot-native-helper"
   );
 const runPermissionChecks = process.argv.includes("--permissions");
+const runPermissionRequest = process.argv.includes("--request");
 const token = randomBytes(32).toString("base64url");
 const sessionId = `native-smoke-${randomUUID()}`;
 const child = spawn(helperPath, [], {
@@ -196,6 +197,21 @@ try {
       summary.status = "failed";
       process.exitCode = 1;
     } else if (Object.values(checks).includes("blocked-by-permission")) {
+      summary.status = "blocked-by-permission";
+    }
+  }
+
+  if (runPermissionRequest) {
+    const requested = await request("permissions.request", {}, { timeoutMs: 30_000 });
+    summary.permissionRequest = {
+      screenCapture: requested.status?.screenCapture?.state,
+      accessibility: requested.status?.accessibility?.state,
+      promptAttempted: requested.promptAttempted,
+      restartRecommended: requested.restartRecommended === true
+    };
+    await request("permissions.openSettings", { permission: "accessibility" });
+    summary.openedSettings = "accessibility";
+    if (!requested.status?.accessibility?.granted || !requested.status?.screenCapture?.granted) {
       summary.status = "blocked-by-permission";
     }
   }
