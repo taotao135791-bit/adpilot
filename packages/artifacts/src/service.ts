@@ -143,6 +143,11 @@ export class ArtifactService {
     return this.store.get(id);
   }
 
+  /** Read one rendered output file; undefined when it does not exist. */
+  async readOutput(id: string, filename: string): Promise<Buffer | undefined> {
+    return this.store.readOutput(id, filename);
+  }
+
   async list(projectId?: string): Promise<ArtifactRecord[]> {
     return this.store.list(projectId);
   }

@@ -55,6 +55,7 @@ import {
   type DesktopNativeBridge,
   type DesktopNativeContext
 } from "./desktop-native.js";
+import { registerKernelRoutes } from "./kernel-routes.js";
 
 export * from "./desktop-native.js";
 
@@ -637,6 +638,8 @@ export async function createServer(system: AdPilotSystem, options: {
     return { total: records.length, audits: records.slice(-query.limit) };
   });
 
+  registerKernelRoutes(app, system);
+
   app.post("/api/approvals", async (request, reply) => {
     const body = z.object({
       clientId: z.string().min(1),
@@ -1086,12 +1089,17 @@ export async function createServer(system: AdPilotSystem, options: {
         || code === "DESKTOP_NATIVE_BINDING_MISMATCH"
         || code === "COMPUTER_CONTROL_REVISION_CONFLICT"
         || code === "COMPUTER_SESSION_NOT_FOUND"
+        || code === "TASK_CYCLE"
+        || code === "CHECKPOINT_DIVERGED"
+        || code === "DIRTY_WORKTREE"
         ? 409
         : code === "PRIVACY_MODE_REMOTE_PROVIDER_BLOCKED" || code === "DESKTOP_NATIVE_FORBIDDEN"
           ? 403
           : code === "DESKTOP_NATIVE_UNAVAILABLE"
             ? 503
-            : 400
+            : code?.endsWith("_NOT_FOUND")
+              ? 404
+              : 400
     )
       .send({ error: error instanceof Error ? error.message : String(error), ...(code ? { code } : {}) });
   });

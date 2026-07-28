@@ -49,6 +49,8 @@ import {
   resolveNativeHelperExecutable
 } from "@adpilot/native-computer-host";
 import { ExperimentStore } from "@adpilot/experiments";
+import { ArtifactService, FileArtifactStore } from "@adpilot/artifacts";
+import { KernelService } from "@adpilot/kernel";
 import { createPiModels, modelRouterFromEnv, resolvePiModel } from "@adpilot/model-router";
 import { PiAgentRuntime, AuditRuntimeExtension, AutonomyStore, PlanModeStore, type ReasoningPolicy } from "@adpilot/runtime";
 import { SkillRegistry } from "@adpilot/skills";
@@ -178,6 +180,10 @@ export interface AdPilotSystem {
   specialists: SpecialistCoordinator;
   agent: AdPilotAgent;
   alerts: AlertMonitor;
+  /** Universal Workspace kernel: projects, goals, task graphs, artifact ids. */
+  kernel: KernelService;
+  /** Unified artifact runtime: renderers, versioning, previews. */
+  artifacts: ArtifactService;
   computer: VisualComputerRuntime | undefined;
   /** The single authenticated Helper actor shared by execution and Electron UI. */
   nativeComputerHost: NativeComputerService | undefined;
@@ -414,6 +420,8 @@ export async function createAdPilotSystem(options: CreateAdPilotSystemOptions = 
   const computerMutationReplay = new FileMutationReplayStore(
     join(workspaceRoot, ".adpilot", "computer-mutation-replay")
   );
+  const kernel = KernelService.fromRoot(workspaceRoot);
+  const artifacts = new ArtifactService(new FileArtifactStore(workspaceRoot));
   const computer = grounding && verifier && nativeOperator
     ? new VisualComputerRuntime(
         new BrowserSessionBoundOperator(nativeOperator, browserSessions),
@@ -516,6 +524,7 @@ export async function createAdPilotSystem(options: CreateAdPilotSystemOptions = 
     workspace, settings, credentials, models, audit, approvals, experiments, tools, skills, runtime, planMode, autonomy, specialists, agent,
     sessions: sessionAuthority.service, sessionAuthority,
     alerts: alertMonitor, computer,
+    kernel, artifacts,
     nativeComputerHost: native.host,
     nativeHelperError: native.error,
     shutdown: async () => {

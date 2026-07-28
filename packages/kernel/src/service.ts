@@ -1,12 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { KernelError } from "./errors.js";
 import {
+  Artifact,
   Goal,
   Project,
+  TaskNode,
+  type Artifact as ArtifactValue,
+  type ArtifactType,
   type Goal as GoalValue,
+  type GoalStatus,
   type Project as ProjectValue,
-  type ProjectType
+  type ProjectType,
+  type TaskNode as TaskNodeValue,
+  type TaskNodeStatus
 } from "./entities.js";
+import { completeTask, createTask, readyTasks, type CreateTaskInput } from "./task-graph.js";
 import {
   FileArtifactStore,
   FileGoalStore,
@@ -165,6 +173,44 @@ export class KernelService {
   }
 
   /**
+   * Register and link an externally produced artifact (e.g. the artifacts
+   * package's rendered output). The kernel record shares the producer's id
+   * so project artifact lists never dangle across the two stores.
+   */
+  async registerArtifact(input: {
+    id: string;
+    projectId: string;
+    sessionId?: string;
+    type: ArtifactType;
+    title: string;
+  }): Promise<ArtifactValue> {
+    const project = await this.requireProject(input.projectId);
+    const existing = await this.stores.artifacts.get(input.id);
+    if (existing) {
+      await this.linkArtifact(project.id, existing.id);
+      return existing;
+    }
+    const now = this.clock.now().toISOString();
+    const artifact = Artifact.parse({
+      id: input.id,
+      projectId: project.id,
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      type: input.type,
+      title: input.title,
+      sourceFiles: [],
+      exportFormats: [],
+      version: 1,
+      status: "ready",
+      createdAt: now,
+      updatedAt: now,
+      revision: 1
+    });
+    await this.stores.artifacts.save(artifact);
+    await this.linkArtifact(project.id, artifact.id);
+    return artifact;
+  }
+
+  /**
    * Archive a project. Deliberately shallow: goals, tasks, and artifacts keep
    * their own status untouched — archival only removes the project from the
    * active working set, it must not rewrite execution history.
@@ -180,6 +226,75 @@ export class KernelService {
     });
     await this.stores.projects.save(next);
     return next;
+  }
+
+  async getProject(projectId: string): Promise<ProjectValue | undefined> {
+    return this.stores.projects.get(projectId);
+  }
+
+  async listProjects(filter: { workspaceId?: string; status?: "active" | "archived" } = {}): Promise<ProjectValue[]> {
+    return this.stores.projects.list(filter);
+  }
+
+  async getGoal(goalId: string): Promise<GoalValue | undefined> {
+    return this.stores.goals.get(goalId);
+  }
+
+  async listGoals(projectId?: string): Promise<GoalValue[]> {
+    return this.stores.goals.list(projectId ? { projectId } : {});
+  }
+
+  /** Move a goal to a new status; revision bumps only on real changes. */
+  async updateGoalStatus(goalId: string, status: GoalStatus): Promise<GoalValue> {
+    const goal = await this.stores.goals.get(goalId);
+    if (!goal) throw new KernelError(`goal not found: ${goalId}`, "GOAL_NOT_FOUND");
+    if (goal.status === status) return goal;
+    const next = Goal.parse({
+      ...goal,
+      status,
+      updatedAt: this.clock.now().toISOString(),
+      revision: goal.revision + 1
+    });
+    await this.stores.goals.save(next);
+    return next;
+  }
+
+  /** Queue a task. Dependency and parent references must already exist. */
+  async createTask(input: CreateTaskInput): Promise<TaskNodeValue> {
+    if (input.goalId) {
+      const goal = await this.stores.goals.get(input.goalId);
+      if (!goal) throw new KernelError(`goal not found: ${input.goalId}`, "GOAL_NOT_FOUND");
+    }
+    const existing = await this.stores.tasks.list(input.goalId ? { goalId: input.goalId } : {});
+    const task = createTask(input, existing);
+    await this.stores.tasks.save(task);
+    return task;
+  }
+
+  async listTasks(filter: { goalId?: string; status?: TaskNodeStatus } = {}): Promise<TaskNodeValue[]> {
+    return this.stores.tasks.list(filter);
+  }
+
+  /** Queued tasks whose dependencies are all completed. */
+  async readyTasks(goalId?: string): Promise<TaskNodeValue[]> {
+    const tasks = await this.listTasks(goalId ? { goalId } : {});
+    return readyTasks(tasks);
+  }
+
+  /**
+   * Complete a task and persist the graph transition. Returns the completed
+   * task plus any queued tasks the completion unlocked.
+   */
+  async completeTask(taskId: string): Promise<{ task: TaskNodeValue; unlocked: TaskNodeValue[] }> {
+    const current = await this.stores.tasks.get(taskId);
+    if (!current) throw new KernelError(`task not found: ${taskId}`, "TASK_NOT_FOUND");
+    const siblings = await this.stores.tasks.list(current.goalId ? { goalId: current.goalId } : {});
+    const result = completeTask(siblings, taskId, this.clock.now());
+    for (const task of result.tasks) {
+      if (task.id === taskId) await this.stores.tasks.save(task);
+    }
+    const task = result.tasks.find((candidate) => candidate.id === taskId)!;
+    return { task, unlocked: result.unlocked };
   }
 
   private async appendProjectId(
