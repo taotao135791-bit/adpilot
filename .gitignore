@@ -3,7 +3,7 @@ node_modules/
 dist/
 release/
 coverage/
-artifacts/
+/artifacts/
 /build/native-helper/
 *.log
 .DS_Store
