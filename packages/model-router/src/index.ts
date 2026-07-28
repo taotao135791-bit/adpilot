@@ -136,7 +136,7 @@ export function createCustomProvider(config: z.input<typeof CustomProviderConfig
       api: parsed.api,
       provider: parsed.id,
       baseUrl: parsed.baseUrl,
-      reasoning: false,
+      reasoning: model.reasoning,
       input: model.vision ? ["text", "image"] : ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: CUSTOM_PROVIDER_DEFAULT_CONTEXT_WINDOW,
@@ -248,15 +248,18 @@ export function resolvePiModel(models: Models, ref: ModelRef): Model<Api> {
 export function modelRouterFromEnv(env: NodeJS.ProcessEnv = process.env): ModelRouter {
   const fastProvider = env.ADPILOT_FAST_PROVIDER ?? "openai";
   const fastModel = env.ADPILOT_FAST_MODEL ?? "gpt-5-mini";
+  // Single-model semantics: when no strong model is configured the strong role
+  // follows the fast one; the built-in defaults only apply to a bare env.
+  const strongModel = env.ADPILOT_STRONG_MODEL ?? env.ADPILOT_FAST_MODEL ?? "gpt-5.2";
   const guiFallback = { provider: env.ADPILOT_GUI_FALLBACK_PROVIDER ?? fastProvider, model: env.ADPILOT_GUI_FALLBACK_MODEL ?? fastModel };
   const dedicatedGui = env.ADPILOT_GUI_BASE_URL && env.ADPILOT_GUI_MODEL
     ? { provider: env.ADPILOT_GUI_PROVIDER ?? "ui-tars-openai-compatible", model: env.ADPILOT_GUI_MODEL }
     : undefined;
   return new ModelRouter({
     fast: { provider: fastProvider, model: fastModel },
-    strong: { provider: env.ADPILOT_STRONG_PROVIDER ?? fastProvider, model: env.ADPILOT_STRONG_MODEL ?? "gpt-5.2" },
+    strong: { provider: env.ADPILOT_STRONG_PROVIDER ?? fastProvider, model: strongModel },
     gui: guiFallback,
-    guiStrong: { provider: env.ADPILOT_GUI_STRONG_FALLBACK_PROVIDER ?? env.ADPILOT_STRONG_PROVIDER ?? fastProvider, model: env.ADPILOT_GUI_STRONG_FALLBACK_MODEL ?? env.ADPILOT_STRONG_MODEL ?? "gpt-5.2" },
+    guiStrong: { provider: env.ADPILOT_GUI_STRONG_FALLBACK_PROVIDER ?? env.ADPILOT_STRONG_PROVIDER ?? fastProvider, model: env.ADPILOT_GUI_STRONG_FALLBACK_MODEL ?? strongModel },
     guiFallback,
     ...(dedicatedGui ? { guiDedicated: dedicatedGui } : {}),
     ...(env.ADPILOT_GUI_BASE_URL && env.ADPILOT_GUI_STRONG_MODEL ? {

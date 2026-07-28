@@ -4,12 +4,12 @@ import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { describe, expect, it, vi } from "vitest";
-import { createAdPilotSystem } from "@adpilot/application";
+import { createAdPilotSystem, type ProductSessionEntity } from "@adpilot/application";
 import type { ApprovalExecutionPlan, ApprovalGuardrailRequest, ApprovalOperation } from "@adpilot/approvals";
 import { BrowserSessionLostError, type BrowserSession, type ScreenshotModelCallAudit } from "@adpilot/computer-use";
-import type { SharedFactLedger } from "@adpilot/shared";
+import { ConversationMessage, TaskState, type SharedFactLedger } from "@adpilot/shared";
 import { visualTaskFromExecutionPlan, type VisualApprovalPlanDraft } from "@adpilot/tools";
-import { createServer } from "./index.js";
+import { createServer, scopeTasksForConversation } from "./index.js";
 
 function operation(): ApprovalOperation {
   return {
@@ -653,6 +653,94 @@ describe("plan-mode endpoints", () => {
     expect(badBody.statusCode).toBe(400);
     const unknownClient = await server.inject({ method: "GET", url: "/api/clients/nope/conversations/primary/plan-mode" });
     expect(unknownClient.statusCode).toBeGreaterThanOrEqual(400);
+    await server.close();
+  });
+});
+
+describe("conversation-scoped task state", () => {
+  const taskRecord = (overrides: Record<string, unknown> = {}) =>
+    TaskState.parse({
+      id: crypto.randomUUID(), clientId: "personal", goal: "goal", phase: "blocked",
+      createdAt: "2026-07-27T00:00:00.000Z", updatedAt: "2026-07-27T00:00:00.000Z",
+      ...overrides
+    });
+  const messageRecord = (conversationId: string, at: string, content = "message") =>
+    ConversationMessage.parse({ id: crypto.randomUUID(), clientId: "personal", conversationId, role: "user", content, at });
+
+  it("attributes, filters and annotates tasks per conversation", () => {
+    const sessionId = crypto.randomUUID();
+    const sessions = [{ id: sessionId, runtimeConversationId: "launch-review" } as ProductSessionEntity];
+    const attributed = taskRecord({ conversationId: "launch-review", goal: "attributed" });
+    const legacy = taskRecord({ goal: "legacy" });
+    const dismissed = taskRecord({ conversationId: "launch-review", goal: "dismissed", phase: "archived" });
+    const messages = [messageRecord("primary", "2026-07-27T00:00:00.000Z"), messageRecord("launch-review", "2026-07-27T01:00:00.000Z")];
+
+    // The selected conversation sees its own tasks plus legacy tasks attributed
+    // to the most recently active conversation; archived tasks never list.
+    const launchReview = scopeTasksForConversation([attributed, legacy, dismissed], messages, sessions, "launch-review");
+    expect(launchReview.map((task) => task.id)).toEqual([attributed.id, legacy.id]);
+    expect(launchReview[0]).toMatchObject({ conversationId: "launch-review", sessionId });
+    // The legacy task inherits the session through its resolved conversation.
+    expect(launchReview[1]).toMatchObject({ conversationId: "launch-review", sessionId });
+
+    // Another conversation sees nothing: the legacy task belongs to the most
+    // recently active conversation only.
+    expect(scopeTasksForConversation([attributed, legacy, dismissed], messages, sessions, "primary")).toEqual([]);
+
+    // Without any messages a legacy task belongs to no conversation at all.
+    expect(scopeTasksForConversation([legacy], [], [], "primary")).toEqual([]);
+
+    // A persisted sessionId always wins over the conversation-derived mapping.
+    const pinned = taskRecord({ conversationId: "launch-review", sessionId: crypto.randomUUID() });
+    expect(scopeTasksForConversation([pinned], messages, sessions, "launch-review")[0]?.sessionId).toBe(pinned.sessionId);
+  });
+
+  it("scopes /api/state tasks to the selected conversation and archives tasks on demand", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-task-scoping-"));
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+    const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
+
+    const launchTask = taskRecord({ goal: "Launch review task", conversationId: "launch-review" });
+    const primaryTask = taskRecord({ goal: "Primary task", conversationId: "primary", updatedAt: "2026-07-27T00:00:00.000Z" });
+    const legacyTask = taskRecord({ goal: "Legacy stuck task", updatedAt: "2026-07-27T01:00:00.000Z" });
+    await system.workspace.saveTask(launchTask);
+    await system.workspace.saveTask(primaryTask);
+    await system.workspace.saveTask(legacyTask);
+
+    // Attributed tasks are scoped; without messages the legacy task shows nowhere.
+    let state = (await server.inject({ method: "GET", url: "/api/state?clientId=personal&conversationId=launch-review" })).json();
+    expect(state.tasks.map((task: { id: string }) => task.id)).toEqual([launchTask.id]);
+    expect(state.tasks[0]).toMatchObject({ conversationId: "launch-review", sessionId: null });
+    state = (await server.inject({ method: "GET", url: "/api/state?clientId=personal&conversationId=primary" })).json();
+    expect(state.tasks.map((task: { id: string }) => task.id)).toEqual([primaryTask.id]);
+
+    // The legacy task follows the most recently active conversation (listTasks
+    // orders by updatedAt desc: legacy 01:00 before primary 00:00).
+    await system.workspace.appendJsonl("personal", "conversation.jsonl", messageRecord("primary", new Date().toISOString()));
+    state = (await server.inject({ method: "GET", url: "/api/state?clientId=personal&conversationId=primary" })).json();
+    expect(state.tasks.map((task: { id: string }) => task.id)).toEqual([legacyTask.id, primaryTask.id]);
+    expect(state.tasks.find((task: { id: string }) => task.id === legacyTask.id)).toMatchObject({ conversationId: "primary", sessionId: null });
+    state = (await server.inject({ method: "GET", url: "/api/state?clientId=personal&conversationId=launch-review" })).json();
+    expect(state.tasks.map((task: { id: string }) => task.id)).toEqual([launchTask.id]);
+
+    // Archiving dismisses the stuck task from every view, idempotently.
+    const missing = await server.inject({ method: "POST", url: `/api/tasks/${crypto.randomUUID()}/archive`, payload: { clientId: "personal" } });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toMatchObject({ code: "TASK_NOT_FOUND" });
+    const archived = await server.inject({ method: "POST", url: `/api/tasks/${legacyTask.id}/archive`, payload: { clientId: "personal" } });
+    expect(archived.statusCode).toBe(200);
+    expect(archived.json().task).toMatchObject({ id: legacyTask.id, phase: "archived" });
+    const again = await server.inject({ method: "POST", url: `/api/tasks/${legacyTask.id}/archive`, payload: { clientId: "personal" } });
+    expect(again.statusCode).toBe(200);
+    expect(again.json().task.phase).toBe("archived");
+    state = (await server.inject({ method: "GET", url: "/api/state?clientId=personal&conversationId=primary" })).json();
+    expect(state.tasks.map((task: { id: string }) => task.id)).toEqual([primaryTask.id]);
+    // The archived task stays on disk for audit.
+    expect((await system.workspace.readTask("personal", legacyTask.id)).phase).toBe("archived");
+
+    // POST /api/tasks accepts conversation attribution (unknown keys still 400).
+    const strict = await server.inject({ method: "POST", url: "/api/tasks", payload: { clientId: "personal", goal: "x", bogus: 1 } });
+    expect(strict.statusCode).toBe(400);
     await server.close();
   });
 });

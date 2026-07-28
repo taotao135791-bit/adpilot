@@ -26,7 +26,7 @@ import { ApprovalOperation } from "@adpilot/approvals";
 import { StartBrowserSessionInput, type BrowserSession } from "@adpilot/computer-use";
 import { SettingsUpdate } from "@adpilot/configuration";
 import { resolvePiSessionId, type SessionModelOverride } from "@adpilot/runtime";
-import { ConversationMessage, MonitoringAlert, MonitoringAlertInput, Platform } from "@adpilot/shared";
+import { ConversationMessage, MonitoringAlert, MonitoringAlertInput, Platform, TaskState, type TaskState as TaskStateValue } from "@adpilot/shared";
 import { ApprovalGuardrailEvidenceInput, VisualApprovalPlanInput, visualTaskFromExecutionPlan } from "@adpilot/tools";
 import {
   expandSlashCommand,
@@ -207,7 +207,10 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       selectedClientId: clientId,
       selectedConversationId: query.conversationId,
       selectedSessionId: sessions.find((session) => session.runtimeConversationId === query.conversationId)?.id ?? null,
-      tasks,
+      // Tasks are scoped to the selected conversation (like messages) and each
+      // carries its resolved conversationId/sessionId; archived tasks are
+      // dismissed and never listed. See scopeTasksForConversation.
+      tasks: scopeTasksForConversation(tasks, messages, sessions, query.conversationId),
       approvals,
       experiments,
       audit,
@@ -240,16 +243,46 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
   });
 
   app.post("/api/tasks", async (request, reply) => {
-    const body = z.object({ clientId: z.string(), goal: z.string().min(1) }).strict().parse(request.body);
+    const body = z.object({
+      clientId: z.string(),
+      goal: z.string().min(1),
+      conversationId: z.string().trim().min(1).max(120).optional(),
+      sessionId: z.string().uuid().optional()
+    }).strict().parse(request.body);
     system.events.publish({ type: "task", clientId: body.clientId, status: "running", message: body.goal });
     try {
-      const result = await system.agent.runTask(body.clientId, body.goal);
+      const result = await system.agent.runTask(body.clientId, body.goal, {
+        ...(body.conversationId ? { conversationId: body.conversationId } : {}),
+        ...(body.sessionId ? { sessionId: body.sessionId } : {})
+      });
       system.events.publish({ type: "task", clientId: body.clientId, status: result.task.phase, taskId: result.task.id, message: result.result.summary });
       reply.code(201); return result;
     } catch (error) {
       system.events.publish({ type: "error", clientId: body.clientId, message: error instanceof Error ? error.message : String(error), retryable: true });
       throw error;
     }
+  });
+
+  /**
+   * Dismisses a task from every conversation view: the phase flips to the
+   * terminal `archived` state, the task stays on disk for audit, and
+   * /api/state stops listing it. Idempotent — re-archiving returns the task.
+   */
+  app.post("/api/tasks/:id/archive", async (request, reply) => {
+    const params = z.object({ id: z.string().uuid() }).parse(request.params);
+    const body = z.object({ clientId: z.string().min(1) }).strict().parse(request.body ?? {});
+    let task: TaskStateValue;
+    try {
+      task = await system.workspace.readTask(body.clientId, params.id);
+    } catch {
+      return reply.code(404).send({ error: `task not found: ${params.id}`, code: "TASK_NOT_FOUND" });
+    }
+    if (task.phase !== "archived") {
+      task = TaskState.parse({ ...task, phase: "archived", updatedAt: new Date().toISOString() });
+      await system.workspace.saveTask(task);
+      system.events.publish({ type: "task", clientId: body.clientId, status: "archived", taskId: task.id, message: task.goal });
+    }
+    return { task };
   });
 
   app.post("/api/messages", async (request, reply) => {
@@ -1058,4 +1091,37 @@ function sanitizeLegacyConversationError(message: z.infer<typeof ConversationMes
       ? "A previous model response used an unsupported format, so AdPilot stopped safely. Please send the message again."
       : "上一次模型响应使用了不兼容的格式，AdPilot 已安全停止。请重新发送消息。"
   };
+}
+
+/**
+ * Scopes the task list to one conversation for GET /api/state.
+ *
+ * Attribution contract (desktop: read this before rendering a task banner):
+ * - A task persisted with a conversationId keeps it; legacy tasks without one
+ *   are attributed to the most recently active conversation (the latest
+ *   message in conversation.jsonl), or to no conversation (null) when the
+ *   workspace has no messages yet — they then show in no conversation view.
+ * - sessionId comes from the persisted task field, falling back to the
+ *   Product Session whose runtimeConversationId matches the resolved
+ *   conversation, else null.
+ * - Tasks with phase "archived" are user-dismissed and never listed.
+ * - Every returned task carries non-undefined conversationId/sessionId
+ *   (string or null), so the desktop never has to re-derive attribution.
+ */
+export function scopeTasksForConversation(
+  tasks: TaskStateValue[],
+  messages: Array<z.infer<typeof ConversationMessage>>,
+  sessions: ProductSessionEntity[],
+  conversationId: string
+): Array<Omit<TaskStateValue, "conversationId" | "sessionId"> & { conversationId: string | null; sessionId: string | null }> {
+  const mostRecentConversationId = messages.at(-1)?.conversationId ?? null;
+  const sessionIdByConversation = new Map(sessions.map((session) => [session.runtimeConversationId, session.id]));
+  return tasks
+    .filter((task) => task.phase !== "archived")
+    .map((task) => {
+      const resolvedConversationId = task.conversationId ?? mostRecentConversationId;
+      const resolvedSessionId = task.sessionId ?? (resolvedConversationId ? sessionIdByConversation.get(resolvedConversationId) : undefined) ?? null;
+      return { ...task, conversationId: resolvedConversationId, sessionId: resolvedSessionId };
+    })
+    .filter((task) => task.conversationId === conversationId);
 }

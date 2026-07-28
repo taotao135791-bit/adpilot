@@ -5,6 +5,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { describe, expect, it } from "vitest";
 import { ProductEventBus, createAdPilotSystem, identitySafeRoi, identitySensitiveMasks, sanitizeVisualRuntimeEvent } from "./index.js";
+import { SettingsStore } from "@adpilot/configuration";
 
 const identityExpectation = {
   clientId: "client-a",
@@ -90,6 +91,43 @@ describe("application visual table assembly", () => {
       verifierModel: { provider: "local-code", modelId: "code-vision", location: "local" },
       privacyMode: "local-only"
     });
+  });
+
+  it("marks Computer Use configured when a single stored vision model fills both roles", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-application-single-vision-"));
+    const settings = new SettingsStore(root, {});
+    // Single-model mode: only the fast selection is stored; the strong role follows it.
+    await settings.save({
+      locale: "zh-CN", appearance: "dark",
+      models: { fast: { provider: "openai", model: "gpt-5" } },
+      env: { OPENAI_API_KEY: "test-openai-key" }
+    });
+
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+
+    expect(system.modelStatus.fast).toBe("openai/gpt-5");
+    expect(system.modelStatus.strong).toBe("openai/gpt-5");
+    expect(system.modelStatus.chatConfigured).toBe(true);
+    expect(system.modelStatus.guiConfigured).toBe(true);
+    expect(system.modelStatus.route).toBe("Fast Vision → Deep Vision");
+  });
+
+  it("keeps Computer Use unconfigured when the single stored model cannot see images", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-application-single-text-"));
+    const settings = new SettingsStore(root, {});
+    await settings.save({
+      locale: "zh-CN", appearance: "dark",
+      models: { fast: { provider: "deepseek", model: "deepseek-v4-pro" } },
+      env: { DEEPSEEK_API_KEY: "test-deepseek-key" }
+    });
+
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+
+    expect(system.modelStatus.fast).toBe("deepseek/deepseek-v4-pro");
+    expect(system.modelStatus.strong).toBe("deepseek/deepseek-v4-pro");
+    expect(system.modelStatus.chatConfigured).toBe(true);
+    expect(system.modelStatus.guiConfigured).toBe(false);
+    expect(system.modelStatus.route).toBe("not configured");
   });
 });
 

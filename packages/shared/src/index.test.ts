@@ -38,6 +38,25 @@ describe("shared contracts", () => {
     expect(() => TaskState.parse({ goal: "Improve CPA" })).toThrow();
   });
 
+  it("keeps task conversation attribution optional and accepts the archived phase", () => {
+    const base = {
+      id: crypto.randomUUID(),
+      clientId: "client-a",
+      goal: "Improve CPA",
+      phase: "blocked",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    // Legacy rows without attribution still parse.
+    const legacy = TaskState.parse(base);
+    expect(legacy.conversationId).toBeUndefined();
+    expect(legacy.sessionId).toBeUndefined();
+    const attributed = TaskState.parse({ ...base, conversationId: "primary", sessionId: crypto.randomUUID() });
+    expect(attributed.conversationId).toBe("primary");
+    expect(TaskState.parse({ ...base, phase: "archived" }).phase).toBe("archived");
+    expect(() => TaskState.parse({ ...base, sessionId: "not-a-uuid" })).toThrow();
+  });
+
   it("defines the complete shared-fact lifecycle and verifier contract", () => {
     expect(SharedFactStatus.options).toEqual([
       "hypothesis", "observed", "verified", "rejected", "stale", "superseded"
@@ -154,7 +173,7 @@ describe("custom provider contracts", () => {
       models: [{ id: "gpt-4o-internal" }]
     });
     expect(parsed.api).toBe("openai-completions");
-    expect(parsed.models[0]).toEqual({ id: "gpt-4o-internal", vision: false });
+    expect(parsed.models[0]).toEqual({ id: "gpt-4o-internal", vision: false, reasoning: false });
     expect(parsed.apiKey).toBeUndefined();
   });
 

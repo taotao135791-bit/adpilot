@@ -67,8 +67,8 @@ describe("SettingsStore", () => {
     expect(JSON.stringify(view)).not.toContain("gateway-secret");
     expect(JSON.stringify(view)).not.toContain("ADPILOT_CUSTOM_PROVIDERS");
     expect(view.customProviders).toEqual([
-      { id: "corp-gateway", name: "Corp Gateway", baseUrl: "https://gateway.corp.example/v1", api: "openai-completions", hasApiKey: true, models: [{ id: "gpt-4o-internal", vision: false }] },
-      { id: "local-llama", name: "Local llama.cpp", baseUrl: "http://127.0.0.1:8080/v1", api: "openai-completions", hasApiKey: false, models: [{ id: "qwen3-8b", vision: true }] }
+      { id: "corp-gateway", name: "Corp Gateway", baseUrl: "https://gateway.corp.example/v1", api: "openai-completions", hasApiKey: true, models: [{ id: "gpt-4o-internal", vision: false, reasoning: false }] },
+      { id: "local-llama", name: "Local llama.cpp", baseUrl: "http://127.0.0.1:8080/v1", api: "openai-completions", hasApiKey: false, models: [{ id: "qwen3-8b", vision: true, reasoning: false }] }
     ]);
     expect(view.models.fast).toEqual({ provider: "corp-gateway", model: "gpt-4o-internal" });
     const catalogEntry = view.catalog.providers.find((provider) => provider.id === "local-llama");
@@ -152,5 +152,118 @@ describe("SettingsStore", () => {
       env: {}, customProviders: []
     })).rejects.toThrow("provider not found");
     expect((await store.load()).customProviders.map((provider) => provider.id)).toEqual(["corp-gateway"]);
+  });
+
+  it("supports single-model mode: an omitted strong selection follows the fast one", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-settings-single-"));
+    const store = new SettingsStore(root, {});
+    await store.save({
+      locale: "zh-CN", appearance: "dark",
+      models: { fast: { provider: "openai", model: "gpt-5" } },
+      env: { OPENAI_API_KEY: "single-key" }
+    });
+    // The fast selection materializes into both roles so downstream env
+    // consumers (router, vision wiring) work unchanged.
+    const effective = await store.effectiveEnv();
+    expect(effective.ADPILOT_FAST_PROVIDER).toBe("openai");
+    expect(effective.ADPILOT_FAST_MODEL).toBe("gpt-5");
+    expect(effective.ADPILOT_STRONG_PROVIDER).toBe("openai");
+    expect(effective.ADPILOT_STRONG_MODEL).toBe("gpt-5");
+
+    const view = await store.publicView();
+    expect(view.models.fast).toEqual({ provider: "openai", model: "gpt-5" });
+    expect(view.models.strong).toEqual({ provider: "openai", model: "gpt-5" });
+    expect(view.models.strongConfigured).toBe(false);
+
+    // The single-model shape survives a reload from disk.
+    const reloaded = new SettingsStore(root, {});
+    expect((await reloaded.load()).models?.strong).toBeUndefined();
+    expect((await reloaded.publicView()).models.strongConfigured).toBe(false);
+    expect((await reloaded.effectiveEnv()).ADPILOT_STRONG_MODEL).toBe("gpt-5");
+
+    // Moving back to two explicit models restores the classic split.
+    await reloaded.save({
+      locale: "zh-CN", appearance: "dark",
+      models: { fast: { provider: "openai", model: "gpt-5-mini" }, strong: { provider: "openai", model: "gpt-5.2" } },
+      env: {}
+    });
+    const split = await reloaded.publicView();
+    expect(split.models.strong).toEqual({ provider: "openai", model: "gpt-5.2" });
+    expect(split.models.strongConfigured).toBe(true);
+    expect((await reloaded.effectiveEnv()).ADPILOT_STRONG_MODEL).toBe("gpt-5.2");
+  });
+
+  it("persists reasoning settings, merges partial updates, and exports them through env", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-settings-reasoning-"));
+    const store = new SettingsStore(root, { ADPILOT_REASONING_EFFORT: "high", ADPILOT_REASONING_SCOPE: "all" });
+    // Default is off, and a stored "off" wins over the ambient env.
+    const initial = await store.publicView();
+    expect(initial.reasoning).toEqual({ effort: "off", scope: "strong" });
+    const initialEnv = await store.effectiveEnv();
+    expect(initialEnv.ADPILOT_REASONING_EFFORT).toBeUndefined();
+    expect(initialEnv.ADPILOT_REASONING_SCOPE).toBeUndefined();
+
+    await store.save({
+      locale: "zh-CN", appearance: "dark",
+      models: { fast: { provider: "openai", model: "gpt-5" } },
+      reasoning: { effort: "high", scope: "all" },
+      env: {}
+    });
+    const enabled = await store.effectiveEnv();
+    expect(enabled.ADPILOT_REASONING_EFFORT).toBe("high");
+    expect(enabled.ADPILOT_REASONING_SCOPE).toBe("all");
+    expect((await store.publicView()).reasoning).toEqual({ effort: "high", scope: "all" });
+
+    // Omitted fields keep their stored values across partial updates.
+    await store.save({
+      locale: "zh-CN", appearance: "dark",
+      models: { fast: { provider: "openai", model: "gpt-5" } },
+      reasoning: { effort: "low" },
+      env: {}
+    });
+    expect((await store.publicView()).reasoning).toEqual({ effort: "low", scope: "all" });
+    // Omitting reasoning entirely keeps the stored setting.
+    await store.save({
+      locale: "zh-CN", appearance: "dark",
+      models: { fast: { provider: "openai", model: "gpt-5" } },
+      env: {}
+    });
+    expect((await store.publicView()).reasoning).toEqual({ effort: "low", scope: "all" });
+
+    // Turning it off removes the env overrides again, even over an ambient env.
+    await store.save({
+      locale: "zh-CN", appearance: "dark",
+      models: { fast: { provider: "openai", model: "gpt-5" } },
+      reasoning: { effort: "off" },
+      env: {}
+    });
+    const disabled = await store.effectiveEnv();
+    expect(disabled.ADPILOT_REASONING_EFFORT).toBeUndefined();
+    expect(disabled.ADPILOT_REASONING_SCOPE).toBeUndefined();
+
+    await expect(store.save({
+      locale: "zh-CN", appearance: "dark",
+      models: { fast: { provider: "openai", model: "gpt-5" } },
+      reasoning: { effort: "extreme" as never },
+      env: {}
+    })).rejects.toThrow();
+  });
+
+  it("surfaces custom provider reasoning capability in the catalog", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-settings-reasoning-flag-"));
+    const store = new SettingsStore(root, {});
+    await store.save({
+      locale: "zh-CN", appearance: "dark",
+      models: { fast: { provider: "corp-gateway", model: "reasoner" } },
+      env: {},
+      customProviders: [
+        { id: "corp-gateway", name: "Corp Gateway", baseUrl: "https://gateway.corp.example/v1", models: [{ id: "reasoner", reasoning: true }, { id: "plain" }] }
+      ]
+    });
+    const catalog = (await store.publicView()).catalog.providers.find((provider) => provider.id === "corp-gateway");
+    expect(catalog?.models).toEqual([
+      { id: "reasoner", name: "reasoner", reasoning: true, vision: false, contextWindow: 128000 },
+      { id: "plain", name: "plain", reasoning: false, vision: false, contextWindow: 128000 }
+    ]);
   });
 });

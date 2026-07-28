@@ -212,6 +212,32 @@ describe("AdPilotAgent integration", () => {
     await expect(agent.respond("client-a", "Hello", { interfaceLocale: "en" })).resolves.toMatchObject({ reply: "Hello — tell me what you would like to work on.", task: null });
   });
 
+  it("attributes new tasks to the conversation and session that started them", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-task-attribution-"));
+    const workspace = new WorkspaceStore(root);
+    await workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
+    // startTask only touches the workspace; the runtime and tools stay unused.
+    const agent = new AdPilotAgent(
+      undefined as unknown as PiAgentRuntime,
+      new SpecialistCoordinator([]),
+      workspace,
+      undefined as unknown as AdPilotTools
+    );
+    const sessionId = crypto.randomUUID();
+    const attributed = await agent.startTask("client-a", "Inspect CPA", { conversationId: "launch-review", sessionId });
+    expect(attributed).toMatchObject({ conversationId: "launch-review", sessionId });
+    // The attribution survives the persist → read round-trip.
+    expect(await workspace.readTask("client-a", attributed.id)).toMatchObject({ conversationId: "launch-review", sessionId });
+
+    // A task started without a conversation stays unattributed (legacy shape).
+    const bare = await agent.startTask("client-a", "Bare goal");
+    expect(bare.conversationId).toBeUndefined();
+    expect(bare.sessionId).toBeUndefined();
+    const persisted = await workspace.readTask("client-a", bare.id);
+    expect(persisted.conversationId).toBeUndefined();
+    expect(persisted.sessionId).toBeUndefined();
+  });
+
   it("loads verified screenshot facts into the main prompt, quarantines ordinary objects, and writes synthesis facts", async () => {
     const root = await mkdtemp(join(tmpdir(), "adpilot-facts-"));
     const workspace = new WorkspaceStore(root);

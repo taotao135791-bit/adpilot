@@ -8,6 +8,8 @@
   "files": [
     "dist/cli",
     "dist/desktop",
+    "dist/plugins",
+    "dist/plugin-runtime",
     "README.md",
     "LICENSE",
     "LICENSES.md",
@@ -91,11 +93,14 @@
     "forceCodeSigning": false,
     "asarUnpack": [
       "dist/desktop/**",
+      "dist/plugin-runtime/**",
       "node_modules/**/*.node"
     ],
     "files": [
       "dist/electron/**",
       "dist/desktop/**",
+      "dist/plugins/**",
+      "dist/plugin-runtime/**",
       "package.json",
       "LICENSE",
       "LICENSES.md",

@@ -55,7 +55,10 @@ export const TaskPhase = z.enum([
   "monitoring",
   "completed",
   "blocked",
-  "cancelled"
+  "cancelled",
+  // Terminal user-driven dismissal: the task stays on disk for audit but is
+  // hidden from every conversation view (see POST /api/tasks/:id/archive).
+  "archived"
 ]);
 
 export const SpecialistRole = z.enum([
@@ -538,6 +541,10 @@ export const TaskState = z.object({
   clientId: z.string().min(1),
   goal: z.string().min(1),
   phase: TaskPhase,
+  /** Conversation this task was started from; absent on tasks persisted before conversation attribution existed. */
+  conversationId: z.string().min(1).optional(),
+  /** Product Session backing the conversation; absent when the conversation has no session or predates attribution. */
+  sessionId: z.string().uuid().optional(),
   completedSteps: z.array(z.string()).default([]),
   evidence: z.array(Evidence).default([]),
   hypotheses: z.array(z.string()).default([]),
@@ -566,6 +573,34 @@ export type ConversationMessage = z.infer<typeof ConversationMessage>;
 
 export const ModelTier = z.enum(["fast", "gui", "strong"]);
 export type ModelTier = z.infer<typeof ModelTier>;
+
+// ---------------------------------------------------------------------------
+// Reasoning (thinking) mode for chat/planning models
+// ---------------------------------------------------------------------------
+
+/** Env vars carrying the stored reasoning-mode settings from SettingsStore.effectiveEnv() to the runtime. */
+export const REASONING_EFFORT_ENV = "ADPILOT_REASONING_EFFORT";
+export const REASONING_SCOPE_ENV = "ADPILOT_REASONING_SCOPE";
+
+/**
+ * Thinking effort exposed in settings. "off" disables reasoning; the remaining
+ * levels map one-to-one onto pi-ai's ThinkingLevel, which clamps per model.
+ */
+export const ReasoningEffort = z.enum(["off", "low", "medium", "high"]);
+export type ReasoningEffort = z.infer<typeof ReasoningEffort>;
+
+/**
+ * Which routing tier reasoning applies to: "strong" keeps thinking on the
+ * strong role (and session-pinned runs); "all" also sends it on fast runs.
+ */
+export const ReasoningScope = z.enum(["strong", "all"]);
+export type ReasoningScope = z.infer<typeof ReasoningScope>;
+
+export const ReasoningSettings = z.object({
+  effort: ReasoningEffort.default("off"),
+  scope: ReasoningScope.default("strong")
+});
+export type ReasoningSettings = z.infer<typeof ReasoningSettings>;
 
 export interface Clock {
   now(): Date;
@@ -834,7 +869,9 @@ export type CustomProviderApi = z.infer<typeof CustomProviderApi>;
 export const CustomProviderModel = z.object({
   id: z.string().min(1),
   /** True when this model accepts image inputs (screenshots); gates entry into vision routes. */
-  vision: z.boolean().default(false)
+  vision: z.boolean().default(false),
+  /** True when this model accepts a reasoning/thinking effort parameter; otherwise thinking settings are silently dropped. */
+  reasoning: z.boolean().default(false)
 });
 export type CustomProviderModel = z.infer<typeof CustomProviderModel>;
 

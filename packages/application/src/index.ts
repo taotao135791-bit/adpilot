@@ -38,7 +38,7 @@ import {
 } from "@adpilot/computer-use";
 import { ExperimentStore } from "@adpilot/experiments";
 import { createPiModels, modelRouterFromEnv, resolvePiModel } from "@adpilot/model-router";
-import { PiAgentRuntime, AuditRuntimeExtension, AutonomyStore, PlanModeStore } from "@adpilot/runtime";
+import { PiAgentRuntime, AuditRuntimeExtension, AutonomyStore, PlanModeStore, type ReasoningPolicy } from "@adpilot/runtime";
 import { SkillRegistry } from "@adpilot/skills";
 import { AccountOperator, CreativeStrategist, MediaBuyer, MeasurementReviewer, PerformanceAnalyst, ReportingAnalyst, RiskReviewer, SpecialistCoordinator } from "@adpilot/specialist-agents";
 import { AdPilotTools } from "@adpilot/tools";
@@ -88,6 +88,8 @@ export type { PromptTemplate, PromptTemplateSummary, PromptTemplateWarning } fro
 export { createMergedAgentKnowledge, matchSkillSummaries, parseSkillMarkdown, UserSkillStore } from "./user-skills.js";
 export type { UserSkill, UserSkillSource, UserSkillWarning } from "./user-skills.js";
 export { createPluginService, PluginPermissionReviewError, PluginService } from "./plugins.js";
+export { resolvePluginResourceLayout } from "./plugin-roots.js";
+export type { PluginResourceLayout, PluginResourceRootsOverride } from "./plugin-roots.js";
 export type {
   PluginCatalogResponse,
   PluginDetailsResponse,
@@ -224,11 +226,18 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   const router = modelRouterFromEnv(env);
   const models = options.models ?? createPiModels(env, credentials);
   const fastRef = { provider: env.ADPILOT_FAST_PROVIDER ?? "openai", model: env.ADPILOT_FAST_MODEL ?? "gpt-5-mini" };
-  const strongRef = { provider: env.ADPILOT_STRONG_PROVIDER ?? fastRef.provider, model: env.ADPILOT_STRONG_MODEL ?? "gpt-5.2" };
+  // Single-model semantics: an unconfigured strong role follows the fast one.
+  const strongRef = { provider: env.ADPILOT_STRONG_PROVIDER ?? fastRef.provider, model: env.ADPILOT_STRONG_MODEL ?? env.ADPILOT_FAST_MODEL ?? "gpt-5.2" };
   const fastModel = resolvePiModel(models, fastRef);
   const strongModel = resolvePiModel(models, strongRef);
   const fastAuth = Boolean(await models.checkAuth(fastModel.provider).catch(() => undefined));
   const strongAuth = fastModel.provider === strongModel.provider ? fastAuth : Boolean(await models.checkAuth(strongModel.provider).catch(() => undefined));
+  // Settings-driven reasoning (thinking) mode: strong role by default, every
+  // role when the scope is "all". Unsupported models drop it silently.
+  const reasoningEffort = env.ADPILOT_REASONING_EFFORT;
+  const reasoningPolicy: ReasoningPolicy | undefined = reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
+    ? { effort: reasoningEffort, scope: env.ADPILOT_REASONING_SCOPE === "all" ? "all" : "strong" }
+    : undefined;
   const primaryVisionCandidate = fastModel.input.includes("image") ? fastModel : strongModel.input.includes("image") ? strongModel : undefined;
   const strongVisionCandidate = strongModel.input.includes("image") ? strongModel : primaryVisionCandidate;
   const primaryVision = primaryVisionCandidate === fastModel ? (fastAuth ? fastModel : strongModel.input.includes("image") && strongAuth ? strongModel : undefined) : strongAuth ? primaryVisionCandidate : undefined;
@@ -413,7 +422,7 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
       onError: (error) => events.publish({ type: "error", message: error.message, retryable: true })
     },
     new AuditRuntimeExtension(audit)
-  ], { generalReadTools: tools.generalReadTools(), planMode, autonomy });
+  ], { generalReadTools: tools.generalReadTools(), planMode, autonomy, ...(reasoningPolicy ? { reasoning: reasoningPolicy } : {}) });
   const alertMonitor = new AlertMonitor({ workspace, runtime, audit, events });
   runtime.registerExtension(alertMonitor.extension);
   const specialists = new SpecialistCoordinator([

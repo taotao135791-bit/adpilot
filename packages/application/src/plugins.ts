@@ -39,11 +39,9 @@
  * Every lifecycle transition is chained into the per-client audit log and
  * published as a `plugin` product event to every workspace client.
  */
-import { existsSync } from "node:fs";
 import { createPublicKey } from "node:crypto";
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { AuditLog } from "@adpilot/audit";
 import type { WorkspaceStore } from "@adpilot/workspace";
 import {
@@ -72,6 +70,7 @@ import {
   type PluginUpdateDto,
   type UninstalledPluginDto
 } from "../../plugin-runtime/src/catalog-service.ts";
+import { resolvePluginResourceLayout } from "./plugin-roots.js";
 import type { ProductEventBus } from "./index.js";
 
 const PLUGIN_ID = /^[a-z0-9]+(?:[.-][a-z0-9]+)+$/;
@@ -156,7 +155,7 @@ export interface PluginServiceDeps {
   audit: AuditLog;
   events: ProductEventBus;
   env?: NodeJS.ProcessEnv;
-  roots?: { repositoryRoot?: string; curatedRoot?: string; trustRoot?: string };
+  roots?: { repositoryRoot?: string; curatedRoot?: string; trustRoot?: string; hostPath?: string };
 }
 
 interface BufferedAudit {
@@ -164,31 +163,6 @@ interface BufferedAudit {
   status: "attempted" | "succeeded" | "failed" | "denied";
   actor: string;
   details: Record<string, unknown>;
-}
-
-function resolveRepositoryRoot(env: NodeJS.ProcessEnv, override?: string): string {
-  if (override) return path.resolve(override);
-  if (env.ADPILOT_REPOSITORY_ROOT) return path.resolve(env.ADPILOT_REPOSITORY_ROOT);
-  // packages/application/src → repository root in the source tree; in bundled
-  // layouts the curated catalog ships as a resource and the env override wins.
-  const fromModule = fileURLToPath(new URL("../../..", import.meta.url));
-  if (existsSync(path.join(fromModule, "plugins", "curated"))) return fromModule;
-  return path.resolve(process.cwd());
-}
-
-function resolvePluginHostPath(env: NodeJS.ProcessEnv): string {
-  const candidates = [
-    env.ADPILOT_PLUGIN_HOST_PATH,
-    fileURLToPath(new URL("./host.mjs", import.meta.url)),
-    fileURLToPath(new URL("../../plugin-runtime/src/host.mjs", import.meta.url)),
-    path.resolve(process.cwd(), "packages", "plugin-runtime", "src", "host.mjs")
-  ].filter((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0);
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-  const fallback = candidates[1] ?? candidates[0];
-  if (!fallback) throw new PluginRuntimeError("PLUGIN_HOST_MISSING", "Plugin isolation host could not be resolved");
-  return fallback;
 }
 
 /** Mirrors the curated trust-anchor rules: regular, non-symlink Ed25519 .pem files with safe key ids. */
@@ -256,11 +230,10 @@ export class PluginService {
   static async create(deps: PluginServiceDeps): Promise<PluginService> {
     const env = deps.env ?? process.env;
     const workspaceRoot = deps.workspace.root;
-    const repositoryRoot = resolveRepositoryRoot(env, deps.roots?.repositoryRoot);
-    const curatedRoot = path.resolve(
-      deps.roots?.curatedRoot ?? env.ADPILOT_PLUGIN_CURATED_ROOT ?? path.join(repositoryRoot, "plugins", "curated")
-    );
-    const trustRoot = path.resolve(deps.roots?.trustRoot ?? env.ADPILOT_PLUGIN_TRUST_ROOT ?? path.join(curatedRoot, "trust"));
+    // Layout-aware resolution (source tree / CLI bundle / packaged asar); see plugin-roots.ts.
+    const layout = resolvePluginResourceLayout({ env, ...(deps.roots ? { roots: deps.roots } : {}) });
+    const curatedRoot = layout.curatedRoot;
+    const trustRoot = layout.trustRoot;
     const runtimeRoot = path.join(workspaceRoot, ".adpilot", "plugin-runtime");
     const pluginDataRoot = path.join(workspaceRoot, "plugin-data");
     const logPath = path.join(runtimeRoot, "logs", "events.jsonl");
@@ -270,7 +243,7 @@ export class PluginService {
     ]);
     const logger = new StructuredPluginLogger({ logPath });
     const makeSupervisor = (developerMode: boolean) =>
-      new PluginSupervisor({ logger, developerMode, hostPath: resolvePluginHostPath(env) });
+      new PluginSupervisor({ logger, developerMode, hostPath: layout.hostPath });
     // Update activation consumes single-use, process-local receipts minted by
     // this service; the durable receipt ledger rejects replays after restart.
     const mintedReceipts = new Set<string>();

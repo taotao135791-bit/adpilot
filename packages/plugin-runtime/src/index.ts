@@ -1959,7 +1959,9 @@ export class PluginSupervisor {
     ];
     const child = spawn(process.execPath, args, {
       cwd: process.cwd(),
-      env: { NODE_NO_WARNINGS: "1" },
+      // Under Electron the executable is the Electron binary; it only runs a
+      // plain Node entrypoint when ELECTRON_RUN_AS_NODE=1 is set for the child.
+      env: { NODE_NO_WARNINGS: "1", ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}) },
       stdio: ["ignore", "ignore", "ignore", "ipc"]
     });
     const requestId = randomUUID();

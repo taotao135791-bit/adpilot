@@ -1,5 +1,5 @@
 import { Agent, DEFAULT_COMPACTION_SETTINGS, Session, estimateContextTokens, prepareCompaction, compact, shouldCompact, type AgentEvent, type AgentMessage, type AgentTool, type CompactionSettings } from "@earendil-works/pi-agent-core";
-import type { Api, Message, Model, Models } from "@earendil-works/pi-ai";
+import type { Api, Message, Model, Models, ThinkingLevel } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import { ModelRouter, resolvePiModel, type ModelRef, type RoutingSignals } from "@adpilot/model-router";
 import { SkillRegistry, formatSkillContract } from "@adpilot/skills";
@@ -144,6 +144,22 @@ export interface PiAgentRuntimeOptions {
    * account mutations are never waived.
    */
   autonomy?: AutonomyProbe;
+  /**
+   * Reasoning (thinking) mode resolved from settings. Maps onto pi-ai's
+   * SimpleStreamOptions.reasoning per run; models without reasoning support
+   * receive nothing (pi-ai would silently drop the parameter anyway).
+   */
+  reasoning?: ReasoningPolicy;
+}
+
+/**
+ * Settings-driven thinking policy. Scope "strong" sends the effort only on
+ * strong-tier runs (session-pinned runs count as strong); scope "all" sends
+ * it on every run whose model supports reasoning.
+ */
+export interface ReasoningPolicy {
+  effort: ThinkingLevel;
+  scope: "strong" | "all";
 }
 
 export interface RuntimeRecoveryCheckpoint {
@@ -176,6 +192,7 @@ export class PiAgentRuntime {
   private readonly compactionInstructions: string;
   private readonly generalReadTools: AgentTool[];
   private readonly planMode: PlanModeProbe | undefined;
+  private readonly reasoningPolicy: ReasoningPolicy | undefined;
   private readonly sessionLocks = new Map<string, Promise<void>>();
   private readonly activeSessions = new Map<string, TrackedSession>();
   private readonly toolGate: ToolPermissionGate;
@@ -193,7 +210,21 @@ export class PiAgentRuntime {
     this.compactionInstructions = options.compactionInstructions ?? DEFAULT_ADPILOT_COMPACTION_INSTRUCTIONS;
     this.generalReadTools = options.generalReadTools ?? [];
     this.planMode = options.planMode;
+    this.reasoningPolicy = options.reasoning;
     this.toolGate = new ToolPermissionGate(tools.approvals, tools.audit, this.planMode, options.autonomy);
+  }
+
+  /**
+   * Resolve the pi-ai thinking level for one model call. Thinking is a
+   * strong-role feature unless the policy scope is "all"; session-pinned runs
+   * count as strong. Models without reasoning support get nothing, so the
+   * setting degrades silently instead of erroring on unsupported providers.
+   */
+  private reasoningFor(tier: string, model: Model<Api>): ThinkingLevel | undefined {
+    const policy = this.reasoningPolicy;
+    if (!policy || !model.reasoning) return undefined;
+    if (policy.scope !== "all" && tier !== "strong" && tier !== "session") return undefined;
+    return policy.effort;
   }
 
   async run(request: RuntimeRequest): Promise<RuntimeResult> {
@@ -520,7 +551,10 @@ export class PiAgentRuntime {
         messages: persistedContext.messages
       },
       convertToLlm: adpilotConvertToLlm,
-      streamFn: (selectedModel, context, options) => this.models.streamSimple(selectedModel, context, options),
+      streamFn: (selectedModel, context, options) => {
+        const reasoning = this.reasoningFor(tier, selectedModel);
+        return this.models.streamSimple(selectedModel, context, reasoning ? { ...options, reasoning } : options);
+      },
       sessionId: request.context.sessionId,
       toolExecution: "sequential",
       maxRetryDelayMs: 30_000,

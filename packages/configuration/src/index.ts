@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
-import { CUSTOM_PROVIDER_DEFAULT_CONTEXT_WINDOW, CUSTOM_PROVIDERS_ENV, CustomProviderConfig } from "@adpilot/shared";
+import { CUSTOM_PROVIDER_DEFAULT_CONTEXT_WINDOW, CUSTOM_PROVIDERS_ENV, CustomProviderConfig, REASONING_EFFORT_ENV, REASONING_SCOPE_ENV, ReasoningEffort, ReasoningScope, ReasoningSettings } from "@adpilot/shared";
 import { z } from "zod";
 
 export type Locale = "zh-CN" | "en";
@@ -120,8 +120,18 @@ export const ModelSelection = z.object({ provider: z.string().min(1), model: z.s
 export const SettingsUpdate = z.object({
   locale: z.enum(["zh-CN", "en"]),
   appearance: z.enum(["dark", "light", "system"]),
-  models: z.object({ fast: ModelSelection, strong: ModelSelection }),
+  /**
+   * `strong` is optional: omitting it selects single-model mode, where the
+   * fast selection also serves the strong role. Sending both keeps the
+   * classic fast/strong split unchanged.
+   */
+  models: z.object({ fast: ModelSelection, strong: ModelSelection.optional() }),
   env: z.record(z.string(), z.string().nullable()).default({}),
+  /**
+   * Reasoning (thinking) mode. Omitted keeps the stored setting; individual
+   * fields that are omitted keep their stored values.
+   */
+  reasoning: z.object({ effort: ReasoningEffort.optional(), scope: ReasoningScope.optional() }).optional(),
   /** Full replacement of the custom provider list when present; omitted keeps the stored list. */
   customProviders: z.array(CustomProviderConfig).optional()
 });
@@ -131,7 +141,8 @@ const StoredSettings = z.object({
   version: z.literal(1),
   locale: z.enum(["zh-CN", "en"]).default("zh-CN"),
   appearance: z.enum(["dark", "light", "system"]).default("dark"),
-  models: z.object({ fast: ModelSelection, strong: ModelSelection }).optional(),
+  models: z.object({ fast: ModelSelection, strong: ModelSelection.optional() }).optional(),
+  reasoning: ReasoningSettings.default({ effort: "off", scope: "strong" }),
   env: z.record(z.string(), z.string()).default({}),
   customProviders: z.array(CustomProviderConfig).default([])
 });
@@ -179,7 +190,7 @@ export function getModelCatalog(customProviders: CustomProviderConfig[] = []): M
       models: custom.models.map((model) => ({
         id: model.id,
         name: model.id,
-        reasoning: false,
+        reasoning: model.reasoning,
         vision: model.vision,
         contextWindow: CUSTOM_PROVIDER_DEFAULT_CONTEXT_WINDOW
       }))
@@ -212,10 +223,21 @@ export class SettingsStore {
     const data = await this.load();
     const env: NodeJS.ProcessEnv = { ...this.baseEnv, ...data.env };
     if (data.models) {
+      // Single-model mode: an omitted strong selection follows the fast one,
+      // so every downstream consumer (router, vision wiring) sees both roles.
+      const strong = data.models.strong ?? data.models.fast;
       env.ADPILOT_FAST_PROVIDER = data.models.fast.provider;
       env.ADPILOT_FAST_MODEL = data.models.fast.model;
-      env.ADPILOT_STRONG_PROVIDER = data.models.strong.provider;
-      env.ADPILOT_STRONG_MODEL = data.models.strong.model;
+      env.ADPILOT_STRONG_PROVIDER = strong.provider;
+      env.ADPILOT_STRONG_MODEL = strong.model;
+    }
+    // Stored reasoning settings win over ambient env, including "off".
+    if (data.reasoning.effort === "off") {
+      delete env[REASONING_EFFORT_ENV];
+      delete env[REASONING_SCOPE_ENV];
+    } else {
+      env[REASONING_EFFORT_ENV] = data.reasoning.effort;
+      env[REASONING_SCOPE_ENV] = data.reasoning.scope;
     }
     if (data.customProviders.length > 0) {
       env[CUSTOM_PROVIDERS_ENV] = JSON.stringify(data.customProviders);
@@ -228,13 +250,20 @@ export class SettingsStore {
     const env = await this.effectiveEnv();
     const catalog = getModelCatalog(data.customProviders);
     const fields = catalog.providers.flatMap((provider) => provider.fields).concat(catalog.computerFields);
+    // With stored settings the stored strong selection decides explicitness;
+    // without them the ambient env is the only possible source.
+    const strongConfigured = data.models
+      ? data.models.strong !== undefined
+      : Boolean(env.ADPILOT_STRONG_PROVIDER && env.ADPILOT_STRONG_MODEL);
     return {
       locale: data.locale,
       appearance: data.appearance,
       models: {
         fast: { provider: env.ADPILOT_FAST_PROVIDER ?? "openai", model: env.ADPILOT_FAST_MODEL ?? "gpt-5-mini" },
-        strong: { provider: env.ADPILOT_STRONG_PROVIDER ?? env.ADPILOT_FAST_PROVIDER ?? "openai", model: env.ADPILOT_STRONG_MODEL ?? "gpt-5.2" }
+        strong: { provider: env.ADPILOT_STRONG_PROVIDER ?? env.ADPILOT_FAST_PROVIDER ?? "openai", model: env.ADPILOT_STRONG_MODEL ?? env.ADPILOT_FAST_MODEL ?? "gpt-5.2" },
+        strongConfigured
       },
+      reasoning: { effort: data.reasoning.effort, scope: data.reasoning.scope },
       values: Object.fromEntries(fields.filter((item) => !item.secret).map((item) => [item.env, env[item.env] ?? ""])),
       configured: Object.fromEntries(fields.map((item) => [item.env, Boolean(env[item.env])])),
       customProviders: data.customProviders.map((custom) => ({
@@ -255,7 +284,7 @@ export class SettingsStore {
     const customProviders = update.customProviders ?? current.customProviders;
     validateCustomProviders(customProviders);
     validateSelection(update.models.fast, customProviders);
-    validateSelection(update.models.strong, customProviders);
+    if (update.models.strong) validateSelection(update.models.strong, customProviders);
     const nextEnv = Object.fromEntries(Object.entries(current.env).filter(([name]) => allowedEnv.has(name)));
     for (const [name, value] of Object.entries(update.env)) {
       if (!allowedEnv.has(name)) throw new Error(`unsupported setting: ${name}`);
@@ -263,7 +292,8 @@ export class SettingsStore {
       else nextEnv[name] = value.trim();
     }
     validateComputerSettings(nextEnv);
-    this.data = StoredSettings.parse({ version: 1, locale: update.locale, appearance: update.appearance, models: update.models, env: nextEnv, customProviders });
+    const reasoning = { ...current.reasoning, ...update.reasoning };
+    this.data = StoredSettings.parse({ version: 1, locale: update.locale, appearance: update.appearance, models: update.models, reasoning, env: nextEnv, customProviders });
     await mkdir(resolve(this.workspaceRoot, ".adpilot"), { recursive: true, mode: 0o700 });
     const temporary = `${this.path}.${randomUUID()}.tmp`;
     await writeFile(temporary, `${JSON.stringify(this.data, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });

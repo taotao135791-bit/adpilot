@@ -119,6 +119,68 @@ describe("custom providers", () => {
     expect(resolvePiModel(models, strongDecision.ref)).toMatchObject({ baseUrl: localLlama.baseUrl, input: ["text"] });
     expect((await models.getAuth("corp-gateway"))?.auth.apiKey).toBe("gw-secret");
   });
+
+  it("routes the strong tier to the fast model when only one model is configured", async () => {
+    // Bare env single-model: no strong override anywhere.
+    const single = modelRouterFromEnv({ ADPILOT_FAST_PROVIDER: "corp-gateway", ADPILOT_FAST_MODEL: "gpt-4o-internal" });
+    expect(single.route({ task: "risk_review" })).toMatchObject({ tier: "strong", ref: { provider: "corp-gateway", model: "gpt-4o-internal" } });
+    // Explicitly configured strong models keep the classic split.
+    const split = modelRouterFromEnv({
+      ADPILOT_FAST_PROVIDER: "corp-gateway", ADPILOT_FAST_MODEL: "gpt-4o-internal",
+      ADPILOT_STRONG_PROVIDER: "local-llama", ADPILOT_STRONG_MODEL: "qwen3-8b"
+    });
+    expect(split.route({ task: "risk_review" })).toMatchObject({ tier: "strong", ref: { provider: "local-llama", model: "qwen3-8b" } });
+
+    // Settings-file single-model: effectiveEnv materializes both roles.
+    const root = await mkdtemp(join(tmpdir(), "adpilot-router-single-"));
+    const store = new SettingsStore(root, {});
+    await store.save({
+      locale: "zh-CN", appearance: "dark",
+      models: { fast: { provider: "corp-gateway", model: "gpt-4o-internal" } },
+      env: {},
+      customProviders: [gateway]
+    });
+    const router = modelRouterFromEnv(await store.effectiveEnv());
+    expect(router.route({ task: "risk_review" })).toMatchObject({ tier: "strong", ref: { provider: "corp-gateway", model: "gpt-4o-internal" } });
+  });
+});
+
+describe("custom provider reasoning capability", () => {
+  const reasonerGateway = {
+    id: "reasoning-gateway", name: "Reasoning Gateway", baseUrl: "http://127.0.0.1:9/v1", apiKey: "gw-secret",
+    models: [{ id: "thinker", reasoning: true }, { id: "plain" }]
+  };
+
+  it("marks custom provider models as reasoning-capable only when configured", () => {
+    const models = createPiModels({}, undefined, { customProviders: [reasonerGateway] });
+    expect(resolvePiModel(models, { provider: "reasoning-gateway", model: "thinker" }).reasoning).toBe(true);
+    expect(resolvePiModel(models, { provider: "reasoning-gateway", model: "plain" }).reasoning).toBe(false);
+  });
+
+  it("sends reasoning_effort on the wire for capable models and drops it for others", async () => {
+    const models = createPiModels({}, undefined, { customProviders: [reasonerGateway] });
+    const context = { systemPrompt: "test", messages: [{ role: "user" as const, content: "hi", timestamp: 0 }] };
+
+    const thinkerPayloads: Record<string, unknown>[] = [];
+    const thinker = resolvePiModel(models, { provider: "reasoning-gateway", model: "thinker" });
+    // Nothing listens on 127.0.0.1:9; the payload is captured before the network failure.
+    await models.completeSimple(thinker, context, {
+      reasoning: "high",
+      onPayload: (payload) => { thinkerPayloads.push(payload as Record<string, unknown>); }
+    }).catch(() => undefined);
+    expect(thinkerPayloads).toHaveLength(1);
+    expect(thinkerPayloads[0]?.reasoning_effort).toBe("high");
+
+    const plainPayloads: Record<string, unknown>[] = [];
+    const plain = resolvePiModel(models, { provider: "reasoning-gateway", model: "plain" });
+    await models.completeSimple(plain, context, {
+      reasoning: "high",
+      onPayload: (payload) => { plainPayloads.push(payload as Record<string, unknown>); }
+    }).catch(() => undefined);
+    expect(plainPayloads).toHaveLength(1);
+    expect(plainPayloads[0]).not.toHaveProperty("reasoning_effort");
+    expect(JSON.stringify(plainPayloads[0])).not.toContain("thinking");
+  });
 });
 
 describe("local-only privacy guard", () => {

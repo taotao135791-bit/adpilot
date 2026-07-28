@@ -134,9 +134,19 @@ export class AdPilotAgent {
     return { reply: investigation.result.summary, task: investigation.task, result: investigation.result };
   }
 
-  async startTask(clientId: string, goal: string): Promise<Task> {
+  async startTask(clientId: string, goal: string, context: AgentConversationContext = {}): Promise<Task> {
     const now = new Date().toISOString();
-    const task = TaskState.parse({ id: crypto.randomUUID(), clientId, goal, phase: "intake", createdAt: now, updatedAt: now, nextStep: "Build an evidence-driven investigation tree" });
+    // Conversation/session attribution lets the product scope each task to the
+    // conversation it was started from; tasks started without a conversation
+    // (e.g. a bare API call) stay unattributed and are resolved at read time.
+    const task = TaskState.parse({
+      id: crypto.randomUUID(), clientId, goal, phase: "intake", createdAt: now, updatedAt: now,
+      nextStep: "Build an evidence-driven investigation tree",
+      ...(typeof context.conversationId === "string" && context.conversationId.trim()
+        ? { conversationId: context.conversationId.trim() }
+        : {}),
+      ...(typeof context.sessionId === "string" && context.sessionId.trim() ? { sessionId: context.sessionId.trim() } : {})
+    });
     await this.persistTask(task);
     return task;
   }
@@ -154,7 +164,7 @@ export class AdPilotAgent {
    */
   async runAction(clientId: string, goal: string, context: AgentConversationContext = {}): Promise<{ task: Task; result: { summary: string } }> {
     const clientContext = await this.workspace.readClient(clientId);
-    let task = await this.startTask(clientId, goal);
+    let task = await this.startTask(clientId, goal, context);
     task = TaskState.parse({ ...task, phase: "executing", owner: null, nextStep: "Run the local action with the general tools", updatedAt: new Date().toISOString() });
     await this.persistTask(task);
     const conversationId = typeof context.conversationId === "string" && context.conversationId.trim() ? context.conversationId.trim() : `task-${task.id}`;
@@ -199,7 +209,7 @@ export class AdPilotAgent {
       this.workspace.readClient(clientId),
       this.workspace.readJsonl(clientId, "memory/agent.jsonl", LongTermMemory)
     ]);
-    let task = await this.startTask(clientId, goal);
+    let task = await this.startTask(clientId, goal, context);
     const inherited = await this.sharedFacts.usable(clientId);
     await this.sharedFacts.deriveForTask(clientId, task.id, inherited);
     let taskFacts = await this.sharedFacts.usable(clientId, { taskId: task.id });
