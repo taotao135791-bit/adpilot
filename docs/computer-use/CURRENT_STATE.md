@@ -26,7 +26,7 @@ on external accounts or credentials remain `blocked-*` / `not-run` by design.
 | `pnpm test:computer:google-ads-prepare` | blocked-by-no-test-account | Same guard. |
 | `pnpm test:computer:google-ads-mutation` | blocked-by-no-test-account | Same guard plus explicit opt-in requirement. |
 | `pnpm eval:computer-use:live` | not-run | `LIVE_MODEL_NOT_CONFIGURED`: no live visual provider credential on this machine. |
-| `pnpm verify` | see PROGRESS.md | Result recorded after the run completes. |
+| `pnpm verify` | passed | Full chain in 59s on a calm machine: format, lint, typecheck, 719 unit/integration tests (18s), security, computer suites, real-machine permissions, ads-core 410, production build, `package:mac:dir`, `package:smoke`. Artifacts: `release/AdPilot-0.2.3-arm64.dmg`, `release/mac-arm64/AdPilot.app` (ad-hoc signed, nested helper verified). |
 
 ## Baseline at P0 audit start
 

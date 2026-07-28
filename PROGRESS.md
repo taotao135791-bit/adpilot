@@ -39,7 +39,11 @@ pnpm test:computer:google-ads-readonly  blocked-by-no-test-account (structured r
 pnpm test:computer:google-ads-prepare   blocked-by-no-test-account (structured report)
 pnpm test:computer:google-ads-mutation  blocked-by-no-test-account (structured report)
 pnpm eval:computer-use:live      not-run (LIVE_MODEL_NOT_CONFIGURED)
-pnpm verify                      in progress — result recorded below when the run completes
+pnpm verify                      pass (59s on a calm machine: format, lint, typecheck,
+                                 719 tests in 18s, security 48, computer 155 + Swift 23,
+                                 permissions real-machine pass, ads-core 410, build,
+                                 package:mac:dir, package:smoke all green)
+desktop component tests          pass (10 files, 89 tests; apps/desktop vitest)
 ```
 
 No test, live action, or real-account result is recorded as passing unless it ran in this rebuild.
