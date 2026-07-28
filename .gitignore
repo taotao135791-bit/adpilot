@@ -16,3 +16,6 @@ workspace/clients/*/memory/*
 workspace/.adpilot/
 !workspace/clients/.gitkeep
 workspace/clients/
+workspace/browser-profiles/
+workspace/browser-sessions/
+.vscode/

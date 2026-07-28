@@ -164,7 +164,7 @@ export function Sidebar({ copy, locale, clients, clientId, sessions, searching, 
         </Tooltip>
       </div>
 
-      <Button variant="primary" className="new-chat" icon={<IconPlus size={14} />} onClick={onNewSession}>
+      <Button variant="outline" className="new-chat" icon={<IconPlus size={14} />} onClick={onNewSession}>
         <span className="new-chat-label">{copy.newChat}</span>
       </Button>
 
