@@ -21,6 +21,11 @@ export * from "./surface.js";
 export * from "./browser-session.js";
 export * from "./privacy.js";
 export * from "./account-fingerprint.js";
+export * from "./protocol.js";
+export * from "./control-state.js";
+export * from "./replay.js";
+export * from "./runtime.js";
+export * from "./action-record-store.js";
 
 export const VisualTaskAllowedRegion = z.object({
   x: z.number().finite().nonnegative(),
@@ -170,9 +175,11 @@ export interface VisualVerifier {
 
 export interface NativeOperator {
   bindTask?(task: VisualMicroTask): void | Promise<void>;
-  capture(): Promise<Screenshot>;
-  execute(action: VisualAction, screenshot: Screenshot): Promise<void>;
-  identifySurface?(): Promise<{ surface: NativeSurface; fingerprint: string }>;
+  capture(task?: VisualMicroTask): Promise<Screenshot>;
+  execute(action: VisualAction, screenshot: Screenshot, task?: VisualMicroTask, signal?: AbortSignal): Promise<void>;
+  identifySurface?(task?: VisualMicroTask): Promise<{ surface: NativeSurface; fingerprint: string }>;
+  /** Cancel only input that has not yet been posted to the operating system. */
+  cancelPendingInput?(): void | Promise<void>;
 }
 
 type VisualRuntimeEventPayload =
@@ -193,7 +200,9 @@ export const VisualBlockerCode = z.enum([
   "GROUNDING_FAILED",
   "VERIFICATION_FAILED",
   "CANCELLED",
-  "PAUSED"
+  "PAUSED",
+  "USER_TAKEOVER",
+  "DUPLICATE_MUTATION"
 ]);
 export type VisualBlockerCode = z.infer<typeof VisualBlockerCode>;
 
@@ -334,10 +343,14 @@ export class VisualPolicy {
 }
 
 export type VisualRuntimeStatus = "running" | "paused" | "cancelled";
+export type VisualControlStatus = VisualRuntimeStatus | "user_control";
 
 export class VisualComputerRuntime {
-  private paused = false;
-  private cancelled = false;
+  private control: VisualControlStatus = "running";
+  private controlRevision = 0;
+  private requiresFreshCapture = false;
+  private readonly activeControllers = new Set<AbortController>();
+  private readonly attemptedMutationPlans = new Set<string>();
 
   constructor(
     private readonly operator: NativeOperator,
@@ -352,24 +365,57 @@ export class VisualComputerRuntime {
   }
 
   /**
-   * The execution state is intentionally separate from model/browser readiness.
-   * It is the authoritative answer for UI controls: a paused runtime must never
-   * be rendered as running simply because a GUI model is configured.
+   * Backward-compatible UI status. User control is intentionally rendered as
+   * paused to old clients, while controlStatus() exposes the real owner.
    */
   executionStatus(): VisualRuntimeStatus {
-    if (this.cancelled) return "cancelled";
-    return this.paused ? "paused" : "running";
+    if (this.control === "cancelled") return "cancelled";
+    return this.control === "running" ? "running" : "paused";
   }
 
-  pause(): void { if (!this.cancelled) this.paused = true; }
-  resume(): void { if (!this.cancelled) this.paused = false; }
-  cancel(): void { this.cancelled = true; }
+  controlStatus(): VisualControlStatus {
+    return this.control;
+  }
+
+  pause(): void {
+    if (this.control === "cancelled" || this.control === "paused") return;
+    this.setControl("paused", "paused by user");
+  }
+
+  resume(): void {
+    if (this.control !== "paused") return;
+    this.setControl("running", "agent resumed");
+  }
+
+  takeover(): void {
+    if (this.control === "cancelled" || this.control === "user_control") return;
+    this.setControl("user_control", "user took control");
+  }
+
+  returnControl(): void {
+    if (this.control !== "user_control") return;
+    this.setControl("running", "user returned control");
+  }
+
+  notifyUserInput(): void {
+    this.takeover();
+  }
+
+  cancel(): void {
+    if (this.control === "cancelled") return;
+    this.setControl("cancelled", "user cancelled");
+  }
+
+  stop(): void {
+    this.cancel();
+  }
 
   /** Resolve the live execution surface through the same native operator used for actions. */
   async identifySurface(task?: VisualMicroTask): Promise<{ surface?: NativeSurface; fingerprint: string }> {
+    this.assertAgentControl();
     if (task && this.operator.bindTask) await this.operator.bindTask(task);
-    if (this.operator.identifySurface) return this.operator.identifySurface();
-    const screenshot = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "surface identity");
+    if (this.operator.identifySurface) return this.operator.identifySurface(task);
+    const screenshot = await withTimeout(this.operator.capture(task), this.stepTimeoutMs, "surface identity");
     return {
       ...(screenshot.surface ? { surface: screenshot.surface } : {}),
       fingerprint: surfaceFingerprintFor(screenshot)
@@ -378,18 +424,23 @@ export class VisualComputerRuntime {
 
   /** Read-only verifier preflight used before consuming a mutation approval. */
   async verifyVisible(expectedResult: string, task?: VisualMicroTask): Promise<{ matched: boolean; confidence: number; reason: string; screenshot: Screenshot }> {
+    this.assertAgentControl();
     if (task && this.operator.bindTask) await this.operator.bindTask(task);
-    const screenshot = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "verification preflight screenshot");
+    const screenshot = await withTimeout(this.operator.capture(task), this.stepTimeoutMs, "verification preflight screenshot");
     await this.onEvent(scopeVisualRuntimeEvent({ type: "screenshot", phase: "before", screenshot }, task));
+    this.assertAgentControl();
     const result = await withTimeout(this.verifier.verify(expectedResult, screenshot, screenshot, task), this.stepTimeoutMs, "verification preflight");
+    this.assertAgentControl();
     await this.onEvent(scopeVisualRuntimeEvent({ type: "verified", attempt: 0, ...result }, task));
     return { ...result, screenshot };
   }
 
   /** Capture one current native window after applying the task/session binding. */
   async captureForTask(task: VisualMicroTask): Promise<Screenshot> {
+    this.assertAgentControl();
     if (this.operator.bindTask) await this.operator.bindTask(task);
-    const screenshot = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "task-bound screenshot capture");
+    const screenshot = await withTimeout(this.operator.capture(task), this.stepTimeoutMs, "task-bound screenshot capture");
+    this.assertAgentControl();
     await this.onEvent(scopeVisualRuntimeEvent({ type: "screenshot", phase: "before", screenshot }, task));
     return screenshot;
   }
@@ -399,30 +450,60 @@ export class VisualComputerRuntime {
     initialScreenshot?: Screenshot,
     constraintInput?: VisualExecutionConstraints
   ): Promise<VisualStepResult> {
+    const unavailable = this.controlFailure(0);
+    if (unavailable) return unavailable;
+    const revision = this.controlRevision;
+    const controller = new AbortController();
+    this.activeControllers.add(controller);
+    try {
+      return await this.runControlledMicroTask(task, initialScreenshot, constraintInput, revision, controller.signal);
+    } finally {
+      this.activeControllers.delete(controller);
+    }
+  }
+
+  private async runControlledMicroTask(
+    task: VisualMicroTask,
+    initialScreenshot: Screenshot | undefined,
+    constraintInput: VisualExecutionConstraints | undefined,
+    revision: number,
+    signal: AbortSignal
+  ): Promise<VisualStepResult> {
     const constraints = constraintInput ? VisualExecutionConstraints.parse(constraintInput) : undefined;
     let lastAction: VisualAction | undefined;
     const executedCoordinates = new Set<string>();
-    let mutationExecuted = false;
+    let mutationAttempted = false;
     const taskId = task.taskId ?? stableId("task", task.instruction, task.target);
     const stepId = task.stepId ?? stableId("step", taskId, task.expectedResult);
     const planId = task.planId ?? stableId("plan", taskId, task.instruction, task.target, task.expectedResult);
     const boundTask = { ...task, taskId, stepId, planId };
     const attemptLimit = task.retryPolicy === "none" ? 1 : this.maxAttempts;
     if (this.operator.bindTask) await this.operator.bindTask(boundTask);
+    this.assertRunControl(revision, signal);
+    const allowInitialScreenshot = !this.requiresFreshCapture;
+    this.requiresFreshCapture = false;
     for (let attempt = 1; attempt <= attemptLimit; attempt += 1) {
-      if (this.cancelled) return failedResult(attempt - 1, "user cancelled", "CANCELLED", lastAction);
-      if (this.paused) return failedResult(attempt - 1, "paused for user takeover", "PAUSED", lastAction);
-      if (mutationExecuted) {
-        return failedResult(attempt - 1, "mutating actions are never retried after execution", "MUTATION_RETRY_FORBIDDEN", lastAction);
+      const unavailable = this.controlFailure(attempt - 1, lastAction);
+      if (unavailable) return unavailable;
+      if (mutationAttempted) {
+        return failedResult(attempt - 1, "mutating actions are never retried after native execution was attempted", "MUTATION_RETRY_FORBIDDEN", lastAction);
       }
       const tier: ModelTier = task.retryPolicy === "none" ? "gui" : attempt >= attemptLimit ? "strong" : "gui";
       try {
-        const before = attempt === 1 && initialScreenshot
+        const before = attempt === 1 && initialScreenshot && allowInitialScreenshot
           ? Screenshot.parse(initialScreenshot)
-          : await withTimeout(this.operator.capture(), this.stepTimeoutMs, "screenshot capture");
+          : await withTimeout(this.operator.capture(boundTask), this.stepTimeoutMs, "screenshot capture", signal);
+        this.assertRunControl(revision, signal);
         await this.onEvent(scopeVisualRuntimeEvent({ type: "screenshot", phase: "before", screenshot: before }, boundTask));
+        this.assertRunControl(revision, signal);
         const expectedFingerprint = surfaceFingerprintFor(before);
-        const grounded = await withTimeout(this.grounding.ground(boundTask, before, tier), this.stepTimeoutMs, "visual grounding");
+        const grounded = await withTimeout(
+          this.grounding.ground(boundTask, before, tier),
+          this.stepTimeoutMs,
+          "visual grounding",
+          signal
+        );
+        this.assertRunControl(revision, signal);
         const action = bindActionContext(grounded, boundTask, before, expectedFingerprint);
         lastAction = action;
         if (constraints && !constraints.allowedActions.includes(action.action)) {
@@ -434,6 +515,7 @@ export class VisualComputerRuntime {
           throw new VisualRuntimeBlocker("POLICY_BLOCKED", error instanceof Error ? error.message : String(error));
         }
         await this.onEvent(scopeVisualRuntimeEvent({ type: "grounded", attempt, tier, action }, boundTask));
+        this.assertRunControl(revision, signal);
         if (action.action === "fail") return { status: "failed", attempts: attempt, blocker: action.reason, lastAction: action };
         if (action.action === "done") {
           if (boundTask.riskLevel === "mutate" || boundTask.riskLevel === "destructive") {
@@ -451,33 +533,77 @@ export class VisualComputerRuntime {
         if (coordinateKey && executedCoordinates.has(coordinateKey)) {
           throw new VisualRuntimeBlocker("DUPLICATE_COORDINATE", `refusing to repeat coordinates for ${action.action}: ${coordinateKey}`);
         }
-        await this.assertSurfaceUnchanged(expectedFingerprint);
-        if (action.risk_level === "mutate" || action.risk_level === "destructive") {
-          const immediate = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "mutation state recheck");
-          if (immediate.sha256 !== before.sha256) {
-            throw new VisualRuntimeBlocker("SURFACE_CHANGED", "visible pixels changed after identity review and grounding; a new approval plan is required");
+        await this.assertSurfaceUnchanged(expectedFingerprint, boundTask, signal);
+        this.assertRunControl(revision, signal);
+        const mutation = action.risk_level === "mutate" || action.risk_level === "destructive";
+        if (mutation) {
+          const immediate = await withTimeout(
+            this.operator.capture(boundTask),
+            this.stepTimeoutMs,
+            "mutation state recheck",
+            signal
+          );
+          this.assertRunControl(revision, signal);
+          if (immediate.sha256 !== before.sha256 || surfaceFingerprintFor(immediate) !== expectedFingerprint) {
+            throw new VisualRuntimeBlocker("SURFACE_CHANGED", "pixels or surface identity changed after grounding; a new approval plan is required");
+          }
+          if (this.attemptedMutationPlans.has(planId)) {
+            throw new VisualRuntimeBlocker("DUPLICATE_MUTATION", "this mutation plan already attempted native input and cannot be replayed");
           }
         }
         if (coordinateKey) executedCoordinates.add(coordinateKey);
-        await withTimeout(this.operator.execute(action, before), this.stepTimeoutMs, "native action");
-        mutationExecuted = action.risk_level === "mutate" || action.risk_level === "destructive";
+        this.assertRunControl(revision, signal);
+        if (mutation) {
+          // Claim before invoking the operator. A thrown error or timeout cannot
+          // prove that native input was not posted.
+          this.attemptedMutationPlans.add(planId);
+          mutationAttempted = true;
+        }
+        await withTimeout(
+          this.operator.execute(action, before, boundTask, signal),
+          this.stepTimeoutMs,
+          "native action",
+          signal
+        );
+        this.assertRunControl(revision, signal);
         await this.onEvent(scopeVisualRuntimeEvent({ type: "executed", attempt, action }, boundTask));
-        const after = await withTimeout(this.operator.capture(), this.stepTimeoutMs, "verification screenshot");
+        this.assertRunControl(revision, signal);
+        const after = await withTimeout(
+          this.operator.capture(boundTask),
+          this.stepTimeoutMs,
+          "verification screenshot",
+          signal
+        );
+        this.assertRunControl(revision, signal);
         await this.onEvent(scopeVisualRuntimeEvent({ type: "screenshot", phase: "after", screenshot: after }, boundTask));
+        this.assertRunControl(revision, signal);
         const afterFingerprint = surfaceFingerprintFor(after);
         if (afterFingerprint !== expectedFingerprint && !(before.surface && after.surface && sameNativeWindow(before.surface, after.surface))) {
           throw new SurfaceChangedBlocker(expectedFingerprint, afterFingerprint);
         }
-        const verified = await withTimeout(this.verifier.verify(action.expected_result, before, after, boundTask), this.stepTimeoutMs, "visual verification");
+        const verified = await withTimeout(
+          this.verifier.verify(action.expected_result, before, after, boundTask),
+          this.stepTimeoutMs,
+          "visual verification",
+          signal
+        );
+        this.assertRunControl(revision, signal);
         await this.onEvent(scopeVisualRuntimeEvent({ type: "verified", attempt, ...verified }, boundTask));
         if (verified.matched) return { status: "done", attempts: attempt, action, before, after, executed: true, verified: true };
-        if (mutationExecuted) {
+        if (mutationAttempted) {
           return failedResult(attempt, `mutation was executed but could not be visually verified: ${verified.reason}`, "MUTATION_RETRY_FORBIDDEN", action);
         }
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         const code = blockerCode(error);
         await this.onEvent(scopeVisualRuntimeEvent({ type: "blocked", attempt, reason, ...(code ? { code } : {}) }, boundTask));
+        if (error instanceof VisualControlInterruptedError) {
+          if (mutationAttempted) {
+            return failedResult(attempt, `${reason}; mutation outcome is unknown and will not be retried`, "MUTATION_RETRY_FORBIDDEN", lastAction);
+          }
+          return this.controlFailure(attempt, lastAction)
+            ?? failedResult(attempt, reason, "PAUSED", lastAction);
+        }
         if (error instanceof SurfaceCaptureChangedError || error instanceof NativeSurfaceUnavailableError) {
           return failedResult(attempt, reason, "SURFACE_CHANGED", lastAction);
         }
@@ -487,25 +613,74 @@ export class VisualComputerRuntime {
         if (error instanceof VisualRuntimeBlocker) {
           return failedResult(attempt, reason, error.code, lastAction);
         }
+        if (mutationAttempted) {
+          return failedResult(attempt, `${reason}; mutation outcome is unknown and will not be retried`, "MUTATION_RETRY_FORBIDDEN", lastAction);
+        }
         if (error instanceof VisualTimeoutError) {
           return failedResult(attempt, `${reason}; stopped to avoid a duplicate or blind action`, "TIMEOUT", lastAction);
-        }
-        if (mutationExecuted) {
-          return failedResult(attempt, `${reason}; mutating action will not be retried`, "MUTATION_RETRY_FORBIDDEN", lastAction);
         }
       }
     }
     return failedResult(attemptLimit, `visual action failed ${attemptLimit} time${attemptLimit === 1 ? "" : "s"}; blind operation stopped`, "VERIFICATION_FAILED", lastAction);
   }
 
-  private async assertSurfaceUnchanged(expectedFingerprint: string): Promise<void> {
+  private async assertSurfaceUnchanged(
+    expectedFingerprint: string,
+    task: VisualMicroTask,
+    signal: AbortSignal
+  ): Promise<void> {
     if (!this.operator.identifySurface) return;
-    const current = await withTimeout(this.operator.identifySurface(), this.stepTimeoutMs, "surface identity");
+    const current = await withTimeout(
+      this.operator.identifySurface(task),
+      this.stepTimeoutMs,
+      "surface identity",
+      signal
+    );
     if (current.fingerprint !== expectedFingerprint) throw new SurfaceChangedBlocker(expectedFingerprint, current.fingerprint);
+  }
+
+  private assertAgentControl(): void {
+    if (this.control !== "running") throw new VisualControlInterruptedError();
+  }
+
+  private assertRunControl(revision: number, signal: AbortSignal): void {
+    if (signal.aborted || this.control !== "running" || revision !== this.controlRevision) {
+      throw new VisualControlInterruptedError();
+    }
+  }
+
+  private controlFailure(attempts: number, lastAction?: VisualAction): VisualStepResult | undefined {
+    if (this.control === "cancelled") return failedResult(attempts, "user cancelled", "CANCELLED", lastAction);
+    if (this.control === "user_control") return failedResult(attempts, "user took control", "USER_TAKEOVER", lastAction);
+    if (this.control === "paused") return failedResult(attempts, "paused by user", "PAUSED", lastAction);
+    return undefined;
+  }
+
+  private setControl(next: VisualControlStatus, reason: string): void {
+    this.control = next;
+    this.controlRevision += 1;
+    this.requiresFreshCapture = true;
+    for (const controller of this.activeControllers) controller.abort(reason);
+    this.activeControllers.clear();
+    try {
+      const pending = this.operator.cancelPendingInput?.();
+      if (pending && typeof (pending as Promise<void>).catch === "function") {
+        void (pending as Promise<void>).catch(() => undefined);
+      }
+    } catch {
+      // Control authority changes before best-effort native queue cleanup.
+    }
   }
 }
 
 class VisualTimeoutError extends Error {}
+
+class VisualControlInterruptedError extends Error {
+  constructor() {
+    super("Computer Use control changed while an operation was in flight");
+    this.name = "VisualControlInterruptedError";
+  }
+}
 
 function scopeVisualRuntimeEvent(event: VisualRuntimeEventPayload, task?: VisualMicroTask): VisualRuntimeEvent {
   return {
@@ -598,18 +773,51 @@ function actionCoordinateKey(action: VisualAction): string | undefined {
     : `${action.action}:${action.x}:${action.y}`;
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+  signal?: AbortSignal
+): Promise<T> {
+  if (signal?.aborted) throw new VisualControlInterruptedError();
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  let abortListener: (() => void) | undefined;
   try {
     return await Promise.race([
       promise,
       new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => reject(new VisualTimeoutError(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
-      })
+      }),
+      ...(signal
+        ? [new Promise<never>((_resolve, reject) => {
+            abortListener = () => reject(new VisualControlInterruptedError());
+            signal.addEventListener("abort", abortListener, { once: true });
+          })]
+        : [])
     ]);
   } finally {
     if (timeout) clearTimeout(timeout);
+    if (signal && abortListener) signal.removeEventListener("abort", abortListener);
   }
+}
+
+async function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    await new Promise((resolve) => setTimeout(resolve, milliseconds));
+    return;
+  }
+  if (signal.aborted) throw new VisualControlInterruptedError();
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    const onAbort = () => {
+      clearTimeout(timeout);
+      reject(new VisualControlInterruptedError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export class UiTarsNativeOperator implements NativeOperator {
@@ -672,10 +880,11 @@ export class UiTarsNativeOperator implements NativeOperator {
     return { surface, fingerprint: surfaceFingerprintFor(this.lastCapture) };
   }
 
-  async execute(action: VisualAction, screenshot: Screenshot): Promise<void> {
+  async execute(action: VisualAction, screenshot: Screenshot, _task?: VisualMicroTask, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw new VisualControlInterruptedError();
     if (action.action === "screenshot") return;
     if (action.action === "wait") {
-      await new Promise((resolve) => setTimeout(resolve, action.milliseconds));
+      await abortableDelay(action.milliseconds, signal);
       return;
     }
     if (action.action === "done" || action.action === "fail") return;
@@ -690,6 +899,7 @@ export class UiTarsNativeOperator implements NativeOperator {
     if (action.action === "type") actionInputs.content = action.text;
     if (action.action === "hotkey") actionInputs.key = action.keys;
     if (action.action === "scroll") actionInputs.direction = action.direction;
+    if (signal?.aborted) throw new VisualControlInterruptedError();
     await this.operator.execute({
       prediction: `${actionType}()`,
       parsedPrediction: { action_type: actionType, action_inputs: actionInputs, reflection: null, thought: action.reason },
@@ -698,7 +908,8 @@ export class UiTarsNativeOperator implements NativeOperator {
       scaleFactor: screenshot.scaleFactor,
       factors: [1000, 1000]
     });
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    if (signal?.aborted) throw new VisualControlInterruptedError();
+    await abortableDelay(350, signal);
   }
 }
 

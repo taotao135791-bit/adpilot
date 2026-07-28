@@ -12,8 +12,11 @@ import {
   type BrowserProcessController,
   type BrowserProcessHandle,
   type BrowserProcessLaunchRequest,
+  type NativeOperator,
   type NativeSurface,
-  type NativeSurfaceIdentity
+  type NativeSurfaceIdentity,
+  type Screenshot,
+  type VisualMicroTask
 } from "./index.js";
 
 const roots: string[] = [];
@@ -197,6 +200,80 @@ describe("AdPilot managed browser sessions", () => {
       surface: { app: "Google Chrome", browserProfile: identity.active!.browserProfile!, allowedApps: ["Google Chrome"], allowedDomains: [] }
     })).resolves.toMatchObject({ status: "failed", blockerCode: "BROWSER_SESSION_LOST" });
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("keeps concurrent task bindings explicit instead of sharing mutable client/Profile state", async () => {
+    const calls: string[] = [];
+    const sessions = {
+      assertActive: vi.fn(async (clientId: string, profile: string, platform: string) => {
+        calls.push(`active:${clientId}:${profile}:${platform}`);
+        return {};
+      }),
+      assertCapturedSurface: vi.fn(async (clientId: string, _surface: NativeSurface | undefined, profile: string, platform: string) => {
+        calls.push(`captured:${clientId}:${profile}:${platform}`);
+        return {};
+      })
+    } as unknown as BrowserSessionManager;
+    const screenshot: Screenshot = {
+      base64: "screen",
+      width: 100,
+      height: 100,
+      scaleFactor: 1,
+      capturedAt: "2026-07-22T08:00:00.000Z",
+      sha256: "a".repeat(64)
+    };
+    const underlying: NativeOperator = {
+      capture: async () => screenshot,
+      execute: async (_action, _screenshot, task) => {
+        calls.push(`execute:${task?.clientId}:${task?.surface.browserProfile}:${task?.platform}`);
+      }
+    };
+    const guarded = new BrowserSessionBoundOperator(underlying, sessions);
+    const taskA: VisualMicroTask = {
+      instruction: "A",
+      target: "A",
+      expectedResult: "A",
+      riskLevel: "interact",
+      permission: "INTERACT",
+      clientId: "client-a",
+      platform: "google_ads",
+      surface: {
+        app: "Google Chrome",
+        browserProfile: "profile-a",
+        allowedApps: ["Google Chrome"],
+        allowedDomains: []
+      }
+    };
+    const taskB: VisualMicroTask = {
+      ...taskA,
+      instruction: "B",
+      target: "B",
+      expectedResult: "B",
+      clientId: "client-b",
+      platform: "meta_ads",
+      surface: { ...taskA.surface, browserProfile: "profile-b" }
+    };
+    guarded.bindTask(taskA);
+    guarded.bindTask(taskB);
+    await Promise.all([guarded.capture(taskA), guarded.capture(taskB)]);
+    await Promise.all([
+      guarded.execute({
+        action: "click", x: 1, y: 1, target: "A", reason: "A", confidence: 1,
+        expected_result: "A", risk_level: "interact"
+      }, screenshot, taskA),
+      guarded.execute({
+        action: "click", x: 2, y: 2, target: "B", reason: "B", confidence: 1,
+        expected_result: "B", risk_level: "interact"
+      }, screenshot, taskB)
+    ]);
+    expect(calls).toEqual(expect.arrayContaining([
+      "active:client-a:profile-a:google_ads",
+      "captured:client-a:profile-a:google_ads",
+      "active:client-b:profile-b:meta_ads",
+      "captured:client-b:profile-b:meta_ads",
+      "execute:client-a:profile-a:google_ads",
+      "execute:client-b:profile-b:meta_ads"
+    ]));
   });
 
   it("requires an exact Profile when a client has multiple sessions", async () => {

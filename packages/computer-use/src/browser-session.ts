@@ -418,7 +418,7 @@ export class BrowserSessionManager {
 
 /** Native operator guard for a single client browser binding. */
 export class BrowserSessionBoundOperator implements NativeOperator {
-  private binding: { clientId: string; browserProfile: string; platform: string } | undefined;
+  private readonly binding: { clientId: string; browserProfile: string; platform: string } | undefined;
   private readonly fixedBinding: boolean;
 
   constructor(
@@ -435,47 +435,54 @@ export class BrowserSessionBoundOperator implements NativeOperator {
   }
 
   bindTask(task: VisualMicroTask): void {
-    if (task.clientId && task.surface.browserProfile && task.platform) {
-      const requested = { clientId: task.clientId, browserProfile: task.surface.browserProfile, platform: task.platform };
-      if (this.fixedBinding && JSON.stringify(requested) !== JSON.stringify(this.binding)) {
-        throw new BrowserSessionLostError("visual task attempted to replace a fixed browser-session binding");
-      }
-      this.binding = requested;
-    } else if (!this.fixedBinding) {
-      throw new BrowserSessionLostError("visual task is missing client, Profile, or platform browser binding");
-    }
-    this.currentBinding();
+    this.bindingFor(task);
   }
 
-  async capture(): Promise<Screenshot> {
-    const binding = this.currentBinding();
+  async capture(task?: VisualMicroTask): Promise<Screenshot> {
+    const binding = this.bindingFor(task);
     await this.sessions.assertActive(binding.clientId, binding.browserProfile, binding.platform);
-    const screenshot = await this.underlying.capture();
+    const screenshot = await this.underlying.capture(task);
     await this.sessions.assertCapturedSurface(binding.clientId, screenshot.surface, binding.browserProfile, binding.platform);
     return screenshot;
   }
 
-  async execute(action: VisualAction, screenshot: Screenshot): Promise<void> {
-    const binding = this.currentBinding();
+  async execute(action: VisualAction, screenshot: Screenshot, task?: VisualMicroTask, signal?: AbortSignal): Promise<void> {
+    const binding = this.bindingFor(task);
     await this.sessions.assertActive(binding.clientId, binding.browserProfile, binding.platform);
     await this.sessions.assertCapturedSurface(binding.clientId, screenshot.surface, binding.browserProfile, binding.platform);
-    await this.underlying.execute(action, screenshot);
+    await this.underlying.execute(action, screenshot, task, signal);
   }
 
-  async identifySurface() {
-    const binding = this.currentBinding();
+  async identifySurface(task?: VisualMicroTask) {
+    const binding = this.bindingFor(task);
     await this.sessions.assertActive(binding.clientId, binding.browserProfile, binding.platform);
-    if (this.underlying.identifySurface) return this.underlying.identifySurface();
-    const screenshot = await this.capture();
+    if (this.underlying.identifySurface) return this.underlying.identifySurface(task);
+    const screenshot = await this.capture(task);
     if (!screenshot.surface || !screenshot.surfaceFingerprint) {
       throw new BrowserSessionLostError("bound browser operator cannot prove a native surface");
     }
     return { surface: screenshot.surface, fingerprint: screenshot.surfaceFingerprint };
   }
 
-  private currentBinding(): { clientId: string; browserProfile: string; platform: string } {
-    if (!this.binding) throw new BrowserSessionLostError("visual task is not bound to a managed client browser session");
-    return this.binding;
+  cancelPendingInput(): void | Promise<void> {
+    return this.underlying.cancelPendingInput?.();
+  }
+
+  private bindingFor(task?: VisualMicroTask): { clientId: string; browserProfile: string; platform: string } {
+    const requested = task?.clientId && task.surface.browserProfile && task.platform
+      ? { clientId: task.clientId, browserProfile: task.surface.browserProfile, platform: task.platform }
+      : undefined;
+    if (this.fixedBinding) {
+      if (requested && JSON.stringify(requested) !== JSON.stringify(this.binding)) {
+        throw new BrowserSessionLostError("visual task attempted to replace a fixed browser-session binding");
+      }
+      if (!this.binding) throw new BrowserSessionLostError("fixed browser-session binding is unavailable");
+      return this.binding;
+    }
+    if (!requested) {
+      throw new BrowserSessionLostError("visual task is missing client, Profile, or platform browser binding");
+    }
+    return requested;
   }
 }
 

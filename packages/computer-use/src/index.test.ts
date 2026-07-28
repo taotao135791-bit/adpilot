@@ -324,6 +324,78 @@ describe("visual action protocol", () => {
     expect(runtime.executionStatus()).toBe("cancelled");
   });
 
+  it.each(["pause", "takeover"] as const)(
+    "interrupts pending grounding on %s and never reaches native input",
+    async (control) => {
+      let releaseGrounding!: (action: VisualAction) => void;
+      let groundingStarted!: () => void;
+      const started = new Promise<void>((resolve) => { groundingStarted = resolve; });
+      const pending = new Promise<VisualAction>((resolve) => { releaseGrounding = resolve; });
+      const execute = vi.fn(async () => undefined);
+      const cancelPendingInput = vi.fn(async () => undefined);
+      const runtime = new VisualComputerRuntime(
+        { capture: async () => before, execute, cancelPendingInput },
+        {
+          ground: async () => {
+            groundingStarted();
+            return pending;
+          }
+        },
+        { verify: async () => ({ matched: true, confidence: 1, reason: "not reached" }) }
+      );
+      const running = runtime.runMicroTask(task);
+      await started;
+      runtime[control]();
+      releaseGrounding({
+        action: "click",
+        x: 20,
+        y: 20,
+        target: task.target,
+        reason: "visible",
+        confidence: 1,
+        expected_result: task.expectedResult,
+        risk_level: "interact"
+      });
+      await expect(running).resolves.toMatchObject({
+        status: "failed",
+        blockerCode: control === "pause" ? "PAUSED" : "USER_TAKEOVER"
+      });
+      expect(execute).not.toHaveBeenCalled();
+      expect(cancelPendingInput).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("treats a throwing mutation executor as a single unknown attempt", async () => {
+    const execute = vi.fn(async () => { throw new Error("helper disconnected"); });
+    const runtime = new VisualComputerRuntime(
+      { capture: async () => before, execute },
+      { ground: async () => ({ action: "type", text: "120", target: "budget", reason: "focused", confidence: 1, expected_result: "draft is 120", risk_level: "mutate" }) },
+      { verify: async () => ({ matched: false, confidence: 0, reason: "not reached" }) }
+    );
+    const mutationTask: VisualMicroTask = {
+      ...task,
+      target: "budget",
+      expectedResult: "draft is 120",
+      riskLevel: "mutate",
+      permission: "MUTATE",
+      planId: "plan-executor-disconnect",
+      accountFingerprint: "c".repeat(64),
+      allowedRegion: { x: 0, y: 0, width: before.width, height: before.height, coordinateSpace: "screenshot_pixels" }
+    };
+    await expect(runtime.runMicroTask(mutationTask)).resolves.toMatchObject({
+      status: "failed",
+      attempts: 1,
+      blockerCode: "MUTATION_RETRY_FORBIDDEN",
+      blocker: expect.stringContaining("outcome is unknown")
+    });
+    await expect(runtime.runMicroTask(mutationTask)).resolves.toMatchObject({
+      status: "failed",
+      attempts: 1,
+      blockerCode: "DUPLICATE_MUTATION"
+    });
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
   it("blocks a surface switch after execution without retrying the action", async () => {
     let captures = 0;
     let executions = 0;
