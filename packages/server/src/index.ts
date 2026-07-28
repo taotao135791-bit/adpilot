@@ -57,7 +57,9 @@ import {
 } from "./desktop-native.js";
 import { registerKernelRoutes } from "./kernel-routes.js";
 import { registerGitRoutes } from "./git-routes.js";
+import { registerAdsRoutes } from "./ads-routes.js";
 import { registerTerminalRoutes } from "./terminal-routes.js";
+import { registerFsRoutes } from "./fs-routes.js";
 import { TerminalService } from "./terminal-service.js";
 
 export * from "./desktop-native.js";
@@ -646,6 +648,8 @@ export async function createServer(system: AdPilotSystem, options: {
   app.addHook("onClose", async () => terminalService.shutdown());
   registerTerminalRoutes(app, terminalService);
   registerGitRoutes(app, system);
+  registerFsRoutes(app, system);
+  registerAdsRoutes(app, system);
 
   app.post("/api/approvals", async (request, reply) => {
     const body = z.object({

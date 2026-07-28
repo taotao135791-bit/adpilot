@@ -306,3 +306,109 @@ export const IconArrowLeft = createIcon(
     <path d="m11 6-6 6 6 6" />
   </>
 );
+
+export const IconHome = createIcon(
+  <>
+    <path d="m4 11 8-6.5 8 6.5" />
+    <path d="M6.5 9.5V19a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9.5" />
+    <path d="M10 20v-5.5h4V20" />
+  </>
+);
+
+export const IconFolder = createIcon(
+  <>
+    <path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-11z" />
+  </>
+);
+
+export const IconFile = createIcon(
+  <>
+    <path d="M6 3.5h7.5L19 9v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 20V5a1.5 1.5 0 0 1 1-1.5z" />
+    <path d="M13.5 3.5V9H19" />
+  </>
+);
+
+export const IconTerminal = createIcon(
+  <>
+    <rect x="3" y="4.5" width="18" height="15" rx="2" />
+    <path d="m7 9 3 3-3 3" />
+    <path d="M12.5 15H17" />
+  </>
+);
+
+export const IconGitBranch = createIcon(
+  <>
+    <circle cx="6.5" cy="6" r="2.2" />
+    <circle cx="6.5" cy="18" r="2.2" />
+    <circle cx="17.5" cy="8" r="2.2" />
+    <path d="M6.5 8.2v7.6" />
+    <path d="M17.5 10.2c0 4-3.2 5.3-6.8 5.7" />
+  </>
+);
+
+export const IconEye = createIcon(
+  <>
+    <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z" />
+    <circle cx="12" cy="12" r="2.8" />
+  </>
+);
+
+export const IconBook = createIcon(
+  <>
+    <path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15.5H6.7A1.7 1.7 0 0 0 5 20.2V4.5z" />
+    <path d="M5 18.5A1.5 1.5 0 0 1 6.5 17H19" />
+    <path d="M9 7.5h6" />
+  </>
+);
+
+export const IconDownload = createIcon(
+  <>
+    <path d="M12 4v10.5" />
+    <path d="m7.5 10.5 4.5 4.5 4.5-4.5" />
+    <path d="M4.5 19.5h15" />
+  </>
+);
+
+export const IconChevronRight = createIcon(
+  <>
+    <path d="m9.5 6 6 6-6 6" />
+  </>
+);
+
+export const IconPanelRight = createIcon(
+  <>
+    <rect x="3.5" y="5" width="17" height="14" rx="2" />
+    <path d="M14.5 5v14" />
+  </>
+);
+
+export const IconCheck = createIcon(
+  <>
+    <path d="m5 12.5 4.5 4.5L19 7.5" />
+  </>
+);
+
+export const IconSlides = createIcon(
+  <>
+    <rect x="3" y="4.5" width="18" height="12" rx="2" />
+    <path d="M12 16.5v3" />
+    <path d="M8.5 19.5h7" />
+    <path d="M7 10.5h6M7 13h4" />
+  </>
+);
+
+export const IconDoc = createIcon(
+  <>
+    <path d="M6 3.5h7.5L19 9v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 20V5a1.5 1.5 0 0 1 1-1.5z" />
+    <path d="M13.5 3.5V9H19" />
+    <path d="M8.5 13h7M8.5 16h5" />
+  </>
+);
+
+export const IconSheet = createIcon(
+  <>
+    <rect x="4" y="4.5" width="16" height="15" rx="2" />
+    <path d="M4 10h16M4 14.8h16" />
+    <path d="M12 4.5v15" />
+  </>
+);

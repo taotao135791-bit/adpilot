@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getCopy, phaseLabel, phaseTone, nextStepLabel, roleLabel, formatTime, pluginsCopy, type AppLocale } from "./labels.js";
+import { getCopy, phaseLabel, phaseTone, nextStepLabel, roleLabel, formatTime, pluginsCopy, workspaceCopy, type AppLocale } from "./labels.js";
 import {
   appendProductEvent,
   emptyState,
@@ -29,6 +29,12 @@ import { ConversationFeed } from "./components/ConversationFeed.js";
 import { Composer } from "./components/Composer.js";
 import { MissionZero } from "./components/MissionZero.js";
 import { PluginsView } from "./components/PluginsView.js";
+import { AppRail, type RailView } from "./components/AppRail.js";
+import { HomeView } from "./views/HomeView.js";
+import { ProjectsView } from "./views/ProjectsView.js";
+import { ProjectView } from "./views/ProjectView.js";
+import { AutomationsView } from "./views/AutomationsView.js";
+import { SkillsView } from "./views/SkillsView.js";
 import type { ComputerControlAction } from "./components/ComputerUseCard.js";
 import { Badge, Button, Tooltip } from "./ui.js";
 import { IconDismiss, IconError, IconSettings } from "./icons.js";
@@ -68,8 +74,14 @@ export function App() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const [settingsData, setSettingsData] = useState<SettingsData>();
   const [settingsError, setSettingsError] = useState("");
-  /** Main-area view switch: the conversation, or the plugins catalog. */
-  const [mainView, setMainView] = useState<"chat" | "plugins">("chat");
+  /** Main-area view switch: home, the conversation, the projects workspace, or the plugins catalog. */
+  const [mainView, setMainView] = useState<RailView>("home");
+  /** Project open in the workbench (mainView === "project"). */
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  /** Artifact to pre-select when the workbench opens (clicked from Home). */
+  const [focusArtifactId, setFocusArtifactId] = useState<string | null>(null);
+  /** Bumped to make ProjectsView open its create dialog (from the Home empty state). */
+  const [projectsDialogNonce, setProjectsDialogNonce] = useState(0);
   /** Bumped on every plugin SSE event; PluginsView refetches on change. */
   const [pluginTick, setPluginTick] = useState(0);
   /** Workspace-creation modal. */
@@ -278,6 +290,33 @@ export function App() {
     setConversationId(session.runtimeConversationId);
     setInsights([]);
     void loadState(clientId, session.runtimeConversationId);
+  }
+
+  /** Universal Workspace navigation: the rail switches top-level views. */
+  function navigateRail(view: "home" | "chat" | "projects" | "automations" | "skills") {
+    setMainView(view);
+  }
+
+  function openProject(projectId: string, artifactId?: string) {
+    setActiveProjectId(projectId);
+    setFocusArtifactId(artifactId ?? null);
+    setMainView("project");
+  }
+
+  /** Quick inputs (Home hero, project CTA) hand the message to the real chat submission path. */
+  function submitAndChat(message: string) {
+    setMainView("chat");
+    void submitGoal(message);
+  }
+
+  function openApprovalsInChat() {
+    setMainView("chat");
+    window.setTimeout(() => jumpToApprovals(), 350);
+  }
+
+  function createProjectFromHome() {
+    setMainView("projects");
+    setProjectsDialogNonce((nonce) => nonce + 1);
   }
 
   async function newSession() {
@@ -573,6 +612,17 @@ export function App() {
 
   return (
     <div className="shell" data-theme={theme} data-native={isNativeDesktop}>
+      <AppRail
+        copy={workspaceCopy(locale)}
+        view={mainView}
+        pluginsLabel={pluginsCopy(locale).nav}
+        settingsLabel={copy.settings}
+        onNavigate={navigateRail}
+        onShowPlugins={() => setMainView("plugins")}
+        onOpenSettings={() => openSettings("general")}
+      />
+
+      {mainView === "chat" && (
       <Sidebar
         copy={copy}
         locale={locale}
@@ -596,14 +646,49 @@ export function App() {
         onJumpToApprovals={jumpToApprovals}
         onOpenSettings={() => openSettings("general")}
         pluginsLabel={pluginsCopy(locale).nav}
-        pluginsActive={mainView === "plugins"}
+        pluginsActive={false}
         onShowPlugins={() => setMainView("plugins")}
       />
+      )}
 
       <main className="main-column">
-        {mainView === "plugins" ? (
+        {mainView === "project" && activeProjectId ? (
+          <ProjectView
+            key={activeProjectId}
+            locale={locale}
+            clientId={clientId}
+            projectId={activeProjectId}
+            focusArtifactId={focusArtifactId}
+            onBack={() => setMainView("projects")}
+            onSubmitGoal={submitAndChat}
+          />
+        ) : mainView !== "chat" ? (
           <div className="main-scroll">
-            <PluginsView locale={locale} clientId={clientId} pluginTick={pluginTick} />
+            {mainView === "home" && (
+              <HomeView
+                locale={locale}
+                clientId={clientId}
+                workspaceName={state.clients.find((client) => client.id === clientId)?.name ?? clientId}
+                openApprovals={openApprovals}
+                onSubmitGoal={submitAndChat}
+                onOpenProject={(projectId, artifactId) => openProject(projectId, artifactId)}
+                onOpenProjects={() => setMainView("projects")}
+                onCreateProject={createProjectFromHome}
+                onOpenAutomations={() => setMainView("automations")}
+                onOpenApprovals={openApprovalsInChat}
+              />
+            )}
+            {mainView === "projects" && (
+              <ProjectsView
+                locale={locale}
+                clientId={clientId}
+                dialogNonce={projectsDialogNonce}
+                onOpenProject={(projectId) => openProject(projectId)}
+              />
+            )}
+            {mainView === "automations" && <AutomationsView locale={locale} clientId={clientId} />}
+            {mainView === "skills" && <SkillsView locale={locale} />}
+            {mainView === "plugins" && <PluginsView locale={locale} clientId={clientId} pluginTick={pluginTick} />}
           </div>
         ) : (
         <>
