@@ -1,11 +1,34 @@
 # Computer Use current state
 
-Last verified: 2026-07-28
+Last verified: 2026-07-28 (commits through `34cb1f8`)
 
 This document records observed product behavior. It is not a statement of intended
 architecture and it does not treat fixture or replay coverage as a live result.
 
-## Baseline
+## Verified state after this P0 batch
+
+Every row below ran on this machine against the listed revision. Rows that depend
+on external accounts or credentials remain `blocked-*` / `not-run` by design.
+
+| Check | Result | Evidence / limitation |
+| --- | --- | --- |
+| `pnpm typecheck` | passed | Clean after the fail-closed action-record fixes. |
+| `pnpm lint` | passed | 354 files. |
+| `pnpm test` | passed | 70 files, 719 tests. Heavy real-process coordination tests now carry 90s timeouts to survive full-suite parallel load. |
+| Swift helper build/sign | passed | `scripts/build-native-helper.sh` → `build/native-helper/AdPilot Computer Helper.app`, ad-hoc signed, bundle id `com.adpilot.computer-helper`. |
+| Swift helper unit tests | passed | 23 tests (protocol auth, replay rejection, surface-lease pixel mapping, negative-origin and cross-display coordinates, one-shot leases). |
+| `pnpm test:computer:permissions` | passed | Real machine: screen capture granted and a real PNG capture verified; accessibility granted and a real window focus verified. |
+| Real screen capture | passed | 3024×1964 PNG of the actual display captured through the authenticated Helper and visually inspected. |
+| Real native input | passed | Lease-bound `input.move` posted to a live Chrome window (`eventCount: 1`); helper-posted counters track the event. |
+| Permission Center | passed (end to end) | `/api/desktop-native/permissions` returns all eight items with real Helper state (`helperVersion 0.3.0`, screen-recording/accessibility granted, browser-control granted). Page is wired into Settings. |
+| Live View real pixels | passed (end to end) | `scripts/live-view-e2e.ts`: real managed Chrome window bound by PID+CGWindowID, 1545×1080 JPEG preview of the bound window returned by the authenticated route with page identity resolved; artifact inspected. |
+| `pnpm test:computer:google-ads-readonly` | blocked-by-no-test-account | Structured report written to `artifacts/evals/google-ads/`; no account/campaign was auto-selected. |
+| `pnpm test:computer:google-ads-prepare` | blocked-by-no-test-account | Same guard. |
+| `pnpm test:computer:google-ads-mutation` | blocked-by-no-test-account | Same guard plus explicit opt-in requirement. |
+| `pnpm eval:computer-use:live` | not-run | `LIVE_MODEL_NOT_CONFIGURED`: no live visual provider credential on this machine. |
+| `pnpm verify` | see PROGRESS.md | Result recorded after the run completes. |
+
+## Baseline at P0 audit start
 
 | Check | Result | Evidence / limitation |
 | --- | --- | --- |

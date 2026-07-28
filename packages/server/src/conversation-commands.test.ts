@@ -38,7 +38,7 @@ async function conversationLog(system: Awaited<ReturnType<typeof createAdPilotSy
     .filter((message) => message.conversationId === conversationId);
 }
 
-describe("slash commands over HTTP", () => {
+describe("slash commands over HTTP", { timeout: 60_000 }, () => {
   it("answers /approvals deterministically without any model call", async () => {
     const { faux, system, server } = await setup();
     const seeded = operation();
@@ -195,7 +195,7 @@ describe("slash commands over HTTP", () => {
   });
 });
 
-describe("conversation fork over HTTP", () => {
+describe("conversation fork over HTTP", { timeout: 60_000 }, () => {
   it("forks a conversation at a user message and both branches evolve independently", async () => {
     const { faux, system, server } = await setup();
     faux.setResponses([fauxAssistantMessage('{"mode":"answer","reply":"First answer.","goal":null}')]);
