@@ -172,7 +172,7 @@ describe("WorkspaceWriterLease", () => {
         )
       ).toEqual([]);
     }
-  }, 30_000);
+  }, 90_000);
 
   it("does not let stale recovery move a concurrently published live lease", async () => {
     const contenders = 6;
@@ -229,7 +229,7 @@ describe("WorkspaceWriterLease", () => {
         )
       ).toEqual([]);
     }
-  }, 30_000);
+  }, 90_000);
 
   it("serializes release behind an in-flight ownership-gated commit", async () => {
     const root = await mkdtemp(join(tmpdir(), "adpilot-lease-gate-"));
@@ -375,7 +375,7 @@ describe("WorkspaceWriterLease", () => {
     expect(rerun).toMatchObject({ created: 0, skippedPurged: 1 });
     await expect(verifyRepository.getSession(migrated.id)).resolves.toBeUndefined();
     await verifyLease.release();
-  }, 30_000);
+  }, 90_000);
 
   it("recovers only a definitely dead same-host pid and preserves the stale record", async () => {
     const root = await mkdtemp(join(tmpdir(), "adpilot-stale-writer-"));

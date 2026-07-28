@@ -22,6 +22,7 @@ import type { ComputerVisualEvent } from "./types.js";
 export interface TimelineFeedEvent {
   type: string;
   status?: string;
+  taskId?: string;
   conversationId?: string;
   alert?: {
     alertId: string;
@@ -51,6 +52,10 @@ export interface TimelineComputer {
   latest?: ComputerVisualEvent;
   /** Latest screenshot metadata, if any screenshot event was seen. */
   latestShot?: ComputerVisualEvent["screenshot"];
+  /** Last grounded/executed action, retained across after/verification events. */
+  latestAction?: ComputerVisualEvent;
+  /** Last independent verification result for overlay/status rendering. */
+  latestVerification?: ComputerVisualEvent;
 }
 
 /** A locally answered on-demand card (e.g. /experiments, /audit-trail). */
@@ -77,6 +82,8 @@ export interface MergeTimelineOptions<A extends { id: string }> {
   approvalAt?: (approval: A) => string | undefined;
   /** When true, computer-use events fold into one pinned live card. */
   computerActive?: boolean;
+  /** Exact task ids owned by the selected Product Session/conversation. */
+  computerTaskIds?: readonly string[];
   insights?: readonly TimelineInsight[];
 }
 
@@ -98,13 +105,19 @@ export function mergeConversationTimeline<M extends { id: string; at: string }, 
   const latestByAlertId = new Map<string, NonNullable<TimelineFeedEvent["alert"]> & { status: string }>();
   let latestComputer: ComputerVisualEvent | undefined;
   let latestShot: ComputerVisualEvent["screenshot"];
+  let latestAction: ComputerVisualEvent | undefined;
+  let latestVerification: ComputerVisualEvent | undefined;
+  const computerTaskIds = options.computerTaskIds ? new Set(options.computerTaskIds) : undefined;
   for (const event of events) {
     if (event.type === "alert" && event.alert?.alertId) {
       if (event.conversationId !== undefined && event.conversationId !== conversationId) continue;
       latestByAlertId.set(event.alert.alertId, { ...event.alert, status: event.status ?? "pending" });
     } else if (event.type === "computer" && event.event) {
+      if (computerTaskIds && (!event.taskId || !computerTaskIds.has(event.taskId))) continue;
       latestComputer = event.event;
       if (event.event.type === "screenshot" && event.event.screenshot) latestShot = event.event.screenshot;
+      if (event.event.type === "grounded" || event.event.type === "executed") latestAction = event.event;
+      if (event.event.type === "verified") latestVerification = event.event;
     }
   }
 
@@ -142,7 +155,12 @@ export function mergeConversationTimeline<M extends { id: string; at: string }, 
       kind: "computer",
       id: "computer-session",
       at: "",
-      computer: { ...(latestComputer ? { latest: latestComputer } : {}), ...(latestShot ? { latestShot } : {}) }
+      computer: {
+        ...(latestComputer ? { latest: latestComputer } : {}),
+        ...(latestShot ? { latestShot } : {}),
+        ...(latestAction ? { latestAction } : {}),
+        ...(latestVerification ? { latestVerification } : {})
+      }
     });
   }
 

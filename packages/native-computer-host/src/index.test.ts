@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   NativeComputerHost,
+  NativeComputerHostSupervisor,
   NativeComputerHostError,
   NativeHelperErrorSchema,
   NativeHostAbortError,
@@ -21,6 +22,7 @@ import {
 
 const fakeHelper = String.raw`
 const readline = require("node:readline");
+const fs = require("node:fs");
 const config = JSON.parse(process.argv[1] || "{}");
 const token = process.env.ADPILOT_NATIVE_HELPER_TOKEN;
 let lastSequence = 0;
@@ -62,7 +64,12 @@ rl.on("line", (line) => {
     claimedActions.add(actionKey);
   }
   if (request.method === config.hangMethod) return;
-  if (request.method === config.exitMethod) process.exit(0);
+  if (request.method === config.exitMethod) {
+    if (!config.exitOnceFile || !fs.existsSync(config.exitOnceFile)) {
+      if (config.exitOnceFile) fs.writeFileSync(config.exitOnceFile, "exited");
+      process.exit(0);
+    }
+  }
   if (request.method === "hello") {
     success(request, {
       protocolVersion: 3, helperVersion: "fake-3", pid: process.pid, platform: "darwin",
@@ -153,6 +160,7 @@ const surfaceLease: NativeWindowSurfaceLease = {
 type FakeConfig = {
   closeInputAfterHello?: boolean;
   exitMethod?: string;
+  exitOnceFile?: string;
   hangMethod?: string;
   invalidInputResult?: boolean;
   identity?: {
@@ -198,6 +206,19 @@ async function launch(
   });
 }
 
+async function launchSupervisor(
+  config: FakeConfig = {},
+  entries: LogEntry[] = []
+): Promise<NativeComputerHostSupervisor> {
+  return NativeComputerHostSupervisor.launch({
+    executablePath: process.execPath,
+    args: ["-e", fakeHelper, JSON.stringify(config)],
+    defaultTimeoutMs: 1_000,
+    sessionId: "session-test",
+    logger: logger(entries)
+  });
+}
+
 describe("NativeComputerHost protocol actor", () => {
   it("authenticates internally, sends absolute deadlines, and serializes commands", async () => {
     const entries: LogEntry[] = [];
@@ -217,6 +238,47 @@ describe("NativeComputerHost protocol actor", () => {
     expect(requests.every((entry) => Number(entry.fields.deadlineUnixMs) > 0)).toBe(true);
     expect(JSON.stringify(entries)).not.toContain("authToken");
     await host.close();
+  });
+
+  it("relaunches one authenticated Helper actor after a crash and replays only a safe read", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "adpilot-native-supervisor-"));
+    const exitOnceFile = join(directory, "exited");
+    const entries: LogEntry[] = [];
+    const supervisor = await launchSupervisor({ exitMethod: "frontmost", exitOnceFile }, entries);
+    try {
+      const firstPid = supervisor.pid;
+      await expect(supervisor.request("frontmost", {})).resolves.toMatchObject({
+        ownerPid: 42,
+        bundleId: "com.example.browser"
+      });
+      expect(supervisor.epoch).toBe(2);
+      expect(supervisor.pid).not.toBe(firstPid);
+      expect(entries.filter((entry) => entry.event === "native-helper.request"
+        && entry.fields.method === "hello")).toHaveLength(2);
+      expect(entries.filter((entry) => entry.event === "native-helper.request"
+        && entry.fields.method === "frontmost")).toHaveLength(2);
+    } finally {
+      await supervisor.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rotates a crashed Helper but never replays native input with an unknown outcome", async () => {
+    const entries: LogEntry[] = [];
+    const supervisor = await launchSupervisor({ exitMethod: "input.type" }, entries);
+    try {
+      await expect(supervisor.request(
+        "input.type",
+        { text: "value", surfaceLease },
+        { sessionId: "session-test", actionId: "never-replay" }
+      )).rejects.toBeInstanceOf(NativeHostOutcomeUnknownError);
+      expect(supervisor.epoch).toBe(2);
+      expect(entries.filter((entry) => entry.event === "native-helper.request"
+        && entry.fields.method === "input.type")).toHaveLength(1);
+      await expect(supervisor.request("frontmost", {})).resolves.toMatchObject({ ownerPid: 42 });
+    } finally {
+      await supervisor.close();
+    }
   });
 
   it("binds every action to an explicit session and action id", async () => {

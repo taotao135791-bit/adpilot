@@ -78,6 +78,24 @@ const zh = {
   pause: "暂停",
   takeOver: "接管",
   resume: "恢复",
+  returnControl: "归还控制",
+  stepComputer: "单步",
+  stepUnavailable: "仅在安全运行时拥有待执行原子动作时可用",
+  stopComputer: "停止",
+  openFullView: "打开实时画面",
+  closeFullView: "关闭实时画面",
+  replayFrame: "回看上一帧",
+  returnLive: "返回实时",
+  liveFrameUnavailable: "暂时无法获取真实画面",
+  noManagedBrowser: "请先在设置中启动并绑定专属浏览器",
+  currentApplication: "当前应用",
+  currentWindow: "当前窗口",
+  currentUrl: "当前网址",
+  currentProfile: "浏览器配置",
+  controlOwner: "控制方",
+  agentControl: "AdPilot",
+  userControl: "用户",
+  framePrivacy: "画面仅来自当前绑定窗口，预览帧不会无限保存",
   agentNetwork: "智能体网络",
   coordinatorReady: "协调智能体已就绪",
   specialistsAttached: "专业智能体已加入当前任务",
@@ -286,6 +304,24 @@ const en: Record<keyof typeof zh, string> = {
   pause: "Pause",
   takeOver: "Take over",
   resume: "Resume",
+  returnControl: "Return control",
+  stepComputer: "Step",
+  stepUnavailable: "Available only when the safe runtime has one queued atomic action",
+  stopComputer: "Stop",
+  openFullView: "Open Live View",
+  closeFullView: "Close Live View",
+  replayFrame: "Previous frame",
+  returnLive: "Return live",
+  liveFrameUnavailable: "A fresh native frame is temporarily unavailable",
+  noManagedBrowser: "Start and bind a dedicated browser in Settings first",
+  currentApplication: "Current app",
+  currentWindow: "Current window",
+  currentUrl: "Current URL",
+  currentProfile: "Browser Profile",
+  controlOwner: "Control",
+  agentControl: "AdPilot",
+  userControl: "User",
+  framePrivacy: "Only the bound window is shown; preview frames are not retained indefinitely",
   agentNetwork: "Agent network",
   coordinatorReady: "Coordinator ready",
   specialistsAttached: "Specialists are attached to this mission",
@@ -585,13 +621,14 @@ export function formatDateTime(value: string, locale: AppLocale): string {
 /* ------------------------------------------------------------------ */
 
 const settingsZh = {
-  title: "设置", close: "关闭设置", navigation: "设置导航", general: "通用", models: "模型", computer: "电脑控制", about: "关于", connections: "已配置连接", loading: "正在读取安全配置", loadingFailed: "无法读取设置", retry: "重试",
+  title: "设置", close: "关闭设置", navigation: "设置导航", general: "通用", models: "模型", permissions: "权限", computer: "电脑控制", about: "关于", connections: "已配置连接", loading: "正在读取安全配置", loadingFailed: "无法读取设置", retry: "重试",
   generalTitle: "语言与外观", generalBody: "界面在任一时刻只使用一种语言。产品名和模型名保持原名。", language: "界面语言", languageHint: "应用到操作台和设置页", appearance: "显示模式", appearanceHint: "选择深色、浅色或跟随系统", dark: "深色", light: "浅色", system: "跟随系统", localeRule: "保存后界面会立即切换；模型配置需要重启运行时。",
   modelsTitle: "模型", modelsBody: "只需配置一个模型即可使用全部能力；支持看图的代码模型会自动作为电脑控制的视觉模型。", fastRoute: "模型", fastHint: "对话、分析与执行共用的模型", strongRoute: "深度模型", strongHint: "因果分析、风险复核与失败升级",
   dualModel: "为深度角色单独配置模型", dualModelHint: "默认所有角色共用上面同一个模型", reasoningTitle: "思考模式", reasoningBody: "为支持的模型开启推理强度；不支持的模型会自动忽略。", reasoningEffort: "推理强度", reasoningScope: "作用范围", effortOff: "关闭", effortLow: "低", effortMedium: "中", effortHigh: "高", scopeStrong: "仅深度角色", scopeAll: "全部角色", reasoningUnsupported: "当前所选模型不支持思考模式，保存后不会生效。",
   runtimeRoutes: "运行时", runtimeRoutesTitle: "当前生效的模型路由",
   providerConnection: "供应商连接", credentials: "凭据", providers: "个供应商", provider: "供应商", model: "模型", visionCapability: "视觉", apiKey: "API 密钥", modelsCount: "个模型", noStaticModels: "该供应商使用动态模型目录，首次认证后获取。",
   oauthTitle: "订阅账户登录", oauthBody: "通过 Pi 的原生授权流程连接订阅账户；访问令牌只保存在本机工作区。", oauthConnected: "OAuth 已连接", connect: "连接账户", connecting: "连接中", disconnect: "断开连接", openAuthorization: "请在浏览器中完成授权。", openBrowser: "打开浏览器", deviceCode: "在授权页面输入此代码", choose: "请选择", continue: "继续", oauthWaiting: "正在等待授权供应商响应。", oauthSelectPrompt: "请选择授权账户。", oauthCodePrompt: "请输入授权页面显示的代码。", oauthSecretPrompt: "请输入授权流程要求的安全值。", oauthInputPrompt: "请输入授权流程要求的信息。", oauthInputPlaceholder: "在此输入", oauthComplete: "授权完成，重启后即可使用。", oauthFailed: "OAuth 授权失败",
+  permissionsTitle: "权限中心", permissionsBody: "检查真正持有 macOS 权限的进程，并运行无副作用的能力测试。",
   computerTitle: "电脑控制", computerBody: "使用日常与深度代码模型完成看图、定位和复核。专用视觉端点属于可选的高级设置。", computerNote: "系统每次只执行一个可校验动作。账户修改仍需要实时窗口绑定、独立身份校验、风险复核和一次性批准。", showAdvanced: "显示高级开发者设置", hideAdvanced: "收起高级开发者设置",
   visualPrimary: "截图与动作", visualReview: "结果复核", chatStatus: "自然语言对话", visionStatus: "电脑控制", ready: "已就绪", needsCredential: "需要供应商凭据", needsVision: "请选择支持图像且已认证的代码模型",
   aboutTitle: "系统清单", aboutBody: "本地优先、证据驱动、审批后执行的广告优化智能体。", runtime: "主运行时", visualRuntime: "视觉执行", strategyCore: "广告策略核心", providersAvailable: "可用供应商", legal: "真实账户修改需要独立风险复核、用户批准和一次性执行令牌。完整许可证随应用分发。", localStorage: "配置保存在本机工作区，不会通过设置接口返回密钥明文。",
@@ -599,13 +636,14 @@ const settingsZh = {
 } as const;
 
 const settingsEn: Record<keyof typeof settingsZh, string> = {
-  title: "Settings", close: "Close settings", navigation: "Settings navigation", general: "General", models: "Models", computer: "Computer use", about: "About", connections: "Configured connections", loading: "Loading secure settings", loadingFailed: "Could not load settings", retry: "Retry",
+  title: "Settings", close: "Close settings", navigation: "Settings navigation", general: "General", models: "Models", permissions: "Permissions", computer: "Computer use", about: "About", connections: "Configured connections", loading: "Loading secure settings", loadingFailed: "Could not load settings", retry: "Retry",
   generalTitle: "Language and appearance", generalBody: "The interface uses one language at a time. Product and model names retain their proper names.", language: "Interface language", languageHint: "Applies to the console and settings", appearance: "Appearance", appearanceHint: "Choose dark, light, or system mode", dark: "Dark", light: "Light", system: "System", localeRule: "The interface changes immediately after saving. Model settings require a runtime restart.",
   modelsTitle: "Models", modelsBody: "One model covers every capability. Image-capable code models automatically become the Computer Use vision models.", fastRoute: "Model", fastHint: "Shared by conversation, analysis, and execution", strongRoute: "Deep model", strongHint: "Causal analysis, risk review, and failure escalation",
   dualModel: "Use a separate model for the deep role", dualModelHint: "Off: every role shares the model above", reasoningTitle: "Thinking mode", reasoningBody: "Set a reasoning effort for models that support it; unsupported models ignore it quietly.", reasoningEffort: "Reasoning effort", reasoningScope: "Applies to", effortOff: "Off", effortLow: "Low", effortMedium: "Medium", effortHigh: "High", scopeStrong: "Deep role only", scopeAll: "All roles", reasoningUnsupported: "The selected model does not support thinking mode; this setting will have no effect.",
   runtimeRoutes: "Runtime", runtimeRoutesTitle: "Effective model routing",
   providerConnection: "Provider connection", credentials: "Credentials", providers: "providers", provider: "Provider", model: "Model", visionCapability: "vision", apiKey: "API key", modelsCount: "models", noStaticModels: "This provider uses a dynamic model catalog fetched after authentication.",
   oauthTitle: "Subscription login", oauthBody: "Connect a subscription account through Pi's native authorization flow. Tokens remain in the local workspace.", oauthConnected: "OAuth connected", connect: "Connect account", connecting: "Connecting", disconnect: "Disconnect", openAuthorization: "Complete authorization in your browser.", openBrowser: "Open browser", deviceCode: "Enter this code on the authorization page", choose: "Choose an option", continue: "Continue", oauthWaiting: "Waiting for the provider to continue authorization.", oauthSelectPrompt: "Choose the account to authorize.", oauthCodePrompt: "Enter the code shown on the authorization page.", oauthSecretPrompt: "Enter the secure value requested by the authorization flow.", oauthInputPrompt: "Enter the information requested by the authorization flow.", oauthInputPlaceholder: "Enter here", oauthComplete: "Authorization complete. Restart to use this connection.", oauthFailed: "OAuth authorization failed",
+  permissionsTitle: "Permission Center", permissionsBody: "Inspect the process that actually owns each macOS capability and run side-effect-free tests.",
   computerTitle: "Computer use", computerBody: "Daily and Deep code models handle screenshots, grounding, and verification. Dedicated vision endpoints are optional advanced settings.", computerNote: "AdPilot performs one verifiable action at a time. Account changes still require live-window binding, independent identity checks, risk review, and one-time approval.", showAdvanced: "Show advanced developer settings", hideAdvanced: "Hide advanced developer settings",
   visualPrimary: "Screenshot and action", visualReview: "Result verification", chatStatus: "Natural-language chat", visionStatus: "Computer use", ready: "Ready", needsCredential: "Provider credentials required", needsVision: "Select and authenticate an image-capable code model",
   aboutTitle: "System manifest", aboutBody: "A local-first, evidence-led advertising agent that acts only after approval.", runtime: "Primary runtime", visualRuntime: "Visual execution", strategyCore: "Advertising core", providersAvailable: "Available providers", legal: "Live account changes require independent risk review, user approval, and a one-time execution token. Complete license files ship with the application.", localStorage: "Settings stay in the local workspace. Secret values are never returned by the settings API.",
@@ -660,6 +698,173 @@ export type ComputerUseCopy = { readonly [K in keyof typeof computerZh]: string 
 
 export function computerUseCopy(locale: AppLocale): ComputerUseCopy {
   return locale === "zh-CN" ? computerZh : computerEn;
+}
+
+const permissionCenterZh = {
+  title: "macOS 权限",
+  body: "这里显示真正持有系统权限的进程、最近检查时间，以及权限缺失时受影响的能力。",
+  welcome: "欢迎使用 AdPilot Computer Use",
+  welcomeBody: "开始前请完成屏幕录制与辅助功能授权。任何广告修改仍会经过审批。",
+  welcomeScreen: "屏幕录制：让 AdPilot 看见受管广告后台窗口",
+  welcomeAccessibility: "辅助功能：让 Helper 聚焦窗口并执行已批准的单步操作",
+  welcomeBrowser: "专属浏览器：隔离登录环境并绑定进程、窗口和配置档案",
+  welcomeApproval: "操作审批：广告修改必须与一次性批准完全一致",
+  refresh: "重新检测",
+  refreshing: "正在检测",
+  request: "请求权限",
+  openSettings: "打开系统设置",
+  runTest: "运行测试",
+  testing: "测试中",
+  process: "授权进程",
+  bundle: "Bundle ID",
+  checked: "检查时间",
+  affected: "受影响功能",
+  revocation: "撤销权限：打开系统设置，关闭 AdPilot Computer Helper；返回后点击“重新检测”。",
+  helperReady: "Native Helper 已连接",
+  helperUnavailable: "Native Helper 不可用",
+  desktopOnly: "权限中心仅在 AdPilot macOS 桌面应用中可用。",
+  loadFailed: "无法读取当前权限状态。",
+  retry: "重试",
+  previewAlt: "屏幕录制权限测试的新鲜窗口截图",
+  restart: "授权已生效，但需要重启 AdPilot 后才能安全使用。",
+  testPassed: "测试通过",
+  testFailed: "测试未通过"
+} as const;
+
+const permissionCenterEn: Record<keyof typeof permissionCenterZh, string> = {
+  title: "macOS permissions",
+  body: "See the process that actually owns each capability, when it was checked, and what is unavailable without it.",
+  welcome: "Welcome to AdPilot Computer Use",
+  welcomeBody: "Grant Screen Recording and Accessibility before starting. Advertising changes still pass through approval.",
+  welcomeScreen: "Screen Recording: lets AdPilot see the managed advertising window",
+  welcomeAccessibility: "Accessibility: lets the Helper focus a window and perform one approved step",
+  welcomeBrowser: "Dedicated browser: isolates sign-in and binds the exact process, window, and Profile",
+  welcomeApproval: "Approval gate: every advertising change must match a one-time approval",
+  refresh: "Check again",
+  refreshing: "Checking",
+  request: "Request permission",
+  openSettings: "Open System Settings",
+  runTest: "Run test",
+  testing: "Testing",
+  process: "Authorized process",
+  bundle: "Bundle ID",
+  checked: "Checked",
+  affected: "Affected features",
+  revocation: "To revoke access, disable AdPilot Computer Helper in System Settings, then return and select Check again.",
+  helperReady: "Native Helper connected",
+  helperUnavailable: "Native Helper unavailable",
+  desktopOnly: "Permission Center is available only in the AdPilot macOS desktop app.",
+  loadFailed: "Could not read the current permission state.",
+  retry: "Retry",
+  previewAlt: "Fresh window screenshot from the Screen Recording permission test",
+  restart: "Permission is enabled, but AdPilot must restart before it can be used safely.",
+  testPassed: "Test passed",
+  testFailed: "Test did not pass"
+};
+
+export type PermissionCenterCopy = { readonly [K in keyof typeof permissionCenterZh]: string };
+
+export function permissionCenterCopy(locale: AppLocale): PermissionCenterCopy {
+  return locale === "zh-CN" ? permissionCenterZh : permissionCenterEn;
+}
+
+export function desktopPermissionName(id: string, locale: AppLocale): string {
+  const zh: Record<string, string> = {
+    "screen-recording": "屏幕录制",
+    accessibility: "辅助功能",
+    "files-and-folders": "文件与文件夹",
+    "browser-control": "浏览器控制",
+    notifications: "通知",
+    keychain: "钥匙串",
+    "native-helper": "Native Helper",
+    "background-service": "后台服务"
+  };
+  const en: Record<string, string> = {
+    "screen-recording": "Screen Recording",
+    accessibility: "Accessibility",
+    "files-and-folders": "Files and Folders",
+    "browser-control": "Browser Control",
+    notifications: "Notifications",
+    keychain: "Keychain",
+    "native-helper": "Native Helper",
+    "background-service": "Background Service"
+  };
+  return (locale === "zh-CN" ? zh : en)[id] ?? id;
+}
+
+export function desktopPermissionStatusLabel(status: string, locale: AppLocale): string {
+  const zh: Record<string, string> = {
+    granted: "已授权",
+    denied: "已拒绝",
+    "not-determined": "尚未请求",
+    restricted: "受系统限制",
+    "requires-restart": "需要重启",
+    "helper-unavailable": "Helper 不可用",
+    unknown: "未知"
+  };
+  const en: Record<string, string> = {
+    granted: "Granted",
+    denied: "Denied",
+    "not-determined": "Not requested",
+    restricted: "Restricted",
+    "requires-restart": "Restart required",
+    "helper-unavailable": "Helper unavailable",
+    unknown: "Unknown"
+  };
+  return (locale === "zh-CN" ? zh : en)[status] ?? status;
+}
+
+export function desktopPermissionReason(id: string, locale: AppLocale): string {
+  const zh: Record<string, string> = {
+    "screen-recording": "仅截取已绑定的浏览器窗口，用于定位和验证可见变化。",
+    accessibility: "允许通过已认证 Helper 聚焦窗口并发送经过批准的鼠标或键盘输入。",
+    "files-and-folders": "在 AdPilot 私有目录保存设置、有限期截图证据和审计记录。",
+    "browser-control": "将 Computer Use 绑定到唯一浏览器配置档案、进程和窗口。",
+    notifications: "AdPilot 在后台时显示审批与人工介入提醒。",
+    keychain: "预留给未来的凭据代理；当前文件凭据存储不会冒充已使用钥匙串。",
+    "native-helper": "运行持有截图与原生输入能力的本地认证执行进程。",
+    "background-service": "在用户明确开启后维持计划监控和后台提醒。"
+  };
+  const en: Record<string, string> = {
+    "screen-recording": "Captures only the bound browser window for grounding and visible verification.",
+    accessibility: "Lets the authenticated Helper focus the window and post approved mouse or keyboard input.",
+    "files-and-folders": "Stores settings, bounded screenshot evidence, and audits in AdPilot's private directory.",
+    "browser-control": "Binds Computer Use to one browser Profile, process, and window.",
+    notifications: "Shows approval and intervention alerts while AdPilot is in the background.",
+    keychain: "Reserved for a future credential broker; the current file-backed store does not claim Keychain access.",
+    "native-helper": "Runs the authenticated local executor that owns capture and native input.",
+    "background-service": "Keeps explicitly enabled monitoring and alerts available in the background."
+  };
+  return (locale === "zh-CN" ? zh : en)[id] ?? id;
+}
+
+export function desktopPermissionFeatureLabel(feature: string, locale: AppLocale): string {
+  if (locale === "en") return feature;
+  const labels: Record<string, string> = {
+    "Computer Live View": "电脑实时画面",
+    "visual grounding": "视觉定位",
+    "before/after evidence": "操作前后证据",
+    click: "点击",
+    scroll: "滚动",
+    typing: "输入",
+    "window focus": "窗口聚焦",
+    "workspace persistence": "工作区持久化",
+    "local evidence": "本地证据",
+    "audit export": "审计导出",
+    "Google Ads observation": "Google Ads 观察",
+    "surface identity": "页面身份绑定",
+    "safe actions": "安全操作",
+    "approval alerts": "审批提醒",
+    "takeover alerts": "接管提醒",
+    "credential storage": "凭据存储",
+    "provider sign-in": "供应商登录",
+    permissions: "系统权限",
+    "window capture": "窗口截图",
+    "native input": "原生输入",
+    "scheduled monitoring": "计划监控",
+    "background alerts": "后台提醒"
+  };
+  return labels[feature] ?? feature;
 }
 
 /* ------------------------------------------------------------------ */

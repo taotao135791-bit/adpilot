@@ -28,8 +28,8 @@ function alertEvent(alertId: string, status: string, createdAt: string, options:
   };
 }
 
-function computerEvent(event: NonNullable<TimelineFeedEvent["event"]>): TimelineFeedEvent {
-  return { type: "computer", event };
+function computerEvent(event: NonNullable<TimelineFeedEvent["event"]>, taskId?: string): TimelineFeedEvent {
+  return { type: "computer", event, ...(taskId ? { taskId } : {}) };
 }
 
 function approval(id: string, status: string, createdAt?: string): TestApproval {
@@ -182,6 +182,22 @@ describe("mergeConversationTimeline", () => {
   it("keeps the pinned computer card even before any visual event arrives", () => {
     const timeline = mergeConversationTimeline([], [], "primary", { computerActive: true });
     expect(timeline).toEqual([{ kind: "computer", id: "computer-session", at: "", computer: {} }]);
+  });
+
+  it("does not overlay another Product Session's Computer task on the bound Live View", () => {
+    const timeline = mergeConversationTimeline(
+      [],
+      [
+        computerEvent({ type: "grounded", action: { action: "click", target: "other Session", reason: "wrong surface" } }, "task-other"),
+        computerEvent({ type: "grounded", action: { action: "click", target: "selected Session", reason: "right surface" } }, "task-selected")
+      ],
+      "primary",
+      { computerActive: true, computerTaskIds: ["task-selected"] }
+    );
+    expect(timeline[0]).toMatchObject({
+      kind: "computer",
+      computer: { latest: { action: { target: "selected Session" } } }
+    });
   });
 
   it("merges on-demand insight cards chronologically", () => {

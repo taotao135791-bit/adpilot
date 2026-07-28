@@ -34,6 +34,7 @@ import {
 } from "./index.js";
 
 const taskId = "9af9bf5e-3114-43c6-8963-748cfc63a731";
+const actionRecordId = "22222222-2222-4222-8222-222222222222";
 const operation = {
   platform: "google_ads" as const,
   account: "123-456-7890",
@@ -180,12 +181,20 @@ async function setup() {
       before: initial ?? screenshot,
       after: { ...(initial ?? screenshot), capturedAt: new Date().toISOString() },
       executed: true,
-      verified: true
+      verified: true,
+      actionRecordId
     };
   });
+  const refreshForPersistence = vi.fn(async () => ({
+    ...screenshot,
+    capturedAt: new Date().toISOString()
+  }));
+  const finalizeActionRecord = vi.fn(async () => undefined);
   const computer = {
     captureForTask: vi.fn(async () => screenshot),
-    runMicroTask
+    runMicroTask,
+    refreshForPersistence,
+    finalizeActionRecord
   } as unknown as VisualComputerRuntime;
   const browserSessions = {
     get: vi.fn(async () => session),
@@ -211,6 +220,8 @@ async function setup() {
     sharedFacts,
     guardrailEvidence,
     runMicroTask,
+    refreshForPersistence,
+    finalizeActionRecord,
     screenshot,
     workspace,
     setObservation: (value: VisualIdentityObservation) => { currentObservation = value; }
@@ -243,8 +254,30 @@ describe("production visual approval tools", () => {
     });
     expect(fixture.approval.executionPlan?.allowedRegion).toEqual({ x: 72, y: 54, width: 34, height: 22, coordinateSpace: "screenshot_pixels" });
     await expect(fixture.tools.commitApprovedVisualAction(fixture.context, fixture.approval.id, fixture.token, operation, fixture.task))
-      .resolves.toMatchObject({ status: "done" });
+      .resolves.toMatchObject({
+        status: "done",
+        persistenceVerification: {
+          verified: true,
+          exactValue: 110,
+          identityMatch: true,
+          accountId: operation.account,
+          campaignId: operation.campaign
+        }
+      });
     expect(fixture.runMicroTask).toHaveBeenCalledTimes(1);
+    expect(fixture.refreshForPersistence).toHaveBeenCalledTimes(1);
+    expect(fixture.finalizeActionRecord).toHaveBeenCalledWith(actionRecordId, expect.objectContaining({
+      binding: {
+        adPilotSessionId: "legacy:client-a",
+        browserSessionId: session.sessionId
+      },
+      persistenceVerification: expect.objectContaining({
+        verified: true,
+        exactValue: 110,
+        identityMatch: true
+      }),
+      reason: expect.stringContaining("all five")
+    }));
     await expect(fixture.approvals.get("client-a", fixture.approval.id)).resolves.toMatchObject({ status: "executed" });
     await expect(fixture.sharedFacts.list("client-a", { taskId })).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -291,11 +324,9 @@ describe("production visual approval tools", () => {
 
   it("fails after native input when the exact persisted value cannot be reread", async () => {
     const fixture = await approved();
-    const implementation = fixture.runMicroTask.getMockImplementation()!;
-    fixture.runMicroTask.mockImplementationOnce(async (...args) => {
-      const result = await implementation(...args);
+    fixture.refreshForPersistence.mockImplementationOnce(async () => {
       fixture.setObservation({ ...observed, currentValue: 109 });
-      return result;
+      return { ...fixture.screenshot, capturedAt: new Date().toISOString() };
     });
     await expect(fixture.tools.commitApprovedVisualAction(
       fixture.context,
@@ -305,6 +336,8 @@ describe("production visual approval tools", () => {
       fixture.task
     )).rejects.toThrow("exact persisted value could not be verified");
     await expect(fixture.approvals.get("client-a", fixture.approval.id)).resolves.toMatchObject({ status: "failed" });
+    expect(fixture.refreshForPersistence).toHaveBeenCalledTimes(1);
+    expect(fixture.finalizeActionRecord).not.toHaveBeenCalled();
     await expect(new ExperimentStore(fixture.workspace).list("client-a")).resolves.toEqual([]);
     await expect(fixture.sharedFacts.list("client-a", { taskId })).resolves.not.toEqual(expect.arrayContaining([
       expect.objectContaining({ predicate: "post_mutation_set_daily_budget" })

@@ -32,11 +32,14 @@ import {
   ScreenshotPrivacyMode,
   ScreenshotPrivacyPipeline,
   type BrowserSession,
+  type ConfirmedPostMutationValue,
   type ExpectedVisualIdentity,
   type Screenshot,
   type VisualMicroTask,
+  type VisualPersistenceVerification,
   type VisualStepResult,
   VisualComputerRuntime,
+  visualComputerBindingFromTask,
   VisualIdentityRegions,
   type VisualIdentityRegions as VisualIdentityRegionsType
 } from "@adpilot/computer-use";
@@ -124,6 +127,8 @@ export interface ToolContext {
   taskId: string;
   actor: string;
   permission: PermissionLevel;
+  /** Durable product Session; unlike taskId this remains stable across turns. */
+  adPilotSessionId?: string;
 }
 
 export const VisualTableRoi = z.object({
@@ -813,7 +818,7 @@ export class AdPilotTools {
     }
     const executing = await this.approvals.consume(context.clientId, approvalId, token, operation, actualPlan);
     try {
-      const result = await this.executeVisualTask(context, boundTask, screenshot);
+      const result = await this.executeVisualTask(context, { ...boundTask, approvalId }, screenshot);
       const mutationVerified = result.status === "done"
         && result.executed
         && result.verified
@@ -851,38 +856,60 @@ export class AdPilotTools {
         };
       }
       let exactValueFact: SharedFact;
+      let immediateExact: ConfirmedPostMutationValue;
+      let persistedExact: ConfirmedPostMutationValue;
+      let persistenceFrame: Screenshot;
       try {
         const postExpected = expectedPostMutationValueFromTask(context, boundTask, result.after);
-        const exact = await this.visualIdentity.confirmPostMutationValue(postExpected, result.after);
+        immediateExact = await this.visualIdentity.confirmPostMutationValue(postExpected, result.after);
         await this.workspace.writeJson(context.clientId, `identity/${context.taskId}-${Date.now()}-post-mutation.json`, {
           approvalId,
           planId: boundTask.planId,
-          ...exact
+          ...immediateExact
         });
-        const region = exact.evidenceRegion;
+        persistenceFrame = await this.computer.refreshForPersistence({
+          ...boundTask,
+          approvalId
+        });
+        const persistedExpected = expectedPostMutationValueFromTask(context, boundTask, persistenceFrame);
+        persistedExact = await this.visualIdentity.confirmPostMutationValue(persistedExpected, persistenceFrame);
+        await this.workspace.writeJson(context.clientId, `identity/${context.taskId}-${Date.now()}-persistence.json`, {
+          approvalId,
+          planId: boundTask.planId,
+          refreshedFrameSha256: persistenceFrame.sha256,
+          ...persistedExact
+        });
+        const region = persistedExact.evidenceRegion;
+        const factConfidence = Math.min(immediateExact.confidence, persistedExact.confidence);
+        const factVerifier = [...new Set([
+          ...immediateExact.reviewers.map((reviewer) => reviewer.id),
+          ...persistedExact.reviewers.map((reviewer) => reviewer.id)
+        ])].join("+");
         const observed = await this.sharedFacts.observe({
           clientId: context.clientId,
           taskId: context.taskId,
           subject: boundTask.identity!.campaignId,
           predicate: `post_mutation_${boundTask.identity!.operation}`,
-          value: exact.value,
-          unit: boundTask.identity!.currency ?? valueUnit(exact.value),
+          value: persistedExact.value,
+          unit: boundTask.identity!.currency ?? valueUnit(persistedExact.value),
           sourceType: "visual_verification",
-          sourceScreenshotId: exact.screenshotHash,
+          sourceScreenshotId: persistedExact.screenshotHash,
           sourceBoundingBox: [region.x, region.y, region.width, region.height],
           evidenceIds: [
-            `screenshot:${exact.screenshotHash}`,
+            `screenshot:${immediateExact.screenshotHash}`,
+            `verification:${immediateExact.verificationHash}`,
+            `screenshot:${persistedExact.screenshotHash}`,
+            `verification:${persistedExact.verificationHash}`,
             `approval:${approvalId}`,
-            `plan:${boundTask.planId}`,
-            `verification:${exact.verificationHash}`
+            `plan:${boundTask.planId}`
           ],
-          confidence: exact.confidence,
-          createdBy: "dual_post_mutation_value_reviewer",
+          confidence: factConfidence,
+          createdBy: "dual_post_mutation_persistence_reviewer",
           expiresAt: null
         });
         exactValueFact = await this.sharedFacts.verify(context.clientId, observed.factId, {
-          verifier: exact.reviewers.map((reviewer) => reviewer.id).join("+"),
-          confidence: exact.confidence
+          verifier: factVerifier,
+          confidence: factConfidence
         });
         await this.audit.append({
           clientId: context.clientId,
@@ -894,13 +921,30 @@ export class AdPilotTools {
             approvalId,
             planId: boundTask.planId,
             expectedValue: boundTask.identity!.proposedValue,
-            observedValue: exact.value,
-            currency: exact.currency,
+            observedValue: immediateExact.value,
+            currency: immediateExact.currency,
             factId: exactValueFact.factId,
-            screenshotHash: exact.screenshotHash,
-            evidenceRegionHash: exact.evidenceRegionHash,
-            verificationHash: exact.verificationHash,
-            reviewers: exact.reviewers
+            screenshotHash: immediateExact.screenshotHash,
+            evidenceRegionHash: immediateExact.evidenceRegionHash,
+            verificationHash: immediateExact.verificationHash,
+            reviewers: immediateExact.reviewers
+          }
+        });
+        await this.audit.append({
+          clientId: context.clientId,
+          taskId: context.taskId,
+          actor: context.actor,
+          action: "verify_post_mutation_persistence",
+          status: "succeeded",
+          details: {
+            approvalId,
+            planId: boundTask.planId,
+            exactValue: persistedExact.value,
+            accountId: boundTask.identity!.accountId,
+            campaignId: boundTask.identity!.campaignId,
+            refreshedFrameSha256: persistenceFrame.sha256,
+            verificationHash: persistedExact.verificationHash,
+            reviewers: persistedExact.reviewers
           }
         });
       } catch (error) {
@@ -918,8 +962,47 @@ export class AdPilotTools {
             reason: error instanceof Error ? error.message : String(error)
           }
         });
-        throw new Error(`native mutation executed, but the exact persisted value could not be verified: ${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`native mutation executed, but the exact persisted value could not be verified immediately and after refresh: ${error instanceof Error ? error.message : String(error)}`);
       }
+      if (!result.actionRecordId) {
+        throw new Error("native mutation executed, but its persistent Computer Action record is missing");
+      }
+      const persistenceVerification: VisualPersistenceVerification = {
+        verified: true,
+        refreshedFrameSha256: persistenceFrame.sha256,
+        exactValue: persistedExact.value,
+        identityMatch: true,
+        accountId: boundTask.identity!.accountId,
+        campaignId: boundTask.identity!.campaignId,
+        verifiedAt: new Date().toISOString(),
+        evidenceIds: [
+          `screenshot:${immediateExact.screenshotHash}`,
+          `verification:${immediateExact.verificationHash}`,
+          `screenshot:${persistedExact.screenshotHash}`,
+          `verification:${persistedExact.verificationHash}`,
+          `fact:${exactValueFact.factId}`,
+          `approval:${approvalId}`,
+          `plan:${boundTask.planId}`
+        ]
+      };
+      await this.computer.finalizeActionRecord(result.actionRecordId, {
+        binding: visualComputerBindingFromTask(boundTask),
+        persistenceVerification,
+        expectedUiEvidence: [
+          `frame:${result.after.sha256}`,
+          `expected:${boundTask.expectedResult}`
+        ],
+        exactValueEvidence: [
+          `screenshot:${immediateExact.screenshotHash}`,
+          `verification:${immediateExact.verificationHash}`,
+          `fact:${exactValueFact.factId}`
+        ],
+        independentVerifier: [...new Set([
+          ...immediateExact.reviewers.map((reviewer) => reviewer.id),
+          ...persistedExact.reviewers.map((reviewer) => reviewer.id)
+        ])].join("+"),
+        reason: "all five native, UI, exact-value, refresh-persistence, and entity-identity levels passed"
+      });
       if (executing.executionPlan) {
         const experiment = await this.experiments.create({
           ...executing.executionPlan.experiment,
@@ -930,7 +1013,7 @@ export class AdPilotTools {
         await this.experiments.start(context.clientId, experiment.id);
       }
       await this.approvals.finish(context.clientId, approvalId, true);
-      return result;
+      return { ...result, persistenceVerification };
     } catch (error) {
       await this.approvals.finish(context.clientId, approvalId, false);
       throw error;
@@ -1084,7 +1167,17 @@ export class AdPilotTools {
   private async bindManagedTask(context: ToolContext, task: VisualMicroTask): Promise<VisualMicroTask> {
     if (task.clientId && task.clientId !== context.clientId) throw new Error("visual task client differs from tool context");
     if (task.taskId && task.taskId !== context.taskId) throw new Error("visual task id differs from tool context");
-    if (!this.browserSessions) return { ...task, clientId: context.clientId, taskId: context.taskId };
+    if (task.adPilotSessionId && context.adPilotSessionId && task.adPilotSessionId !== context.adPilotSessionId) {
+      throw new Error("visual task AdPilot Session differs from tool context");
+    }
+    if (!this.browserSessions) {
+      return {
+        ...task,
+        clientId: context.clientId,
+        adPilotSessionId: task.adPilotSessionId ?? context.adPilotSessionId ?? `legacy:${context.clientId}`,
+        taskId: context.taskId
+      };
+    }
     const found = await this.browserSessions.get(context.clientId, task.surface.browserProfile);
     if (!found) throw new Error("visual task requires a connected managed browser session");
     const platform = task.platform ?? found.platform;
@@ -1098,6 +1191,9 @@ export class AdPilotTools {
     if (task.surface.nativeProfileFingerprint && task.surface.nativeProfileFingerprint !== session.nativeProfileFingerprint) {
       throw new Error("visual task native Profile proof differs from managed browser session");
     }
+    if (task.browserSessionId && task.browserSessionId !== session.sessionId) {
+      throw new Error("visual task browser Session differs from managed browser session");
+    }
     const allowedApps = [...new Set([session.browserApplicationId, session.browserApp])];
     if ((task.riskLevel === "mutate" || task.riskLevel === "destructive")
       && !allowedApps.every((candidate) => task.surface.allowedApps.includes(candidate))) {
@@ -1106,6 +1202,8 @@ export class AdPilotTools {
     return {
       ...task,
       clientId: context.clientId,
+      adPilotSessionId: task.adPilotSessionId ?? context.adPilotSessionId ?? `legacy:${context.clientId}`,
+      browserSessionId: session.sessionId,
       taskId: context.taskId,
       platform,
       surface: {

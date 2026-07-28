@@ -680,6 +680,130 @@ export class NativeHostQueueFullError extends NativeComputerHostError {
   }
 }
 
+export interface NativeComputerService {
+  readonly pid: number | undefined;
+  readonly closed: boolean;
+  /** Increments whenever a newly authenticated Helper actor becomes active. */
+  readonly epoch?: number;
+  request<M extends NativeMethod>(
+    method: M,
+    params: NativeParams<M>,
+    options?: NativeRequestOptions
+  ): Promise<NativeResult<M>>;
+  close(): Promise<void>;
+}
+
+const SUPERVISOR_RETRY_SAFE_METHODS = new Set<NativeMethod>([
+  "hello",
+  "permissions.status",
+  "displays.list",
+  "windows.list",
+  "frontmost",
+  "accessibility.snapshot",
+  "accessibility.focusedElement",
+  "capture",
+  "input.activity",
+  "wait"
+]);
+
+/**
+ * Owns the one production Helper actor and rotates both process and auth token
+ * after a crash/forced cancellation. Only explicitly read-only requests may
+ * be replayed once; native input and permission/application mutations never
+ * cross a restart boundary.
+ */
+export class NativeComputerHostSupervisor implements NativeComputerService {
+  readonly #options: NativeComputerHostOptions;
+  #host: NativeComputerHost | undefined;
+  #launching: Promise<NativeComputerHost> | undefined;
+  #closed = false;
+  #epoch = 0;
+
+  private constructor(options: NativeComputerHostOptions) {
+    this.#options = options;
+  }
+
+  static async launch(options: NativeComputerHostOptions): Promise<NativeComputerHostSupervisor> {
+    const supervisor = new NativeComputerHostSupervisor(options);
+    await supervisor.#ensureHost();
+    return supervisor;
+  }
+
+  get pid(): number | undefined {
+    return this.#host?.pid;
+  }
+
+  get closed(): boolean {
+    return this.#closed;
+  }
+
+  get epoch(): number {
+    return this.#epoch;
+  }
+
+  async request<M extends NativeMethod>(
+    method: M,
+    params: NativeParams<M>,
+    options: NativeRequestOptions = {}
+  ): Promise<NativeResult<M>> {
+    if (this.#closed) throw new NativeHostClosedError("native computer supervisor is closed");
+    const host = await this.#ensureHost();
+    try {
+      return await host.request(method, params, options);
+    } catch (error) {
+      if (!host.closed || this.#closed) throw error;
+      let replacement: NativeComputerHost;
+      try {
+        replacement = await this.#replaceHost(host);
+      } catch (restartError) {
+        throw new NativeHostClosedError("native Helper stopped and authenticated restart failed", {
+          cause: restartError
+        });
+      }
+      if (!SUPERVISOR_RETRY_SAFE_METHODS.has(method) || options.signal?.aborted) throw error;
+      return replacement.request(method, params, options);
+    }
+  }
+
+  async close(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
+    const launching = this.#launching;
+    const host = this.#host;
+    this.#host = undefined;
+    if (host && !host.closed) await host.close();
+    if (launching) {
+      const launched = await launching.catch(() => undefined);
+      if (launched && !launched.closed) await launched.close();
+    }
+  }
+
+  async #replaceHost(failed: NativeComputerHost): Promise<NativeComputerHost> {
+    if (this.#host === failed) this.#host = undefined;
+    return this.#ensureHost();
+  }
+
+  async #ensureHost(): Promise<NativeComputerHost> {
+    if (this.#closed) throw new NativeHostClosedError("native computer supervisor is closed");
+    if (this.#host && !this.#host.closed) return this.#host;
+    if (this.#launching) return this.#launching;
+    const launching = NativeComputerHost.launch(this.#options);
+    this.#launching = launching;
+    try {
+      const host = await launching;
+      if (this.#closed) {
+        await host.close();
+        throw new NativeHostClosedError("native computer supervisor closed during Helper launch");
+      }
+      this.#host = host;
+      this.#epoch += 1;
+      return host;
+    } finally {
+      if (this.#launching === launching) this.#launching = undefined;
+    }
+  }
+}
+
 export class NativeComputerHost {
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #authToken: string;

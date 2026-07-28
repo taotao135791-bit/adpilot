@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCopy, phaseLabel, phaseTone, nextStepLabel, roleLabel, formatTime, pluginsCopy, type AppLocale } from "./labels.js";
-import { appendProductEvent, emptyState, type ConversationMessage, type ProductEvent, type ProductSession, type State } from "./types.js";
+import {
+  appendProductEvent,
+  emptyState,
+  type ComputerExecutionStatus,
+  type ConversationMessage,
+  type ProductEvent,
+  type ProductSession,
+  type State
+} from "./types.js";
 import { isApprovalOpen, type Approval } from "./approvalDisclosure.js";
 import { mergeConversationTimeline, type TimelineInsight } from "./conversationTimeline.js";
 import { localInsightCommand } from "./slashCommands.js";
@@ -194,15 +202,22 @@ export function App() {
 
   const currentTask = state.tasks[0];
   const computerMode = state.computerUse?.executionStatus ?? "unavailable";
-  const computerActive = computerMode === "running" || computerMode === "paused";
+  const computerActive = computerMode === "running"
+    || computerMode === "paused"
+    || Boolean(
+      selectedSessionId
+      && state.selectedSessionId === selectedSessionId
+      && state.computerUse?.currentBrowser?.sessionStatus === "connected"
+    );
   const timeline = useMemo(
     () => mergeConversationTimeline<ConversationMessage, Approval>(state.messages, state.events, conversationId, {
       approvals: state.approvals,
       approvalAt: (approval) => approval.createdAt ?? approval.executionPlan?.createdAt ?? approval.guardrail?.evaluatedAt,
       computerActive,
+      computerTaskIds: state.tasks.map((task) => task.id),
       insights
     }),
-    [state.messages, state.events, state.approvals, conversationId, computerActive, insights]
+    [state.messages, state.events, state.approvals, state.tasks, conversationId, computerActive, insights]
   );
   const openApprovals = useMemo(() => state.approvals.filter((item) => isApprovalOpen(item.status)), [state.approvals]);
   const autonomy = normalizeAutonomy(state.autonomy);
@@ -439,13 +454,54 @@ export function App() {
 
   async function computerControl(action: ComputerControlAction) {
     try {
-      const response = await fetch(`/api/computer/${action}`, { method: "POST" });
-      const body = await response.json().catch(() => undefined) as { error?: string; code?: string } | undefined;
-      if (!response.ok) throw new Error(body?.code === "COMPUTER_USE_UNAVAILABLE" ? copy.computerUnavailable : copy.executionError);
-      await loadState(clientId);
+      const currentBrowser = state.computerUse?.currentBrowser;
+      const response = await fetch(`/api/computer/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          clientId,
+          ...(selectedSessionId ? { productSessionId: selectedSessionId } : {}),
+          ...(currentBrowser?.sessionId ? { browserSessionId: currentBrowser.sessionId } : {}),
+          ...(state.computerUse?.computerSessionId ? { computerSessionId: state.computerUse.computerSessionId } : {}),
+          ...(state.computerUse?.computerRevision !== undefined ? { computerRevision: state.computerUse.computerRevision } : {})
+        })
+      });
+      const body = await response.json().catch(() => undefined) as {
+        error?: string;
+        code?: string;
+        executionStatus?: ComputerExecutionStatus;
+        controlState?: string;
+        productSessionId?: string;
+        computerSessionId?: string;
+        computerRevision?: number;
+      } | undefined;
+      if (!response.ok) {
+        throw new Error(
+          body?.code === "COMPUTER_USE_UNAVAILABLE"
+            ? copy.computerUnavailable
+            : body?.code === "COMPUTER_STEP_UNAVAILABLE"
+              ? copy.stepUnavailable
+              : copy.executionError
+        );
+      }
+      const nextControlState = body?.controlState;
+      if (nextControlState) {
+        setState((current) => ({
+          ...current,
+          computerUse: {
+            ...current.computerUse,
+            controlState: nextControlState,
+            ...(body?.executionStatus ? { executionStatus: body.executionStatus } : {}),
+            ...(body?.productSessionId ? { productSessionId: body.productSessionId } : {}),
+            ...(body?.computerSessionId ? { computerSessionId: body.computerSessionId } : {}),
+            ...(body?.computerRevision !== undefined ? { computerRevision: body.computerRevision } : {})
+          }
+        }));
+      }
+      await loadState(clientId, conversationId);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
-      await loadState(clientId);
+      await loadState(clientId, conversationId);
     }
   }
 
@@ -607,6 +663,19 @@ export function App() {
               experiments={state.experiments}
               audit={state.audit}
               computerMode={computerMode}
+              {...(state.computerUse?.controlState ? { computerControlState: state.computerUse.controlState } : {})}
+              {...(selectedSession?.permissionProfile?.computerUse ? { computerPermission: selectedSession.permissionProfile.computerUse } : {})}
+              {...(clientId ? { clientId } : {})}
+              {...(selectedSessionId ? { productSessionId: selectedSessionId } : {})}
+              {...(state.computerUse?.currentBrowser?.sessionId ? { browserSessionId: state.computerUse.currentBrowser.sessionId } : {})}
+              {...(state.computerUse?.currentBrowser ? {
+                browserBindingKey: [
+                  selectedSessionId ?? "no-product-session",
+                  state.computerUse.currentBrowser.sessionId,
+                  state.computerUse.currentBrowser.processId ?? "no-process",
+                  state.computerUse.currentBrowser.windowId ?? "no-window"
+                ].join(":")
+              } : {})}
               guiConfigured={state.models.guiConfigured}
               submitting={submitting}
               onFork={(messageId) => void forkMessage(messageId)}
@@ -649,11 +718,22 @@ export function App() {
         open={settingsOpen}
         data={settingsData}
         {...(clientId || state.selectedClientId ? { clientId: clientId || state.selectedClientId } : {})}
+        {...(selectedSession ? { productSession: selectedSession } : {})}
+        {...(selectedSessionId ? { productSessionId: selectedSessionId } : {})}
+        {...(state.computerUse?.currentBrowser?.sessionId ? { browserSessionId: state.computerUse.currentBrowser.sessionId } : {})}
         initialTab={settingsTab}
         {...(settingsError ? { loadError: settingsError } : {})}
         onReload={() => void loadSettings()}
         onClose={() => setSettingsOpen(false)}
         onSaved={applySettings}
+        onProductSessionUpdated={(session) => {
+          setSessions((current) => applySessionSnapshot(current, session));
+          setState((current) => ({
+            ...current,
+            sessions: applySessionSnapshot(current.sessions ?? [], session)
+          }));
+          void loadState(clientId, conversationId);
+        }}
       />
 
       {workspaceModalOpen && (

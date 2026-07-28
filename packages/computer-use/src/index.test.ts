@@ -7,6 +7,8 @@ import {
   GuiGroundingProviderRouter,
   ExecutableVisualAction,
   MacOSNativeSurfaceIdentity,
+  MemoryComputerActionRecordStore,
+  MemoryMutationReplayStore,
   NativeSurfaceUnavailableError,
   OpenAICompatibleUiTarsProvider,
   PiVisionModel,
@@ -364,6 +366,364 @@ describe("visual action protocol", () => {
       expect(cancelPendingInput).toHaveBeenCalledOnce();
     }
   );
+
+  it("isolates concurrent Product+Browser sessions so takeover of A does not stop B", async () => {
+    const sessionA = { adPilotSessionId: "product-a", browserSessionId: "browser-a" };
+    const sessionB = { adPilotSessionId: "product-b", browserSessionId: "browser-b" };
+    const taskA: VisualMicroTask = { ...task, ...sessionA, clientId: "client-a" };
+    const taskB: VisualMicroTask = { ...task, ...sessionB, clientId: "client-b" };
+    const started = new Set<string>();
+    let releaseA!: () => void;
+    let releaseB!: () => void;
+    const gateA = new Promise<void>((resolve) => { releaseA = resolve; });
+    const gateB = new Promise<void>((resolve) => { releaseB = resolve; });
+    const cancelPendingInput = vi.fn(async () => undefined);
+    const runtime = new VisualComputerRuntime(
+      { capture: async () => before, execute: async () => undefined, cancelPendingInput },
+      {
+        ground: async (bound) => {
+          const id = bound.adPilotSessionId!;
+          started.add(id);
+          await (id === "product-a" ? gateA : gateB);
+          return {
+            action: "done",
+            target: bound.target,
+            reason: "complete",
+            confidence: 1,
+            expected_result: bound.expectedResult,
+            risk_level: "observe"
+          };
+        }
+      },
+      { verify: async () => ({ matched: true, confidence: 1, reason: "not needed" }) }
+    );
+    const runningA = runtime.runMicroTask(taskA);
+    const runningB = runtime.runMicroTask(taskB);
+    await vi.waitFor(() => expect(started).toEqual(new Set(["product-a", "product-b"])));
+
+    runtime.takeover(sessionA);
+    releaseA();
+    releaseB();
+
+    await expect(runningA).resolves.toMatchObject({ status: "failed", blockerCode: "USER_TAKEOVER" });
+    await expect(runningB).resolves.toMatchObject({ status: "done" });
+    expect(runtime.controlStatus(sessionA)).toBe("user_control");
+    expect(runtime.controlStatus(sessionB)).toBe("running");
+    expect(cancelPendingInput).toHaveBeenCalledTimes(1);
+    expect(cancelPendingInput).toHaveBeenCalledWith(sessionA);
+  });
+
+  it("rejects a stale control revision without changing session authority", () => {
+    const binding = { adPilotSessionId: "product-revision", browserSessionId: "browser-revision" };
+    const runtime = new VisualComputerRuntime(
+      { capture: async () => before, execute: async () => undefined },
+      { ground: async () => ({ action: "done", target: "task", reason: "done", confidence: 1, expected_result: "done", risk_level: "observe" }) },
+      { verify: async () => ({ matched: true, confidence: 1, reason: "done" }) }
+    );
+    const initial = runtime.ensureControlSession(binding);
+    expect(() => runtime.pause(binding, initial.revision + 1)).toThrow("revision changed");
+    expect(runtime.controlSnapshot(binding)).toMatchObject({ revision: initial.revision, controlState: "running" });
+    runtime.pause(binding, initial.revision);
+    expect(runtime.controlSnapshot(binding)).toMatchObject({ revision: initial.revision + 1, controlState: "paused" });
+  });
+
+  it("scopes mutation replay claims to the exact Product+Browser session", async () => {
+    const execute = vi.fn(async () => undefined);
+    const runtime = new VisualComputerRuntime(
+      { capture: async () => before, execute },
+      { ground: async () => ({ action: "type", text: "120", target: "budget", reason: "focused", confidence: 1, expected_result: "draft is 120", risk_level: "mutate" }) },
+      { verify: async () => ({ matched: true, confidence: 1, reason: "draft visible" }) }
+    );
+    const baseMutation: VisualMicroTask = {
+      ...task,
+      target: "budget",
+      expectedResult: "draft is 120",
+      riskLevel: "mutate",
+      permission: "MUTATE",
+      planId: "same-approved-plan",
+      accountFingerprint: "c".repeat(64),
+      allowedRegion: { x: 0, y: 0, width: before.width, height: before.height, coordinateSpace: "screenshot_pixels" }
+    };
+    await expect(runtime.runMicroTask({
+      ...baseMutation,
+      adPilotSessionId: "product-a",
+      browserSessionId: "browser-a"
+    })).resolves.toMatchObject({ status: "done", verified: true });
+    await expect(runtime.runMicroTask({
+      ...baseMutation,
+      adPilotSessionId: "product-b",
+      browserSessionId: "browser-b"
+    })).resolves.toMatchObject({ status: "done", verified: true });
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("persists the production-path native action with exact binding, frames, and five-level verification", async () => {
+    const records = new MemoryComputerActionRecordStore();
+    const binding = { adPilotSessionId: "product-record", browserSessionId: "browser-record" };
+    let captures = 0;
+    const shotBefore: Screenshot = {
+      ...before,
+      surface: nativeSurface,
+      surfaceFingerprint: fingerprintSurface(nativeSurface)
+    };
+    const shotAfter: Screenshot = {
+      ...after,
+      surface: nativeSurface,
+      surfaceFingerprint: fingerprintSurface(nativeSurface)
+    };
+    const runtime = new VisualComputerRuntime(
+      { capture: async () => captures++ ? shotAfter : shotBefore, identifySurface: async () => ({ surface: nativeSurface, fingerprint: fingerprintSurface(nativeSurface) }), execute: async () => undefined },
+      { ground: async () => ({ action: "click", x: 20, y: 20, target: task.target, reason: "visible", confidence: 1, expected_result: task.expectedResult, risk_level: "interact" }) },
+      { verify: async () => ({ matched: true, confidence: 0.98, reason: "menu visible" }) },
+      new VisualPolicy(),
+      () => undefined,
+      20_000,
+      1,
+      records
+    );
+    const result = await runtime.runMicroTask({
+      ...task,
+      ...binding,
+      clientId: "client-record",
+      taskId: "task-record",
+      stepId: "step-record",
+      planId: "plan-record",
+      surface: {
+        ...task.surface,
+        applicationId: nativeSurface.bundleId!,
+        processId: nativeSurface.pid,
+        windowId: nativeSurface.windowId
+      }
+    });
+    expect(result).toMatchObject({ status: "done", executed: true, verified: true });
+    const saved = await runtime.listActionRecords(binding);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({
+      binding: { ...binding, clientId: "client-record" },
+      controlRevision: 0,
+      taskId: "task-record",
+      stepId: "step-record",
+      planId: "plan-record",
+      beforeFrameSha256: shotBefore.sha256,
+      appPid: nativeSurface.pid,
+      appBundleId: nativeSurface.bundleId,
+      windowId: nativeSurface.windowId,
+      action: { kind: "click", x: 20, y: 20, coordinateSpace: "frame_pixels" },
+      executionResult: { status: "posted", afterFrameSha256: shotAfter.sha256 },
+      verificationResult: { status: "unknown", identityMatch: true },
+      userTookOver: false
+    });
+    expect(saved[0]?.verificationResult?.levels).toMatchObject([
+      { level: 1, status: "passed" },
+      { level: 2, status: "passed" },
+      { level: 3, status: "unknown" },
+      { level: 4, status: "unknown" },
+      { level: 5, status: "unknown", reason: expect.stringContaining("account and Campaign identity") }
+    ]);
+    expect(saved[0]?.beforeFrameId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(saved[0]?.afterFrameId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(result.status === "done" ? result.actionRecordId : undefined).toBe(saved[0]?.id);
+
+    const finalized = await runtime.finalizeActionRecord(saved[0]!.id, {
+      binding,
+      persistenceVerification: {
+        verified: true,
+        refreshedFrameSha256: "c".repeat(64),
+        exactValue: 110,
+        identityMatch: true,
+        accountId: "account-record",
+        campaignId: "campaign-record",
+        verifiedAt: "2026-01-01T00:00:02.000Z",
+        evidenceIds: ["refresh:frame", "identity:account+campaign"]
+      },
+      expectedUiEvidence: ["ui:menu-open"],
+      exactValueEvidence: ["value:110", "review:dual"],
+      independentVerifier: "reviewer-a+reviewer-b",
+      reason: "all five levels passed"
+    });
+    expect(finalized.verificationResult).toMatchObject({
+      status: "passed",
+      exactValueMatch: true,
+      persistedAfterRefresh: true,
+      identityMatch: true,
+      independentVerifier: "reviewer-a+reviewer-b",
+      levels: [
+        { level: 1, status: "passed", reason: expect.stringContaining("native action") },
+        { level: 2, status: "passed", evidence: ["ui:menu-open"] },
+        { level: 3, status: "passed", evidence: ["value:110", "review:dual"] },
+        { level: 4, status: "passed", reason: expect.stringContaining("refresh/re-entry") },
+        { level: 5, status: "passed", reason: expect.stringContaining("identity remained exact") }
+      ]
+    });
+  });
+
+  it("records takeover during an in-flight native action as an unknown, non-replayable outcome", async () => {
+    const records = new MemoryComputerActionRecordStore();
+    const binding = { adPilotSessionId: "product-takeover-record", browserSessionId: "browser-takeover-record" };
+    const shot: Screenshot = {
+      ...before,
+      surface: nativeSurface,
+      surfaceFingerprint: fingerprintSurface(nativeSurface)
+    };
+    let executionStarted!: () => void;
+    const started = new Promise<void>((resolve) => { executionStarted = resolve; });
+    const runtime = new VisualComputerRuntime(
+      {
+        capture: async () => shot,
+        identifySurface: async () => ({ surface: nativeSurface, fingerprint: fingerprintSurface(nativeSurface) }),
+        execute: async () => {
+          executionStarted();
+          await new Promise<void>(() => undefined);
+        },
+        cancelPendingInput: async () => undefined
+      },
+      { ground: async () => ({ action: "click", x: 20, y: 20, target: task.target, reason: "visible", confidence: 1, expected_result: task.expectedResult, risk_level: "interact" }) },
+      { verify: async () => ({ matched: true, confidence: 1, reason: "not reached" }) },
+      new VisualPolicy(),
+      () => undefined,
+      20_000,
+      1,
+      records
+    );
+    const running = runtime.runMicroTask({
+      ...task,
+      ...binding,
+      clientId: "client-takeover",
+      surface: {
+        ...task.surface,
+        applicationId: nativeSurface.bundleId!,
+        processId: nativeSurface.pid,
+        windowId: nativeSurface.windowId
+      }
+    });
+    await started;
+    runtime.takeover(binding);
+
+    await expect(running).resolves.toMatchObject({ status: "failed", blockerCode: "USER_TAKEOVER" });
+    await expect(runtime.listActionRecords(binding)).resolves.toEqual([
+      expect.objectContaining({
+        binding: expect.objectContaining(binding),
+        executionResult: expect.objectContaining({ status: "unknown" }),
+        userTookOver: true
+      })
+    ]);
+  });
+
+  it("refreshes the exact bound browser once and records the fresh post-refresh frame", async () => {
+    const records = new MemoryComputerActionRecordStore();
+    const binding = { adPilotSessionId: "product-refresh", browserSessionId: "browser-refresh" };
+    const shotBefore: Screenshot = {
+      ...before,
+      surface: nativeSurface,
+      surfaceFingerprint: fingerprintSurface(nativeSurface)
+    };
+    const shotAfter: Screenshot = {
+      ...after,
+      surface: nativeSurface,
+      surfaceFingerprint: fingerprintSurface(nativeSurface)
+    };
+    let captures = 0;
+    const execute = vi.fn(async () => undefined);
+    const runtime = new VisualComputerRuntime(
+      {
+        capture: async () => captures++ === 0 ? shotBefore : shotAfter,
+        identifySurface: async () => ({ surface: nativeSurface, fingerprint: fingerprintSurface(nativeSurface) }),
+        execute
+      },
+      { ground: async () => { throw new Error("deterministic refresh must not invoke grounding"); } },
+      { verify: async () => { throw new Error("persistence is verified by the caller's independent reviewers"); } },
+      new VisualPolicy(),
+      () => undefined,
+      20_000,
+      1,
+      records
+    );
+    const refreshed = await runtime.refreshForPersistence({
+      ...task,
+      ...binding,
+      clientId: "client-refresh",
+      taskId: "task-refresh",
+      stepId: "step-refresh",
+      planId: "plan-refresh",
+      surface: {
+        ...task.surface,
+        applicationId: nativeSurface.bundleId!,
+        processId: nativeSurface.pid,
+        windowId: nativeSurface.windowId
+      }
+    }, 100);
+
+    expect(refreshed.sha256).toBe(shotAfter.sha256);
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "hotkey", keys: "CMD+R" }),
+      shotBefore,
+      expect.objectContaining(binding),
+      expect.any(AbortSignal)
+    );
+    await expect(runtime.listActionRecords(binding)).resolves.toEqual([
+      expect.objectContaining({
+        binding: expect.objectContaining(binding),
+        beforeFrameSha256: shotBefore.sha256,
+        action: { kind: "keypress", keys: ["CMD", "R"] },
+        executionResult: expect.objectContaining({
+          status: "posted",
+          purpose: "persistence_refresh",
+          afterFrameSha256: shotAfter.sha256
+        }),
+        userTookOver: false
+      })
+    ]);
+  });
+
+  it("durably claims a production mutation before native input across runtime restarts", async () => {
+    const replay = new MemoryMutationReplayStore();
+    const records = new MemoryComputerActionRecordStore();
+    const execute = vi.fn(async () => undefined);
+    const shot: Screenshot = {
+      ...before,
+      surface: nativeSurface,
+      surfaceFingerprint: fingerprintSurface(nativeSurface)
+    };
+    const makeRuntime = () => new VisualComputerRuntime(
+      { capture: async () => shot, identifySurface: async () => ({ surface: nativeSurface, fingerprint: fingerprintSurface(nativeSurface) }), execute },
+      { ground: async () => ({ action: "type", text: "120", target: "budget", reason: "focused", confidence: 1, expected_result: "draft is 120", risk_level: "mutate" }) },
+      { verify: async () => ({ matched: true, confidence: 1, reason: "draft visible" }) },
+      new VisualPolicy(),
+      () => undefined,
+      20_000,
+      1,
+      records,
+      replay
+    );
+    const mutationTask: VisualMicroTask = {
+      ...task,
+      adPilotSessionId: "product-mutation",
+      browserSessionId: "browser-mutation",
+      clientId: "client-mutation",
+      taskId: "task-mutation",
+      stepId: "step-mutation",
+      planId: "plan-mutation",
+      approvalId: "11111111-1111-4111-8111-111111111111",
+      target: "budget",
+      expectedResult: "draft is 120",
+      riskLevel: "mutate",
+      permission: "MUTATE",
+      accountFingerprint: "c".repeat(64),
+      allowedRegion: { x: 0, y: 0, width: before.width, height: before.height, coordinateSpace: "screenshot_pixels" },
+      surface: {
+        ...task.surface,
+        applicationId: nativeSurface.bundleId!,
+        processId: nativeSurface.pid,
+        windowId: nativeSurface.windowId
+      }
+    };
+    await expect(makeRuntime().runMicroTask(mutationTask)).resolves.toMatchObject({ status: "done" });
+    await expect(makeRuntime().runMicroTask(mutationTask)).resolves.toMatchObject({
+      status: "failed",
+      blockerCode: "DUPLICATE_MUTATION"
+    });
+    expect(execute).toHaveBeenCalledOnce();
+  });
 
   it("treats a throwing mutation executor as a single unknown attempt", async () => {
     const execute = vi.fn(async () => { throw new Error("helper disconnected"); });

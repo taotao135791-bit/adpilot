@@ -16,3 +16,16 @@ export function isExternalWebUrl(url: string): boolean {
     return false;
   }
 }
+
+/** Fixed executable location for packaged builds; user-data env is ignored. */
+export function packagedNativeHelperPath(resourcesPath: string): string {
+  return join(
+    resourcesPath,
+    "native",
+    "AdPilot Computer Helper.app",
+    "Contents",
+    "MacOS",
+    "adpilot-native-helper"
+  );
+}
+import { join } from "node:path";

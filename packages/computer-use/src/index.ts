@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Jimp } from "jimp";
 import { NutJSOperator } from "@ui-tars/operator-nut-js";
 import { actionParser } from "@ui-tars/action-parser";
@@ -16,8 +16,21 @@ import {
   type NativeSurfaceIdentity
 } from "./surface.js";
 import { BrowserSessionLostError } from "./browser-session.js";
+import {
+  BrowserPageIdentityChangedError,
+  BrowserPageIdentityUnavailableError
+} from "./browser-page-identity.js";
+import {
+  ComputerActionRecord,
+  VerificationResult,
+  type ComputerAction as ComputerActionValue,
+  type ComputerActionRecord as ComputerActionRecordValue
+} from "./protocol.js";
+import type { ComputerActionRecordStore } from "./runtime.js";
+import type { MutationReplayStore } from "./replay.js";
 
 export * from "./surface.js";
+export * from "./browser-page-identity.js";
 export * from "./browser-session.js";
 export * from "./privacy.js";
 export * from "./account-fingerprint.js";
@@ -26,6 +39,7 @@ export * from "./control-state.js";
 export * from "./replay.js";
 export * from "./runtime.js";
 export * from "./action-record-store.js";
+export * from "./native-helper-operator.js";
 
 export const VisualTaskAllowedRegion = z.object({
   x: z.number().finite().nonnegative(),
@@ -115,6 +129,12 @@ export interface SurfaceContext {
   processId?: number;
   windowId?: string;
   domain?: string;
+  /** Fresh canonical address-bar URL. Never populated from a launch/start URL. */
+  url?: string;
+  /** Fresh HTTP(S) origin derived from the address-bar URL. */
+  origin?: string;
+  /** Informational title from the exact native/Accessibility window. */
+  pageTitle?: string;
   /** User-facing Profile binding used to locate the managed session. */
   browserProfile?: string;
   /** Non-reversible proof read from the native browser process command line. */
@@ -125,9 +145,15 @@ export interface SurfaceContext {
 
 export interface VisualMicroTask {
   clientId?: string;
+  /** Durable AdPilot product Session. This is intentionally not the task id. */
+  adPilotSessionId?: string;
+  /** Exact managed browser Session used by this Computer Use task. */
+  browserSessionId?: string;
   taskId?: string;
   stepId?: string;
   planId?: string;
+  /** Exact persisted approval consumed for a mutation task. */
+  approvalId?: string;
   platform?: string;
   accountFingerprint?: string;
   allowedRegion?: VisualTaskAllowedRegion;
@@ -179,7 +205,7 @@ export interface NativeOperator {
   execute(action: VisualAction, screenshot: Screenshot, task?: VisualMicroTask, signal?: AbortSignal): Promise<void>;
   identifySurface?(task?: VisualMicroTask): Promise<{ surface: NativeSurface; fingerprint: string }>;
   /** Cancel only input that has not yet been posted to the operating system. */
-  cancelPendingInput?(): void | Promise<void>;
+  cancelPendingInput?(session?: VisualComputerSessionBinding): void | Promise<void>;
 }
 
 type VisualRuntimeEventPayload =
@@ -193,6 +219,8 @@ export type VisualRuntimeEvent = VisualRuntimeEventPayload & { clientId?: string
 export const VisualBlockerCode = z.enum([
   "SURFACE_CHANGED",
   "BROWSER_SESSION_LOST",
+  "BROWSER_PAGE_IDENTITY_UNAVAILABLE",
+  "BROWSER_PAGE_IDENTITY_CHANGED",
   "DUPLICATE_COORDINATE",
   "MUTATION_RETRY_FORBIDDEN",
   "TIMEOUT",
@@ -220,6 +248,17 @@ export class SurfaceChangedBlocker extends VisualRuntimeBlocker {
   }
 }
 
+export interface VisualPersistenceVerification {
+  verified: true;
+  refreshedFrameSha256: string;
+  exactValue: string | number | boolean | null;
+  identityMatch: true;
+  accountId: string;
+  campaignId: string;
+  verifiedAt: string;
+  evidenceIds: string[];
+}
+
 export type VisualStepResult =
   | {
       status: "done";
@@ -231,8 +270,17 @@ export type VisualStepResult =
       executed: boolean;
       /** True only after the independent post-action verifier matched. */
       verified: boolean;
+      actionRecordId?: string;
+      persistenceVerification?: VisualPersistenceVerification;
     }
-  | { status: "failed"; attempts: number; blocker: string; blockerCode?: VisualBlockerCode; lastAction?: VisualAction };
+  | {
+      status: "failed";
+      attempts: number;
+      blocker: string;
+      blockerCode?: VisualBlockerCode;
+      lastAction?: VisualAction;
+      actionRecordId?: string;
+    };
 
 export class VisualPolicy {
   check(action: VisualAction, screenshot: Screenshot, task: VisualMicroTask): void {
@@ -345,12 +393,75 @@ export class VisualPolicy {
 export type VisualRuntimeStatus = "running" | "paused" | "cancelled";
 export type VisualControlStatus = VisualRuntimeStatus | "user_control";
 
+export interface VisualComputerSessionBinding {
+  adPilotSessionId: string;
+  browserSessionId: string;
+}
+
+export interface VisualComputerControlSnapshot extends VisualComputerSessionBinding {
+  computerSessionId: string;
+  revision: number;
+  controlState: VisualControlStatus;
+  executionStatus: VisualRuntimeStatus;
+}
+
+export interface FinalizeVisualActionRecordInput {
+  binding: VisualComputerSessionBinding;
+  persistenceVerification: VisualPersistenceVerification;
+  expectedUiEvidence: string[];
+  exactValueEvidence: string[];
+  independentVerifier: string;
+  reason: string;
+}
+
+export class VisualControlRevisionError extends Error {
+  readonly code = "COMPUTER_CONTROL_REVISION_CONFLICT" as const;
+
+  constructor(
+    readonly expectedRevision: number,
+    readonly actualRevision: number,
+    readonly computerSessionId: string
+  ) {
+    super(`Computer Session revision changed (${expectedRevision} -> ${actualRevision})`);
+    this.name = "VisualControlRevisionError";
+  }
+}
+
+export class VisualComputerSessionNotFoundError extends Error {
+  readonly code = "COMPUTER_SESSION_NOT_FOUND" as const;
+
+  constructor(readonly computerSessionId: string) {
+    super(`Computer Session is not active: ${computerSessionId}`);
+    this.name = "VisualComputerSessionNotFoundError";
+  }
+}
+
+type VisualSessionState = {
+  binding: VisualComputerSessionBinding;
+  computerSessionId: string;
+  control: VisualControlStatus;
+  controlRevision: number;
+  requiresFreshCapture: boolean;
+  activeControllers: Set<AbortController>;
+  attemptedMutationPlans: Set<string>;
+  recordSessionId: string;
+};
+
+const LEGACY_VISUAL_SESSION_BINDING: VisualComputerSessionBinding = {
+  adPilotSessionId: "legacy-product-session",
+  browserSessionId: "legacy-browser-session"
+};
+
+export function visualComputerSessionId(binding: VisualComputerSessionBinding): string {
+  const parsed = parseVisualComputerSessionBinding(binding);
+  return `computer_${createHash("sha256")
+    .update(`${parsed.adPilotSessionId}\u0000${parsed.browserSessionId}`)
+    .digest("hex")
+    .slice(0, 40)}`;
+}
+
 export class VisualComputerRuntime {
-  private control: VisualControlStatus = "running";
-  private controlRevision = 0;
-  private requiresFreshCapture = false;
-  private readonly activeControllers = new Set<AbortController>();
-  private readonly attemptedMutationPlans = new Set<string>();
+  private readonly sessions = new Map<string, VisualSessionState>();
 
   constructor(
     private readonly operator: NativeOperator,
@@ -359,7 +470,9 @@ export class VisualComputerRuntime {
     private readonly policy = new VisualPolicy(),
     private readonly onEvent: (event: VisualRuntimeEvent) => void | Promise<void> = () => undefined,
     private readonly stepTimeoutMs = 20_000,
-    private readonly maxAttempts = 3
+    private readonly maxAttempts = 3,
+    private readonly actionRecords?: ComputerActionRecordStore,
+    private readonly mutationReplay?: MutationReplayStore
   ) {
     if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3) throw new Error("visual max attempts must be between 1 and 3");
   }
@@ -369,50 +482,157 @@ export class VisualComputerRuntime {
    * paused to old clients, while controlStatus() exposes the real owner.
    */
   executionStatus(): VisualRuntimeStatus {
-    if (this.control === "cancelled") return "cancelled";
-    return this.control === "running" ? "running" : "paused";
+    return this.executionStatusFor();
   }
 
-  controlStatus(): VisualControlStatus {
-    return this.control;
+  executionStatusFor(selector?: VisualComputerSessionBinding | string): VisualRuntimeStatus {
+    const control = this.sessionForSelector(selector).control;
+    if (control === "cancelled") return "cancelled";
+    return control === "running" ? "running" : "paused";
   }
 
-  pause(): void {
-    if (this.control === "cancelled" || this.control === "paused") return;
-    this.setControl("paused", "paused by user");
+  controlStatus(selector?: VisualComputerSessionBinding | string): VisualControlStatus {
+    return this.sessionForSelector(selector).control;
   }
 
-  resume(): void {
-    if (this.control !== "paused") return;
-    this.setControl("running", "agent resumed");
+  controlSnapshot(selector?: VisualComputerSessionBinding | string): VisualComputerControlSnapshot {
+    return this.snapshot(this.sessionForSelector(selector));
   }
 
-  takeover(): void {
-    if (this.control === "cancelled" || this.control === "user_control") return;
-    this.setControl("user_control", "user took control");
+  listControlSnapshots(): VisualComputerControlSnapshot[] {
+    return [...this.sessions.values()].map((state) => this.snapshot(state));
   }
 
-  returnControl(): void {
-    if (this.control !== "user_control") return;
-    this.setControl("running", "user returned control");
+  async getActionRecord(actionId: string): Promise<ComputerActionRecordValue | undefined> {
+    return this.actionRecords?.get(actionId);
   }
 
-  notifyUserInput(): void {
-    this.takeover();
+  async listActionRecords(selector: VisualComputerSessionBinding | string): Promise<ComputerActionRecordValue[]> {
+    if (!this.actionRecords) return [];
+    return this.actionRecords.list(this.sessionForSelector(selector).recordSessionId);
   }
 
-  cancel(): void {
-    if (this.control === "cancelled") return;
-    this.setControl("cancelled", "user cancelled");
+  async finalizeActionRecord(
+    actionId: string,
+    input: FinalizeVisualActionRecordInput
+  ): Promise<ComputerActionRecordValue> {
+    if (!this.actionRecords) throw new Error("persistent Computer Action records are unavailable");
+    const record = await this.actionRecords.get(actionId);
+    if (!record) throw new Error(`Computer Action record does not exist: ${actionId}`);
+    const binding = parseVisualComputerSessionBinding(input.binding);
+    if (
+      record.binding?.adPilotSessionId !== binding.adPilotSessionId
+      || record.binding.browserSessionId !== binding.browserSessionId
+    ) {
+      throw new Error("Computer Action record belongs to another Product+Browser session");
+    }
+    const persistence = input.persistenceVerification;
+    const verificationResult = VerificationResult.parse({
+      actionId: record.id,
+      sessionId: record.sessionId,
+      status: "passed",
+      levels: [
+        {
+          level: 1,
+          status: "passed",
+          evidence: ["native-action-record", record.id],
+          reason: "the atomic native action returned and was recorded"
+        },
+        {
+          level: 2,
+          status: "passed",
+          evidence: input.expectedUiEvidence,
+          reason: "the immediate expected UI state matched"
+        },
+        {
+          level: 3,
+          status: "passed",
+          evidence: input.exactValueEvidence,
+          reason: "two independent reviewers read the exact approved target value"
+        },
+        {
+          level: 4,
+          status: "passed",
+          evidence: [
+            `frame:${persistence.refreshedFrameSha256}`,
+            ...persistence.evidenceIds
+          ],
+          reason: "the exact value survived a safe refresh/re-entry and fresh capture"
+        },
+        {
+          level: 5,
+          status: "passed",
+          evidence: [
+            `account:${persistence.accountId}`,
+            `campaign:${persistence.campaignId}`,
+            ...persistence.evidenceIds
+          ],
+          reason: "the Product, browser, account, Campaign, app, and window identity remained exact"
+        }
+      ],
+      exactValueMatch: true,
+      persistedAfterRefresh: true,
+      identityMatch: true,
+      independentVerifier: input.independentVerifier,
+      verifiedAt: persistence.verifiedAt,
+      reason: input.reason
+    });
+    const finalized = ComputerActionRecord.parse({ ...record, verificationResult });
+    await this.actionRecords.save(finalized);
+    return finalized;
   }
 
-  stop(): void {
-    this.cancel();
+  ensureControlSession(binding: VisualComputerSessionBinding): VisualComputerControlSnapshot {
+    return this.snapshot(this.sessionForBinding(binding));
+  }
+
+  pause(selector?: VisualComputerSessionBinding | string, expectedRevision?: number): void {
+    const state = this.sessionForSelector(selector);
+    this.assertExpectedRevision(state, expectedRevision);
+    if (state.control === "cancelled" || state.control === "paused") return;
+    this.setControl(state, "paused", "paused by user");
+  }
+
+  resume(selector?: VisualComputerSessionBinding | string, expectedRevision?: number): void {
+    const state = this.sessionForSelector(selector);
+    this.assertExpectedRevision(state, expectedRevision);
+    if (state.control !== "paused") return;
+    this.setControl(state, "running", "agent resumed");
+  }
+
+  takeover(selector?: VisualComputerSessionBinding | string, expectedRevision?: number): void {
+    const state = this.sessionForSelector(selector);
+    this.assertExpectedRevision(state, expectedRevision);
+    if (state.control === "cancelled" || state.control === "user_control") return;
+    this.setControl(state, "user_control", "user took control");
+  }
+
+  returnControl(selector?: VisualComputerSessionBinding | string, expectedRevision?: number): void {
+    const state = this.sessionForSelector(selector);
+    this.assertExpectedRevision(state, expectedRevision);
+    if (state.control !== "user_control") return;
+    this.setControl(state, "running", "user returned control");
+  }
+
+  notifyUserInput(selector?: VisualComputerSessionBinding | string): void {
+    this.takeover(selector);
+  }
+
+  cancel(selector?: VisualComputerSessionBinding | string, expectedRevision?: number): void {
+    const state = this.sessionForSelector(selector);
+    this.assertExpectedRevision(state, expectedRevision);
+    if (state.control === "cancelled") return;
+    this.setControl(state, "cancelled", "user cancelled");
+  }
+
+  stop(selector?: VisualComputerSessionBinding | string, expectedRevision?: number): void {
+    this.cancel(selector, expectedRevision);
   }
 
   /** Resolve the live execution surface through the same native operator used for actions. */
   async identifySurface(task?: VisualMicroTask): Promise<{ surface?: NativeSurface; fingerprint: string }> {
-    this.assertAgentControl();
+    const state = this.sessionForTask(task);
+    this.assertAgentControl(state);
     if (task && this.operator.bindTask) await this.operator.bindTask(task);
     if (this.operator.identifySurface) return this.operator.identifySurface(task);
     const screenshot = await withTimeout(this.operator.capture(task), this.stepTimeoutMs, "surface identity");
@@ -424,25 +644,159 @@ export class VisualComputerRuntime {
 
   /** Read-only verifier preflight used before consuming a mutation approval. */
   async verifyVisible(expectedResult: string, task?: VisualMicroTask): Promise<{ matched: boolean; confidence: number; reason: string; screenshot: Screenshot }> {
-    this.assertAgentControl();
+    const state = this.sessionForTask(task);
+    this.assertAgentControl(state);
     if (task && this.operator.bindTask) await this.operator.bindTask(task);
     const screenshot = await withTimeout(this.operator.capture(task), this.stepTimeoutMs, "verification preflight screenshot");
     await this.onEvent(scopeVisualRuntimeEvent({ type: "screenshot", phase: "before", screenshot }, task));
-    this.assertAgentControl();
+    this.assertAgentControl(state);
     const result = await withTimeout(this.verifier.verify(expectedResult, screenshot, screenshot, task), this.stepTimeoutMs, "verification preflight");
-    this.assertAgentControl();
+    this.assertAgentControl(state);
     await this.onEvent(scopeVisualRuntimeEvent({ type: "verified", attempt: 0, ...result }, task));
     return { ...result, screenshot };
   }
 
   /** Capture one current native window after applying the task/session binding. */
   async captureForTask(task: VisualMicroTask): Promise<Screenshot> {
-    this.assertAgentControl();
+    const state = this.sessionForTask(task);
+    this.assertAgentControl(state);
     if (this.operator.bindTask) await this.operator.bindTask(task);
     const screenshot = await withTimeout(this.operator.capture(task), this.stepTimeoutMs, "task-bound screenshot capture");
-    this.assertAgentControl();
+    this.assertAgentControl(state);
     await this.onEvent(scopeVisualRuntimeEvent({ type: "screenshot", phase: "before", screenshot }, task));
     return screenshot;
+  }
+
+  /**
+   * Deterministic, non-mutating browser refresh used only to prove that an
+   * approved value survives re-entry. It stays on the exact Product+Browser
+   * session and exact native window, then returns a forced fresh capture.
+   */
+  async refreshForPersistence(task: VisualMicroTask, settleMs = 1_200): Promise<Screenshot> {
+    if (!Number.isInteger(settleMs) || settleMs < 100 || settleMs > 10_000) {
+      throw new Error("persistence refresh settle time must be 100-10000ms");
+    }
+    const state = this.sessionForTask(task);
+    this.assertAgentControl(state);
+    const revision = state.controlRevision;
+    const controller = new AbortController();
+    state.activeControllers.add(controller);
+    let persistedRecord: ComputerActionRecordValue | undefined;
+    let nativeExecutionStarted = false;
+    try {
+      const taskId = task.taskId ?? stableId("task", task.instruction, task.target);
+      const stepId = stableId("refresh-step", task.stepId ?? taskId, String(Date.now()));
+      const planId = task.planId ?? stableId("refresh-plan", taskId);
+      const refreshTask: VisualMicroTask & { taskId: string; stepId: string; planId: string } = {
+        ...task,
+        taskId,
+        stepId,
+        planId,
+        instruction: "Refresh the exact managed browser page once, then wait for it to settle",
+        target: "managed browser page refresh",
+        expectedResult: "the exact bound page reloads without changing account or Campaign identity",
+        riskLevel: "interact",
+        permission: "INTERACT",
+        allowedActions: ["hotkey"],
+        retryPolicy: "none"
+      };
+      if (this.operator.bindTask) await this.operator.bindTask(refreshTask);
+      const before = await withTimeout(
+        this.operator.capture(refreshTask),
+        this.stepTimeoutMs,
+        "persistence refresh before-frame",
+        controller.signal
+      );
+      this.assertRunControl(state, revision, controller.signal);
+      const expectedFingerprint = surfaceFingerprintFor(before);
+      const action = bindActionContext({
+        action: "hotkey",
+        keys: "CMD+R",
+        target: refreshTask.target,
+        reason: "deterministic safe browser refresh",
+        confidence: 1,
+        expected_result: refreshTask.expectedResult,
+        risk_level: "interact"
+      }, refreshTask, before, expectedFingerprint);
+      this.policy.check(action, before, refreshTask);
+      await this.assertSurfaceUnchanged(expectedFingerprint, refreshTask, controller.signal);
+      this.assertRunControl(state, revision, controller.signal);
+      if (this.actionRecords) {
+        persistedRecord = legacyActionRecord(
+          randomUUID(),
+          state,
+          refreshTask,
+          before,
+          expectedFingerprint,
+          { kind: "keypress", keys: ["CMD", "R"] }
+        );
+        await this.actionRecords.save(persistedRecord);
+      }
+      nativeExecutionStarted = true;
+      await withTimeout(
+        this.operator.execute(action, before, refreshTask, controller.signal),
+        this.stepTimeoutMs,
+        "persistence browser refresh",
+        controller.signal
+      );
+      this.assertRunControl(state, revision, controller.signal);
+      if (persistedRecord) {
+        persistedRecord = ComputerActionRecord.parse({
+          ...persistedRecord,
+          completedAt: new Date().toISOString(),
+          executionResult: { status: "posted", purpose: "persistence_refresh" },
+          userTookOver: false
+        });
+        await this.actionRecords!.save(persistedRecord);
+      }
+      await abortableDelay(settleMs, controller.signal);
+      this.assertRunControl(state, revision, controller.signal);
+      const after = await withTimeout(
+        this.operator.capture(refreshTask),
+        this.stepTimeoutMs,
+        "persistence refresh fresh capture",
+        controller.signal
+      );
+      this.assertRunControl(state, revision, controller.signal);
+      const afterFingerprint = surfaceFingerprintFor(after);
+      if (
+        afterFingerprint !== expectedFingerprint
+        && !(before.surface && after.surface && sameNativeWindow(before.surface, after.surface))
+      ) {
+        throw new SurfaceChangedBlocker(expectedFingerprint, afterFingerprint);
+      }
+      if (persistedRecord) {
+        persistedRecord = ComputerActionRecord.parse({
+          ...persistedRecord,
+          afterFrameId: randomUUID(),
+          executionResult: {
+            status: "posted",
+            purpose: "persistence_refresh",
+            afterFrameSha256: after.sha256,
+            afterSurfaceFingerprint: afterFingerprint
+          }
+        });
+        await this.actionRecords!.save(persistedRecord);
+      }
+      return after;
+    } catch (error) {
+      if (persistedRecord) {
+        const failed = ComputerActionRecord.parse({
+          ...persistedRecord,
+          completedAt: persistedRecord.completedAt ?? new Date().toISOString(),
+          executionResult: {
+            status: nativeExecutionStarted ? "unknown" : "blocked",
+            purpose: "persistence_refresh",
+            reason: error instanceof Error ? error.message : String(error)
+          },
+          userTookOver: state.control === "user_control"
+        });
+        await this.actionRecords!.save(failed).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      state.activeControllers.delete(controller);
+    }
   }
 
   async runMicroTask(
@@ -450,19 +804,21 @@ export class VisualComputerRuntime {
     initialScreenshot?: Screenshot,
     constraintInput?: VisualExecutionConstraints
   ): Promise<VisualStepResult> {
-    const unavailable = this.controlFailure(0);
+    const state = this.sessionForTask(task);
+    const unavailable = this.controlFailure(state, 0);
     if (unavailable) return unavailable;
-    const revision = this.controlRevision;
+    const revision = state.controlRevision;
     const controller = new AbortController();
-    this.activeControllers.add(controller);
+    state.activeControllers.add(controller);
     try {
-      return await this.runControlledMicroTask(task, initialScreenshot, constraintInput, revision, controller.signal);
+      return await this.runControlledMicroTask(state, task, initialScreenshot, constraintInput, revision, controller.signal);
     } finally {
-      this.activeControllers.delete(controller);
+      state.activeControllers.delete(controller);
     }
   }
 
   private async runControlledMicroTask(
+    state: VisualSessionState,
     task: VisualMicroTask,
     initialScreenshot: Screenshot | undefined,
     constraintInput: VisualExecutionConstraints | undefined,
@@ -479,23 +835,25 @@ export class VisualComputerRuntime {
     const boundTask = { ...task, taskId, stepId, planId };
     const attemptLimit = task.retryPolicy === "none" ? 1 : this.maxAttempts;
     if (this.operator.bindTask) await this.operator.bindTask(boundTask);
-    this.assertRunControl(revision, signal);
-    const allowInitialScreenshot = !this.requiresFreshCapture;
-    this.requiresFreshCapture = false;
+    this.assertRunControl(state, revision, signal);
+    const allowInitialScreenshot = !state.requiresFreshCapture;
+    state.requiresFreshCapture = false;
     for (let attempt = 1; attempt <= attemptLimit; attempt += 1) {
-      const unavailable = this.controlFailure(attempt - 1, lastAction);
+      const unavailable = this.controlFailure(state, attempt - 1, lastAction);
       if (unavailable) return unavailable;
       if (mutationAttempted) {
         return failedResult(attempt - 1, "mutating actions are never retried after native execution was attempted", "MUTATION_RETRY_FORBIDDEN", lastAction);
       }
       const tier: ModelTier = task.retryPolicy === "none" ? "gui" : attempt >= attemptLimit ? "strong" : "gui";
+      let persistedRecord: ComputerActionRecordValue | undefined;
+      let nativeExecutionStarted = false;
       try {
         const before = attempt === 1 && initialScreenshot && allowInitialScreenshot
           ? Screenshot.parse(initialScreenshot)
           : await withTimeout(this.operator.capture(boundTask), this.stepTimeoutMs, "screenshot capture", signal);
-        this.assertRunControl(revision, signal);
+        this.assertRunControl(state, revision, signal);
         await this.onEvent(scopeVisualRuntimeEvent({ type: "screenshot", phase: "before", screenshot: before }, boundTask));
-        this.assertRunControl(revision, signal);
+        this.assertRunControl(state, revision, signal);
         const expectedFingerprint = surfaceFingerprintFor(before);
         const grounded = await withTimeout(
           this.grounding.ground(boundTask, before, tier),
@@ -503,7 +861,7 @@ export class VisualComputerRuntime {
           "visual grounding",
           signal
         );
-        this.assertRunControl(revision, signal);
+        this.assertRunControl(state, revision, signal);
         const action = bindActionContext(grounded, boundTask, before, expectedFingerprint);
         lastAction = action;
         if (constraints && !constraints.allowedActions.includes(action.action)) {
@@ -515,7 +873,7 @@ export class VisualComputerRuntime {
           throw new VisualRuntimeBlocker("POLICY_BLOCKED", error instanceof Error ? error.message : String(error));
         }
         await this.onEvent(scopeVisualRuntimeEvent({ type: "grounded", attempt, tier, action }, boundTask));
-        this.assertRunControl(revision, signal);
+        this.assertRunControl(state, revision, signal);
         if (action.action === "fail") return { status: "failed", attempts: attempt, blocker: action.reason, lastAction: action };
         if (action.action === "done") {
           if (boundTask.riskLevel === "mutate" || boundTask.riskLevel === "destructive") {
@@ -534,8 +892,10 @@ export class VisualComputerRuntime {
           throw new VisualRuntimeBlocker("DUPLICATE_COORDINATE", `refusing to repeat coordinates for ${action.action}: ${coordinateKey}`);
         }
         await this.assertSurfaceUnchanged(expectedFingerprint, boundTask, signal);
-        this.assertRunControl(revision, signal);
+        this.assertRunControl(state, revision, signal);
         const mutation = action.risk_level === "mutate" || action.risk_level === "destructive";
+        const computerAction = computerActionFromVisual(action, before);
+        const actionRecordId = computerAction ? randomUUID() : undefined;
         if (mutation) {
           const immediate = await withTimeout(
             this.operator.capture(boundTask),
@@ -543,41 +903,86 @@ export class VisualComputerRuntime {
             "mutation state recheck",
             signal
           );
-          this.assertRunControl(revision, signal);
+          this.assertRunControl(state, revision, signal);
           if (immediate.sha256 !== before.sha256 || surfaceFingerprintFor(immediate) !== expectedFingerprint) {
             throw new VisualRuntimeBlocker("SURFACE_CHANGED", "pixels or surface identity changed after grounding; a new approval plan is required");
           }
-          if (this.attemptedMutationPlans.has(planId)) {
+          if (state.attemptedMutationPlans.has(planId)) {
             throw new VisualRuntimeBlocker("DUPLICATE_MUTATION", "this mutation plan already attempted native input and cannot be replayed");
           }
         }
         if (coordinateKey) executedCoordinates.add(coordinateKey);
-        this.assertRunControl(revision, signal);
+        this.assertRunControl(state, revision, signal);
         if (mutation) {
           // Claim before invoking the operator. A thrown error or timeout cannot
           // prove that native input was not posted.
-          this.attemptedMutationPlans.add(planId);
+          state.attemptedMutationPlans.add(planId);
           mutationAttempted = true;
+          if (this.mutationReplay) {
+            if (!boundTask.approvalId) {
+              throw new VisualRuntimeBlocker(
+                "POLICY_BLOCKED",
+                "production mutation replay protection requires an exact approval id"
+              );
+            }
+            const claimed = await this.mutationReplay.claim({
+              mutationKey: createHash("sha256")
+                .update(`${state.computerSessionId}\u0000${boundTask.approvalId}\u0000${planId}`)
+                .digest("hex"),
+              sessionId: state.recordSessionId,
+              actionId: actionRecordId ?? randomUUID(),
+              approvalId: boundTask.approvalId,
+              claimedAt: new Date().toISOString()
+            });
+            if (!claimed) {
+              throw new VisualRuntimeBlocker(
+                "DUPLICATE_MUTATION",
+                "this approved mutation was already attempted and cannot be replayed after restart"
+              );
+            }
+          }
         }
+        if (computerAction && actionRecordId && this.actionRecords) {
+          persistedRecord = legacyActionRecord(
+            actionRecordId,
+            state,
+            boundTask,
+            before,
+            expectedFingerprint,
+            computerAction
+          );
+          await this.actionRecords.save(persistedRecord);
+        }
+        nativeExecutionStarted = true;
         await withTimeout(
           this.operator.execute(action, before, boundTask, signal),
           this.stepTimeoutMs,
           "native action",
           signal
         );
-        this.assertRunControl(revision, signal);
+        this.assertRunControl(state, revision, signal);
+        if (persistedRecord) {
+          persistedRecord = ComputerActionRecord.parse({
+            ...persistedRecord,
+            completedAt: new Date().toISOString(),
+            executionResult: { status: "posted" },
+            userTookOver: false
+          });
+          await this.actionRecords!.save(persistedRecord);
+        }
         await this.onEvent(scopeVisualRuntimeEvent({ type: "executed", attempt, action }, boundTask));
-        this.assertRunControl(revision, signal);
+        this.assertRunControl(state, revision, signal);
         const after = await withTimeout(
           this.operator.capture(boundTask),
           this.stepTimeoutMs,
           "verification screenshot",
           signal
         );
-        this.assertRunControl(revision, signal);
+        this.assertRunControl(state, revision, signal);
         await this.onEvent(scopeVisualRuntimeEvent({ type: "screenshot", phase: "after", screenshot: after }, boundTask));
-        this.assertRunControl(revision, signal);
+        this.assertRunControl(state, revision, signal);
         const afterFingerprint = surfaceFingerprintFor(after);
+        const afterFrameId = persistedRecord ? randomUUID() : undefined;
         if (afterFingerprint !== expectedFingerprint && !(before.surface && after.surface && sameNativeWindow(before.surface, after.surface))) {
           throw new SurfaceChangedBlocker(expectedFingerprint, afterFingerprint);
         }
@@ -587,21 +992,63 @@ export class VisualComputerRuntime {
           "visual verification",
           signal
         );
-        this.assertRunControl(revision, signal);
+        this.assertRunControl(state, revision, signal);
+        if (persistedRecord && afterFrameId) {
+          persistedRecord = ComputerActionRecord.parse({
+            ...persistedRecord,
+            afterFrameId,
+            executionResult: {
+              status: "posted",
+              afterFrameSha256: after.sha256,
+              afterSurfaceFingerprint: afterFingerprint
+            },
+            verificationResult: legacyVerificationResult(
+              persistedRecord.id,
+              persistedRecord.sessionId,
+              verified,
+              expectedFingerprint === afterFingerprint
+                || Boolean(before.surface && after.surface && sameNativeWindow(before.surface, after.surface))
+            )
+          });
+          await this.actionRecords!.save(persistedRecord);
+        }
         await this.onEvent(scopeVisualRuntimeEvent({ type: "verified", attempt, ...verified }, boundTask));
-        if (verified.matched) return { status: "done", attempts: attempt, action, before, after, executed: true, verified: true };
+        if (verified.matched) {
+          return {
+            status: "done",
+            attempts: attempt,
+            action,
+            before,
+            after,
+            executed: true,
+            verified: true,
+            ...(persistedRecord ? { actionRecordId: persistedRecord.id } : {})
+          };
+        }
         if (mutationAttempted) {
           return failedResult(attempt, `mutation was executed but could not be visually verified: ${verified.reason}`, "MUTATION_RETRY_FORBIDDEN", action);
         }
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
+        if (persistedRecord && !persistedRecord.verificationResult) {
+          persistedRecord = ComputerActionRecord.parse({
+            ...persistedRecord,
+            completedAt: persistedRecord.completedAt ?? new Date().toISOString(),
+            executionResult: {
+              status: nativeExecutionStarted ? "unknown" : "blocked",
+              reason
+            },
+            userTookOver: state.control === "user_control"
+          });
+          await this.actionRecords!.save(persistedRecord).catch(() => undefined);
+        }
         const code = blockerCode(error);
         await this.onEvent(scopeVisualRuntimeEvent({ type: "blocked", attempt, reason, ...(code ? { code } : {}) }, boundTask));
         if (error instanceof VisualControlInterruptedError) {
           if (mutationAttempted) {
             return failedResult(attempt, `${reason}; mutation outcome is unknown and will not be retried`, "MUTATION_RETRY_FORBIDDEN", lastAction);
           }
-          return this.controlFailure(attempt, lastAction)
+          return this.controlFailure(state, attempt, lastAction)
             ?? failedResult(attempt, reason, "PAUSED", lastAction);
         }
         if (error instanceof SurfaceCaptureChangedError || error instanceof NativeSurfaceUnavailableError) {
@@ -639,37 +1086,84 @@ export class VisualComputerRuntime {
     if (current.fingerprint !== expectedFingerprint) throw new SurfaceChangedBlocker(expectedFingerprint, current.fingerprint);
   }
 
-  private assertAgentControl(): void {
-    if (this.control !== "running") throw new VisualControlInterruptedError();
+  private assertAgentControl(state: VisualSessionState): void {
+    if (state.control !== "running") throw new VisualControlInterruptedError();
   }
 
-  private assertRunControl(revision: number, signal: AbortSignal): void {
-    if (signal.aborted || this.control !== "running" || revision !== this.controlRevision) {
+  private assertRunControl(state: VisualSessionState, revision: number, signal: AbortSignal): void {
+    if (signal.aborted || state.control !== "running" || revision !== state.controlRevision) {
       throw new VisualControlInterruptedError();
     }
   }
 
-  private controlFailure(attempts: number, lastAction?: VisualAction): VisualStepResult | undefined {
-    if (this.control === "cancelled") return failedResult(attempts, "user cancelled", "CANCELLED", lastAction);
-    if (this.control === "user_control") return failedResult(attempts, "user took control", "USER_TAKEOVER", lastAction);
-    if (this.control === "paused") return failedResult(attempts, "paused by user", "PAUSED", lastAction);
+  private controlFailure(state: VisualSessionState, attempts: number, lastAction?: VisualAction): VisualStepResult | undefined {
+    if (state.control === "cancelled") return failedResult(attempts, "user cancelled", "CANCELLED", lastAction);
+    if (state.control === "user_control") return failedResult(attempts, "user took control", "USER_TAKEOVER", lastAction);
+    if (state.control === "paused") return failedResult(attempts, "paused by user", "PAUSED", lastAction);
     return undefined;
   }
 
-  private setControl(next: VisualControlStatus, reason: string): void {
-    this.control = next;
-    this.controlRevision += 1;
-    this.requiresFreshCapture = true;
-    for (const controller of this.activeControllers) controller.abort(reason);
-    this.activeControllers.clear();
+  private setControl(state: VisualSessionState, next: VisualControlStatus, reason: string): void {
+    state.control = next;
+    state.controlRevision += 1;
+    state.requiresFreshCapture = true;
+    for (const controller of state.activeControllers) controller.abort(reason);
+    state.activeControllers.clear();
     try {
-      const pending = this.operator.cancelPendingInput?.();
+      const pending = this.operator.cancelPendingInput?.(state.binding);
       if (pending && typeof (pending as Promise<void>).catch === "function") {
         void (pending as Promise<void>).catch(() => undefined);
       }
     } catch {
       // Control authority changes before best-effort native queue cleanup.
     }
+  }
+
+  private sessionForTask(task?: VisualMicroTask): VisualSessionState {
+    return task ? this.sessionForBinding(visualComputerBindingFromTask(task)) : this.sessionForBinding(LEGACY_VISUAL_SESSION_BINDING);
+  }
+
+  private sessionForBinding(binding: VisualComputerSessionBinding): VisualSessionState {
+    const parsed = parseVisualComputerSessionBinding(binding);
+    const computerSessionId = visualComputerSessionId(parsed);
+    const existing = this.sessions.get(computerSessionId);
+    if (existing) return existing;
+    const state: VisualSessionState = {
+      binding: parsed,
+      computerSessionId,
+      control: "running",
+      controlRevision: 0,
+      requiresFreshCapture: false,
+      activeControllers: new Set(),
+      attemptedMutationPlans: new Set(),
+      recordSessionId: randomUUID()
+    };
+    this.sessions.set(computerSessionId, state);
+    return state;
+  }
+
+  private sessionForSelector(selector?: VisualComputerSessionBinding | string): VisualSessionState {
+    if (!selector) return this.sessionForBinding(LEGACY_VISUAL_SESSION_BINDING);
+    if (typeof selector !== "string") return this.sessionForBinding(selector);
+    const state = this.sessions.get(selector);
+    if (!state) throw new VisualComputerSessionNotFoundError(selector);
+    return state;
+  }
+
+  private assertExpectedRevision(state: VisualSessionState, expectedRevision?: number): void {
+    if (expectedRevision !== undefined && expectedRevision !== state.controlRevision) {
+      throw new VisualControlRevisionError(expectedRevision, state.controlRevision, state.computerSessionId);
+    }
+  }
+
+  private snapshot(state: VisualSessionState): VisualComputerControlSnapshot {
+    return {
+      ...state.binding,
+      computerSessionId: state.computerSessionId,
+      revision: state.controlRevision,
+      controlState: state.control,
+      executionStatus: state.control === "cancelled" ? "cancelled" : state.control === "running" ? "running" : "paused"
+    };
   }
 }
 
@@ -702,12 +1196,36 @@ function blockerCode(error: unknown): VisualBlockerCode | undefined {
   if (error instanceof VisualRuntimeBlocker) return error.code;
   if (error instanceof SurfaceCaptureChangedError) return "SURFACE_CHANGED";
   if (error instanceof BrowserSessionLostError) return "BROWSER_SESSION_LOST";
+  if (error instanceof BrowserPageIdentityUnavailableError) return "BROWSER_PAGE_IDENTITY_UNAVAILABLE";
+  if (error instanceof BrowserPageIdentityChangedError) return "BROWSER_PAGE_IDENTITY_CHANGED";
   if (error instanceof VisualTimeoutError) return "TIMEOUT";
   return undefined;
 }
 
 function stableId(prefix: string, ...parts: string[]): string {
   return `${prefix}_${createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 24)}`;
+}
+
+export function visualComputerBindingFromTask(task: VisualMicroTask): VisualComputerSessionBinding {
+  return parseVisualComputerSessionBinding({
+    adPilotSessionId: task.adPilotSessionId ?? task.clientId ?? LEGACY_VISUAL_SESSION_BINDING.adPilotSessionId,
+    browserSessionId: task.browserSessionId
+      ?? task.surface.nativeProfileFingerprint
+      ?? task.surface.browserProfile
+      ?? LEGACY_VISUAL_SESSION_BINDING.browserSessionId
+  });
+}
+
+function parseVisualComputerSessionBinding(binding: VisualComputerSessionBinding): VisualComputerSessionBinding {
+  const adPilotSessionId = binding.adPilotSessionId.trim();
+  const browserSessionId = binding.browserSessionId.trim();
+  if (!adPilotSessionId || adPilotSessionId.length > 256) {
+    throw new Error("adPilotSessionId must contain 1-256 characters");
+  }
+  if (!browserSessionId || browserSessionId.length > 256) {
+    throw new Error("browserSessionId must contain 1-256 characters");
+  }
+  return { adPilotSessionId, browserSessionId };
 }
 
 function surfaceFingerprintFor(screenshot: Screenshot): string {
@@ -771,6 +1289,144 @@ function actionCoordinateKey(action: VisualAction): string | undefined {
   return action.action === "drag"
     ? `${action.action}:${action.x}:${action.y}:${action.end_x}:${action.end_y}`
     : `${action.action}:${action.x}:${action.y}`;
+}
+
+function computerActionFromVisual(action: VisualAction, screenshot: Screenshot): ComputerActionValue | undefined {
+  switch (action.action) {
+    case "move":
+    case "click":
+    case "double_click":
+    case "right_click":
+      return { kind: action.action, x: action.x, y: action.y, coordinateSpace: "frame_pixels" };
+    case "drag":
+      return {
+        kind: "drag",
+        x: action.x,
+        y: action.y,
+        endX: action.end_x,
+        endY: action.end_y,
+        coordinateSpace: "frame_pixels"
+      };
+    case "type":
+      return { kind: "type", text: action.text };
+    case "hotkey":
+      return {
+        kind: "keypress",
+        keys: action.keys.split("+").map((key) => key.trim()).filter(Boolean)
+      };
+    case "scroll": {
+      const delta = scrollActionDelta(action.direction);
+      return {
+        kind: "scroll",
+        x: action.x ?? Math.floor(screenshot.width / 2),
+        y: action.y ?? Math.floor(screenshot.height / 2),
+        coordinateSpace: "frame_pixels",
+        ...delta
+      };
+    }
+    case "wait":
+      return { kind: "wait", milliseconds: action.milliseconds };
+    case "done":
+    case "fail":
+    case "screenshot":
+      return undefined;
+  }
+}
+
+function scrollActionDelta(direction: "up" | "down" | "left" | "right"): { deltaX: number; deltaY: number } {
+  if (direction === "up") return { deltaX: 0, deltaY: 600 };
+  if (direction === "down") return { deltaX: 0, deltaY: -600 };
+  if (direction === "left") return { deltaX: 600, deltaY: 0 };
+  return { deltaX: -600, deltaY: 0 };
+}
+
+function legacyActionRecord(
+  actionId: string,
+  state: VisualSessionState,
+  task: VisualMicroTask & { taskId: string; stepId: string; planId: string },
+  before: Screenshot,
+  surfaceFingerprint: string,
+  action: ComputerActionValue
+): ComputerActionRecordValue {
+  if (!before.surface) {
+    throw new VisualRuntimeBlocker(
+      "SURFACE_CHANGED",
+      "persistent native action records require an exact app/window/display surface"
+    );
+  }
+  return ComputerActionRecord.parse({
+    id: actionId,
+    sessionId: state.recordSessionId,
+    runId: task.taskId,
+    binding: {
+      ...state.binding,
+      ...(task.clientId ? { clientId: task.clientId } : {}),
+      ...(task.surface.browserProfile ? { browserProfileId: task.surface.browserProfile } : {})
+    },
+    controlRevision: state.controlRevision,
+    taskId: task.taskId,
+    stepId: task.stepId,
+    planId: task.planId,
+    surfaceFingerprint,
+    beforeFrameSha256: before.sha256,
+    appPid: before.surface.pid,
+    appBundleId: before.surface.bundleId ?? before.surface.app,
+    windowId: before.surface.windowId,
+    ...(before.surface.title ? { windowTitle: before.surface.title } : {}),
+    displayId: before.surface.screenId,
+    scaleFactor: before.scaleFactor,
+    beforeFrameId: randomUUID(),
+    action,
+    proposedBy: "visual-grounding-runtime",
+    policyDecision: "visual-policy:allow",
+    ...(task.approvalId ? { approvalId: task.approvalId } : {}),
+    startedAt: new Date().toISOString(),
+    userTookOver: false
+  });
+}
+
+function legacyVerificationResult(
+  actionId: string,
+  sessionId: string,
+  verified: { matched: boolean; confidence: number; reason: string },
+  identityMatch: boolean
+) {
+  const unknown = (level: 3 | 4 | 5, reason: string) => ({
+    level,
+    status: "unknown" as const,
+    evidence: [],
+    reason
+  });
+  return VerificationResult.parse({
+    actionId,
+    sessionId,
+    status: verified.matched && identityMatch ? "unknown" : "failed",
+    levels: [
+      { level: 1, status: "passed", evidence: ["native operator returned"], reason: "atomic native call returned without error" },
+      {
+        level: 2,
+        status: verified.matched ? "passed" : "failed",
+        evidence: [`visual-confidence:${verified.confidence}`],
+        reason: verified.reason
+      },
+      unknown(3, "legacy visual verifier does not prove the exact target field and structured value"),
+      unknown(4, "legacy visual verifier does not refresh/re-enter and prove persistence"),
+      identityMatch
+        ? {
+            level: 5,
+            status: "unknown",
+            evidence: ["surface-fingerprint"],
+            reason: "bound app/window identity remained unchanged, but the advertising account and Campaign identity are not yet reverified"
+          }
+        : { level: 5, status: "failed", evidence: ["surface-fingerprint"], reason: "bound app/window identity changed" }
+    ],
+    identityMatch,
+    independentVerifier: "legacy-visual-verifier",
+    verifiedAt: new Date().toISOString(),
+    reason: verified.matched
+      ? "visual result matched; exact-value and persistence levels remain unknown"
+      : verified.reason
+  });
 }
 
 async function withTimeout<T>(

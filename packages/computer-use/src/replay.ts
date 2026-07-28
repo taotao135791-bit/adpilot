@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 
@@ -10,6 +10,7 @@ const MutationClaim = z.object({
   claimedAt: z.string().datetime()
 }).strict();
 export type MutationClaim = z.infer<typeof MutationClaim>;
+const MAX_MUTATION_CLAIM_BYTES = 64 * 1024;
 
 export interface MutationReplayStore {
   /**
@@ -50,28 +51,50 @@ export class FileMutationReplayStore implements MutationReplayStore {
 
   async claim(input: MutationClaim): Promise<boolean> {
     const claim = MutationClaim.parse(input);
-    await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    await this.ensureSafeDirectory();
+    const target = this.pathFor(claim.mutationKey);
+    await assertSafeClaimFile(target, true);
     try {
-      await writeFile(this.pathFor(claim.mutationKey), `${JSON.stringify(claim)}\n`, {
+      await writeFile(target, `${JSON.stringify(claim)}\n`, {
         encoding: "utf8",
         flag: "wx",
         mode: 0o600
       });
+      await chmod(target, 0o600);
       return true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        await assertSafeClaimFile(target, false);
+        return false;
+      }
       throw error;
     }
   }
 
   async get(mutationKey: string): Promise<MutationClaim | undefined> {
     assertMutationKey(mutationKey);
+    await this.ensureSafeDirectory();
+    const target = this.pathFor(mutationKey);
     try {
-      return MutationClaim.parse(JSON.parse(await readFile(this.pathFor(mutationKey), "utf8")));
+      await assertSafeClaimFile(target, false);
+      const contents = await readFile(target);
+      if (contents.byteLength > MAX_MUTATION_CLAIM_BYTES) {
+        throw new Error("mutation replay claim exceeds the size limit");
+      }
+      return MutationClaim.parse(JSON.parse(contents.toString("utf8")));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     }
+  }
+
+  private async ensureSafeDirectory(): Promise<void> {
+    await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    const metadata = await lstat(this.directory);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+      throw new Error("mutation replay directory must be a real private directory");
+    }
+    await chmod(this.directory, 0o700);
   }
 
   private pathFor(mutationKey: string): string {
@@ -79,6 +102,17 @@ export class FileMutationReplayStore implements MutationReplayStore {
     const path = resolve(join(this.directory, `${mutationKey}.json`));
     if (!path.startsWith(`${this.directory}/`)) throw new Error("mutation claim escaped its store");
     return path;
+  }
+}
+
+async function assertSafeClaimFile(path: string, allowMissing: boolean): Promise<void> {
+  try {
+    const metadata = await lstat(path);
+    if (metadata.isSymbolicLink()) throw new Error("mutation replay claim must not be a symlink");
+    if (!metadata.isFile()) throw new Error("mutation replay claim must be a regular file");
+  } catch (error) {
+    if (allowMissing && (error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
   }
 }
 

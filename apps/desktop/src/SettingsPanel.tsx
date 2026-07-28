@@ -3,6 +3,8 @@ import { Button } from "./ui.js";
 import { IconDismiss } from "./icons.js";
 import { computerUseCopy, localizeRuntimeValue, settingsCopy, type AppLocale } from "./labels.js";
 import { ComputerUseSettings } from "./ComputerUseSettings.js";
+import { PermissionCenter } from "./PermissionCenter.js";
+import type { ProductSession } from "./types.js";
 
 type SettingsField = { env: string; label: { zh: string; en: string }; secret: boolean; required?: boolean; placeholder?: string };
 type CatalogModel = { id: string; name: string; reasoning: boolean; vision: boolean; contextWindow: number };
@@ -41,17 +43,21 @@ type AuthSession = {
   error?: string;
 };
 
-export type SettingsTab = "general" | "models" | "computer" | "about";
+export type SettingsTab = "general" | "models" | "permissions" | "computer" | "about";
 
-export function SettingsPanel({ open, data, clientId, initialTab = "general", loadError, onReload, onClose, onSaved }: {
+export function SettingsPanel({ open, data, clientId, productSession, productSessionId, browserSessionId, initialTab = "general", loadError, onReload, onClose, onSaved, onProductSessionUpdated }: {
   open: boolean;
   data: SettingsData | undefined;
   clientId?: string;
+  productSession?: ProductSession;
+  productSessionId?: string;
+  browserSessionId?: string;
   initialTab?: SettingsTab;
   loadError?: string;
   onReload: () => void;
   onClose: () => void;
   onSaved: (data: SettingsData) => void;
+  onProductSessionUpdated: (session: ProductSession) => void;
 }) {
   const [tab, setTab] = useState<SettingsTab>("general");
   const [locale, setLocale] = useState<AppLocale>(data?.locale ?? "zh-CN");
@@ -205,6 +211,7 @@ export function SettingsPanel({ open, data, clientId, initialTab = "general", lo
         <nav className="settings-nav" aria-label={text.navigation}>
           <SettingsNav active={tab === "general"} label={text.general} onClick={() => setTab("general")} />
           <SettingsNav active={tab === "models"} label={text.models} onClick={() => setTab("models")} />
+          <SettingsNav active={tab === "permissions"} label={text.permissions} onClick={() => setTab("permissions")} />
           <SettingsNav active={tab === "computer"} label={text.computer} onClick={() => setTab("computer")} />
           <SettingsNav active={tab === "about"} label={text.about} onClick={() => setTab("about")} />
           <div className="settings-health"><span>{text.connections}</span><strong>{configuredCount.toString().padStart(2, "0")}</strong></div>
@@ -250,9 +257,26 @@ export function SettingsPanel({ open, data, clientId, initialTab = "general", lo
             {selectedProvider?.auth.oauth && <OAuthConnection session={authSession?.providerId === selectedProvider.id ? authSession : undefined} connected={data.providerCredentials[selectedProvider.id] === "oauth"} input={authInput} text={text} onInput={setAuthInput} onStart={() => void startOAuth()} onRespond={(value) => void respondOAuth(value)} onDisconnect={() => void disconnectOAuth()} />}
           </SettingsSection>}
 
+          {data && tab === "permissions" && <SettingsSection title={text.permissionsTitle} body={text.permissionsBody}>
+            <PermissionCenter
+              locale={locale}
+              {...(clientId ? { clientId } : {})}
+              {...(productSessionId ? { productSessionId } : {})}
+              {...(browserSessionId ? { browserSessionId } : {})}
+            />
+          </SettingsSection>}
+
           {data && tab === "computer" && <SettingsSection title={text.computerTitle} body={text.computerBody}>
             <div className="settings-note important"><i />{text.computerNote}</div>
-            <ComputerUseSettings locale={locale} {...(clientId ? { clientId } : {})} runtime={data.runtimeModels} privacyMode={envDraft.ADPILOT_PRIVACY_MODE || "standard"} onPrivacyMode={(value) => setEnvDraft({ ...envDraft, ADPILOT_PRIVACY_MODE: value })} />
+            <ComputerUseSettings
+              locale={locale}
+              {...(clientId ? { clientId } : {})}
+              {...(productSession ? { productSession } : {})}
+              runtime={data.runtimeModels}
+              privacyMode={envDraft.ADPILOT_PRIVACY_MODE || "standard"}
+              onPrivacyMode={(value) => setEnvDraft({ ...envDraft, ADPILOT_PRIVACY_MODE: value })}
+              onProductSessionUpdated={onProductSessionUpdated}
+            />
             <button type="button" className="advanced-settings-toggle" aria-expanded={advancedComputer} onClick={() => setAdvancedComputer((value) => !value)}>{advancedComputer ? text.hideAdvanced : text.showAdvanced}</button>
             {advancedComputer && <div className="settings-fields">{data.catalog.computerFields.filter((field) => field.env !== "ADPILOT_PRIVACY_MODE").map((field) => <CredentialField key={field.env} field={field} locale={locale} configured={Boolean(data.configured[field.env])} value={envDraft[field.env] ?? ""} cleared={cleared.has(field.env)} onChange={(value) => { setEnvDraft({ ...envDraft, [field.env]: value }); setCleared((items) => { const next = new Set(items); next.delete(field.env); return next; }); }} onClear={() => setCleared((items) => new Set(items).add(field.env))} />)}</div>}
           </SettingsSection>}

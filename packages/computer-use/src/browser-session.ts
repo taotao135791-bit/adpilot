@@ -4,7 +4,25 @@ import { access, chmod, mkdir, readFile, readdir, rename, writeFile } from "node
 import { constants as fsConstants } from "node:fs";
 import { join, resolve } from "node:path";
 import { z } from "zod";
-import type { NativeOperator, Screenshot, VisualAction, VisualMicroTask } from "./index.js";
+import type {
+  NativeOperator,
+  Screenshot,
+  VisualAction,
+  VisualComputerSessionBinding,
+  VisualMicroTask
+} from "./index.js";
+import {
+  BrowserPageIdentityChangedError,
+  BrowserPageIdentityState,
+  BrowserPageIdentityUnavailableError,
+  browserPageMatchesTask,
+  sameBrowserPage,
+  staleBrowserPageIdentity,
+  unavailableBrowserPageIdentity,
+  type BrowserPageIdentity,
+  type BrowserPageIdentitySource,
+  type PageIdentityBinding
+} from "./browser-page-identity.js";
 import {
   MacOSNativeSurfaceIdentity,
   NativeSurface,
@@ -33,6 +51,7 @@ export const BrowserSession = z.object({
   startedAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   lastValidatedAt: z.string().datetime().optional(),
+  pageIdentity: BrowserPageIdentityState.optional(),
   lostAt: z.string().datetime().optional(),
   lostReason: z.string().min(1).optional()
 }).superRefine((session, context) => {
@@ -118,6 +137,7 @@ export interface BrowserSessionManagerOptions {
   store?: BrowserSessionStore;
   launcher?: BrowserProcessController;
   surfaceIdentity?: NativeSurfaceIdentity;
+  pageIdentity?: BrowserPageIdentitySource;
   now?: () => Date;
   pollAttempts?: number;
   pollIntervalMs?: number;
@@ -145,6 +165,8 @@ export class BrowserSessionManager {
   private readonly store: BrowserSessionStore;
   private readonly launcher: BrowserProcessController;
   private readonly surfaceIdentity: NativeSurfaceIdentity | undefined;
+  private readonly pageIdentitySource: BrowserPageIdentitySource | undefined;
+  private readonly pageIdentities = new Map<string, BrowserPageIdentityState>();
   private readonly now: () => Date;
   private readonly pollAttempts: number;
   private readonly pollIntervalMs: number;
@@ -155,6 +177,7 @@ export class BrowserSessionManager {
     this.store = options.store ?? new FileBrowserSessionStore(join(workspaceDirectory, "browser-sessions"));
     this.launcher = options.launcher ?? new SystemBrowserProcessController();
     this.surfaceIdentity = options.surfaceIdentity ?? (process.platform === "darwin" ? new MacOSNativeSurfaceIdentity() : undefined);
+    this.pageIdentitySource = options.pageIdentity;
     this.now = options.now ?? (() => new Date());
     this.pollAttempts = options.pollAttempts ?? 40;
     this.pollIntervalMs = options.pollIntervalMs ?? 250;
@@ -199,6 +222,7 @@ export class BrowserSessionManager {
       startedAt,
       updatedAt: startedAt
     });
+    this.surfaceIdentity?.registerBrowserProfile?.(handle.processId, handle.nativeProfileFingerprint);
     await this.store.save(session);
     try {
       const surface = await this.waitForManagedWindow(handle.processId);
@@ -221,11 +245,12 @@ export class BrowserSessionManager {
   }
 
   async get(clientId: string, browserProfile?: string): Promise<BrowserSession | undefined> {
-    return this.find(clientId, browserProfile);
+    const session = await this.find(clientId, browserProfile);
+    return session ? this.withPageIdentity(session) : undefined;
   }
 
   async list(): Promise<BrowserSession[]> {
-    return this.store.list();
+    return (await this.store.list()).map((session) => this.withPageIdentity(session));
   }
 
   /** Validate the current foreground window immediately before every action. */
@@ -239,6 +264,7 @@ export class BrowserSessionManager {
       const lost = await this.markLost(session, "managed browser process is no longer running");
       throw new BrowserSessionLostError(lost.lostReason!, lost);
     }
+    this.surfaceIdentity?.registerBrowserProfile?.(session.processId, session.nativeProfileFingerprint);
     let registered: NativeSurface | undefined;
     try { registered = await this.findSurfaceByProcess(session.processId); }
     catch (error) {
@@ -269,6 +295,105 @@ export class BrowserSessionManager {
     const validated = BrowserSession.parse({ ...session, lastValidatedAt: validatedAt, updatedAt: validatedAt });
     await this.store.save(validated);
     return validated;
+  }
+
+  /**
+   * Best-effort fresh page identity for status and Live View. An unavailable
+   * result is explicit and never replaced with the browser launch URL.
+   */
+  async observePageIdentity(
+    clientId: string,
+    browserProfile?: string,
+    platform?: string
+  ): Promise<BrowserPageIdentityState> {
+    const session = await this.requireConnected(clientId, browserProfile);
+    await this.assertRegisteredSurface(session, platform);
+    const binding = pageIdentityBinding(session);
+    let identity: BrowserPageIdentityState;
+    try {
+      identity = this.pageIdentitySource
+        ? await this.pageIdentitySource.read(binding, { requireFrontmost: false })
+        : unavailableBrowserPageIdentity(
+            binding,
+            "helper_unavailable",
+            "the authenticated browser page identity channel is unavailable",
+            this.now()
+          );
+    } catch {
+      identity = unavailableBrowserPageIdentity(
+        binding,
+        "helper_unavailable",
+        "the authenticated browser page identity channel could not be read",
+        this.now()
+      );
+    }
+    this.pageIdentities.set(session.sessionId, identity);
+    return identity;
+  }
+
+  /**
+   * Mandatory fresh page proof for capture/input. This is fail-closed when
+   * Accessibility or the exact address-bar URL cannot be read.
+   */
+  async assertPageIdentityForTask(
+    task: VisualMicroTask,
+    expected?: BrowserPageIdentity
+  ): Promise<BrowserPageIdentity> {
+    if (!task.clientId || !task.surface.browserProfile || !task.platform) {
+      throw new BrowserSessionLostError("visual task is missing client, Profile, or platform page binding");
+    }
+    const session = await this.requireConnected(task.clientId, task.surface.browserProfile);
+    if (task.browserSessionId && task.browserSessionId !== session.sessionId) {
+      throw new BrowserSessionLostError("visual task browser Session differs from the page identity binding", session);
+    }
+    if (task.surface.processId !== undefined && task.surface.processId !== session.processId) {
+      throw new BrowserSessionLostError("visual task process differs from the page identity binding", session);
+    }
+    if (task.surface.windowId !== undefined && task.surface.windowId !== session.windowId) {
+      throw new BrowserSessionLostError("visual task window differs from the page identity binding", session);
+    }
+    if (
+      task.surface.applicationId !== undefined
+      && task.surface.applicationId !== session.browserApplicationId
+    ) {
+      throw new BrowserSessionLostError("visual task application differs from the page identity binding", session);
+    }
+    const binding = pageIdentityBinding(session);
+    const identity = this.pageIdentitySource
+      ? await this.pageIdentitySource.read(binding, { requireFrontmost: true })
+      : unavailableBrowserPageIdentity(
+          binding,
+          "helper_unavailable",
+          "the authenticated browser page identity channel is unavailable",
+          this.now()
+        );
+    this.pageIdentities.set(session.sessionId, identity);
+    if (identity.status === "unavailable") {
+      throw new BrowserPageIdentityUnavailableError(identity);
+    }
+    if (!browserPageMatchesTask(identity, task.surface)) {
+      throw new BrowserPageIdentityUnavailableError(
+        unavailableBrowserPageIdentity(
+          binding,
+          "binding_mismatch",
+          "the actual address-bar URL does not match the task page binding",
+          this.now()
+        )
+      );
+    }
+    if (expected && !sameBrowserPage(expected, identity)) {
+      throw new BrowserPageIdentityChangedError(expected, identity);
+    }
+    return identity;
+  }
+
+  invalidatePageIdentity(browserSessionId: string): void {
+    const current = this.pageIdentities.get(browserSessionId);
+    if (!current) return;
+    this.pageIdentities.set(
+      browserSessionId,
+      staleBrowserPageIdentity(current, this.now())
+    );
   }
 
   /** Capture only after the strict foreground binding check. */
@@ -314,6 +439,7 @@ export class BrowserSessionManager {
         recovered.push(await this.markLost(session, "managed browser process did not survive application restart"));
         continue;
       }
+      this.surfaceIdentity?.registerBrowserProfile?.(session.processId, session.nativeProfileFingerprint);
       let surface: NativeSurface | undefined;
       try { surface = await this.findSurfaceByProcess(session.processId); }
       catch (error) {
@@ -344,6 +470,7 @@ export class BrowserSessionManager {
       throw new BrowserSessionLostError("no lost browser session is available for explicit recovery", session);
     }
     if (!(await this.launcher.isAlive(session.processId))) throw new BrowserSessionLostError("the original browser process is no longer running", session);
+    this.surfaceIdentity?.registerBrowserProfile?.(session.processId, session.nativeProfileFingerprint);
     let surface: NativeSurface;
     try { surface = await this.identity().identifyActiveSurface(); }
     catch (error) { throw new BrowserSessionLostError(`active browser identity is unavailable: ${errorMessage(error)}`, session); }
@@ -366,6 +493,8 @@ export class BrowserSessionManager {
     const session = await this.find(clientId, browserProfile);
     if (!session) throw new BrowserSessionLostError("browser session does not exist");
     if (session.processId && await this.launcher.isAlive(session.processId)) await this.launcher.terminate(session.processId);
+    if (session.processId) this.surfaceIdentity?.forgetBrowserProfile?.(session.processId);
+    this.pageIdentities.delete(session.sessionId);
     const updatedAt = this.now().toISOString();
     const closed = BrowserSession.parse({ ...session, sessionStatus: "closed", updatedAt });
     await this.store.save(closed);
@@ -393,6 +522,43 @@ export class BrowserSessionManager {
     return active?.pid === processId ? active : undefined;
   }
 
+  private async assertRegisteredSurface(
+    session: BrowserSession,
+    platform?: string
+  ): Promise<void> {
+    if (platform && session.platform !== platform) {
+      const lost = await this.markLost(session, `platform binding changed (${session.platform} -> ${platform})`);
+      throw new BrowserSessionLostError(lost.lostReason!, lost);
+    }
+    if (!session.processId || !(await this.launcher.isAlive(session.processId))) {
+      const lost = await this.markLost(session, "managed browser process is no longer running");
+      throw new BrowserSessionLostError(lost.lostReason!, lost);
+    }
+    this.surfaceIdentity?.registerBrowserProfile?.(
+      session.processId,
+      session.nativeProfileFingerprint
+    );
+    let registered: NativeSurface | undefined;
+    try {
+      registered = await this.findSurfaceByProcess(session.processId);
+    } catch (error) {
+      const lost = await this.markLost(
+        session,
+        `managed browser registry is unavailable: ${errorMessage(error)}`
+      );
+      throw new BrowserSessionLostError(lost.lostReason!, lost);
+    }
+    if (!registered) {
+      const lost = await this.markLost(session, "managed browser window is closed");
+      throw new BrowserSessionLostError(lost.lostReason!, lost);
+    }
+    const mismatch = surfaceBindingMismatch(session, registered);
+    if (mismatch) {
+      const lost = await this.markLost(session, mismatch);
+      throw new BrowserSessionLostError(lost.lostReason!, lost, registered);
+    }
+  }
+
   private async find(clientId: string, browserProfile?: string): Promise<BrowserSession | undefined> {
     if (!clientId) throw new Error("clientId is required");
     const matches = (await this.store.list()).filter((session) => session.clientId === clientId && (!browserProfile || session.browserProfile === browserProfile));
@@ -411,8 +577,16 @@ export class BrowserSessionManager {
   private async markLost(session: BrowserSession, reason: string): Promise<BrowserSession> {
     const lostAt = this.now().toISOString();
     const lost = BrowserSession.parse({ ...session, sessionStatus: "lost", lostAt, lostReason: reason, updatedAt: lostAt });
+    this.pageIdentities.delete(session.sessionId);
     await this.store.save(lost);
     return lost;
+  }
+
+  private withPageIdentity(session: BrowserSession): BrowserSession {
+    const pageIdentity = this.pageIdentities.get(session.sessionId);
+    return pageIdentity
+      ? BrowserSession.parse({ ...session, pageIdentity })
+      : session;
   }
 }
 
@@ -420,6 +594,7 @@ export class BrowserSessionManager {
 export class BrowserSessionBoundOperator implements NativeOperator {
   private readonly binding: { clientId: string; browserProfile: string; platform: string } | undefined;
   private readonly fixedBinding: boolean;
+  private readonly capturedPages = new Map<string, BrowserPageIdentity>();
 
   constructor(
     private readonly underlying: NativeOperator,
@@ -441,8 +616,14 @@ export class BrowserSessionBoundOperator implements NativeOperator {
   async capture(task?: VisualMicroTask): Promise<Screenshot> {
     const binding = this.bindingFor(task);
     await this.sessions.assertActive(binding.clientId, binding.browserProfile, binding.platform);
+    const pageIdentity = task
+      ? await this.sessions.assertPageIdentityForTask(task)
+      : undefined;
     const screenshot = await this.underlying.capture(task);
     await this.sessions.assertCapturedSurface(binding.clientId, screenshot.surface, binding.browserProfile, binding.platform);
+    if (task && pageIdentity) {
+      this.capturedPages.set(pageEvidenceKey(task), pageIdentity);
+    }
     return screenshot;
   }
 
@@ -450,6 +631,23 @@ export class BrowserSessionBoundOperator implements NativeOperator {
     const binding = this.bindingFor(task);
     await this.sessions.assertActive(binding.clientId, binding.browserProfile, binding.platform);
     await this.sessions.assertCapturedSurface(binding.clientId, screenshot.surface, binding.browserProfile, binding.platform);
+    if (task) {
+      const evidence = this.capturedPages.get(pageEvidenceKey(task));
+      if (!evidence) {
+        const session = await this.sessions.get(binding.clientId, binding.browserProfile);
+        if (!session) {
+          throw new BrowserSessionLostError("browser session is unavailable before page identity validation");
+        }
+        throw new BrowserPageIdentityUnavailableError(
+          unavailableBrowserPageIdentity(
+            pageIdentityBinding(session),
+            "stale_after_control_change",
+            "native input requires fresh page identity from the exact capture"
+          )
+        );
+      }
+      await this.sessions.assertPageIdentityForTask(task, evidence);
+    }
     await this.underlying.execute(action, screenshot, task, signal);
   }
 
@@ -464,8 +662,21 @@ export class BrowserSessionBoundOperator implements NativeOperator {
     return { surface: screenshot.surface, fingerprint: screenshot.surfaceFingerprint };
   }
 
-  cancelPendingInput(): void | Promise<void> {
-    return this.underlying.cancelPendingInput?.();
+  cancelPendingInput(session?: VisualComputerSessionBinding): void | Promise<void> {
+    if (session) {
+      this.sessions.invalidatePageIdentity(session.browserSessionId);
+      for (const [key, page] of this.capturedPages) {
+        if (page.browserSessionId === session.browserSessionId) {
+          this.capturedPages.delete(key);
+        }
+      }
+    } else {
+      for (const page of this.capturedPages.values()) {
+        this.sessions.invalidatePageIdentity(page.browserSessionId);
+      }
+      this.capturedPages.clear();
+    }
+    return this.underlying.cancelPendingInput?.(session);
   }
 
   private bindingFor(task?: VisualMicroTask): { clientId: string; browserProfile: string; platform: string } {
@@ -618,6 +829,36 @@ function browserIdentity(executable: string, overrides: SystemBrowserProcessCont
   if (lower.includes("brave")) return { applicationId: overrides.applicationId ?? "com.brave.Browser", appName: overrides.appName ?? "Brave Browser" };
   if (lower.includes("chromium")) return { applicationId: overrides.applicationId ?? "org.chromium.Chromium", appName: overrides.appName ?? "Chromium" };
   return { applicationId: overrides.applicationId ?? "com.google.Chrome", appName: overrides.appName ?? "Google Chrome" };
+}
+
+function pageIdentityBinding(session: BrowserSession): PageIdentityBinding {
+  if (!session.processId || !session.windowId) {
+    throw new BrowserSessionLostError("connected browser session has no page identity binding", session);
+  }
+  return {
+    browserSessionId: session.sessionId,
+    clientId: session.clientId,
+    browserProfile: session.browserProfile,
+    nativeProfileFingerprint: session.nativeProfileFingerprint,
+    processId: session.processId,
+    windowId: session.windowId,
+    applicationId: session.browserApplicationId
+  };
+}
+
+function pageEvidenceKey(task: VisualMicroTask): string {
+  return createHash("sha256")
+    .update([
+      task.adPilotSessionId ?? "",
+      task.browserSessionId ?? "",
+      task.clientId ?? "",
+      task.surface.browserProfile ?? "",
+      task.taskId ?? "",
+      task.stepId ?? "",
+      task.planId ?? "",
+      task.instruction
+    ].join("\u0000"))
+    .digest("hex");
 }
 
 function errorMessage(error: unknown): string {

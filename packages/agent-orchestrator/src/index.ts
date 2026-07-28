@@ -106,7 +106,7 @@ export class AdPilotAgent {
     const verifiedFacts = await this.sharedFacts.usable(clientId);
     const knowledgeMatches = await this.knowledge.match(message);
     const decisionResult = await this.runtime.run({
-      context: { clientId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", sessionId: conversationId, conversationId, role: "adpilot_agent", ...(typeof context.userMessageId === "string" && context.userMessageId.trim() ? { userMessageId: context.userMessageId.trim() } : {}) },
+      context: { clientId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", adPilotSessionId: context.sessionId ?? conversationId, sessionId: conversationId, conversationId, role: "adpilot_agent", ...(typeof context.userMessageId === "string" && context.userMessageId.trim() ? { userMessageId: context.userMessageId.trim() } : {}) },
       systemPrompt: [
         "You are AdPilot, the user's local general-purpose assistant. Advertising operations and analysis is your deep domain specialty — a core, not a fence: you also handle everyday local work on this machine.",
         "Choose answer for greetings, questions, definitions, explanations, and requests that need no action and no evidence.",
@@ -168,7 +168,13 @@ export class AdPilotAgent {
     task = TaskState.parse({ ...task, phase: "executing", owner: null, nextStep: "Run the local action with the general tools", updatedAt: new Date().toISOString() });
     await this.persistTask(task);
     const conversationId = typeof context.conversationId === "string" && context.conversationId.trim() ? context.conversationId.trim() : `task-${task.id}`;
-    const runContext = { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE" as const };
+    const runContext = {
+      clientId,
+      taskId: task.id,
+      actor: "adpilot_agent",
+      permission: "OBSERVE" as const,
+      adPilotSessionId: context.sessionId ?? conversationId
+    };
     let summary: string;
     try {
       const run = await this.runtime.run({
@@ -240,7 +246,8 @@ export class AdPilotAgent {
             clientId,
             taskId: task.id,
             actor: "adpilot_agent",
-            permission: conversationSpecialistPermission(params.role, params.input)
+            permission: conversationSpecialistPermission(params.role, params.input),
+            adPilotSessionId: context.sessionId ?? conversationId
           },
           input: params.input,
           sharedFacts: taskFacts
@@ -276,7 +283,13 @@ export class AdPilotAgent {
       execute: async (_id, raw) => {
         const params = z.object({ operation: ApprovalOperation, executionPlan: VisualApprovalPlanInput, guardrailEvidence: ApprovalGuardrailEvidenceInput }).parse(raw);
         const approval = await this.tools.createApproval(
-          { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE" },
+          {
+            clientId,
+            taskId: task.id,
+            actor: "adpilot_agent",
+            permission: "OBSERVE",
+            adPilotSessionId: context.sessionId ?? conversationId
+          },
           params.operation,
           params.executionPlan,
           params.guardrailEvidence
@@ -288,7 +301,13 @@ export class AdPilotAgent {
     let modelResult: MainAgentOutput;
     const knowledgeContext = await this.knowledge.context(await this.knowledge.match(goal));
     try {
-      const runContext = { clientId, taskId: task.id, actor: "adpilot_agent", permission: "OBSERVE" as const };
+      const runContext = {
+        clientId,
+        taskId: task.id,
+        actor: "adpilot_agent",
+        permission: "OBSERVE" as const,
+        adPilotSessionId: context.sessionId ?? conversationId
+      };
       modelResult = await this.runtime.runStructured({
         context: { ...runContext, sessionId: conversationId, conversationId, role: "adpilot_agent" },
         systemPrompt: [

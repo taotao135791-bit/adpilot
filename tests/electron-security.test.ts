@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { isExternalWebUrl, isTrustedDesktopUrl } from "../apps/electron/src/security.js";
+import { isExternalWebUrl, isTrustedDesktopUrl, packagedNativeHelperPath } from "../apps/electron/src/security.js";
 
 describe("Electron navigation security", () => {
   const localOrigin = "http://127.0.0.1:4317";
@@ -21,11 +21,17 @@ describe("Electron navigation security", () => {
     expect(isExternalWebUrl("not a url")).toBe(false);
   });
 
+  it("resolves the packaged Helper only inside application Resources", () => {
+    expect(packagedNativeHelperPath("/Applications/AdPilot.app/Contents/Resources")).toBe(
+      "/Applications/AdPilot.app/Contents/Resources/native/AdPilot Computer Helper.app/Contents/MacOS/adpilot-native-helper"
+    );
+  });
+
   it("uses certificate-free ad-hoc app integrity signing", async () => {
     const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
       build: { forceCodeSigning: boolean; mac: { identity: string; hardenedRuntime: boolean } };
     };
     expect(packageJson.build.forceCodeSigning).toBe(false);
-    expect(packageJson.build.mac).toMatchObject({ identity: "-", hardenedRuntime: false });
+    expect(packageJson.build.mac).toMatchObject({ identity: "-", hardenedRuntime: true });
   });
 });

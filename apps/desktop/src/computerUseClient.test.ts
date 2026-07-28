@@ -3,6 +3,9 @@ import { computerUseCopy, localizeRuntimeRoute, localizeRuntimeValue } from "./C
 import {
   DesktopApiError,
   closeBrowserSession,
+  configureProductSessionComputerUse,
+  getDesktopLiveFrame,
+  getDesktopPermissions,
   getBrowserSession,
   getScreenshotAudits,
   resumeBrowserSession,
@@ -70,6 +73,65 @@ describe("desktop Computer Use API client", () => {
   it("returns a typed API error for contextual UI recovery", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ error: "conflict", code: "BROWSER_SESSION_LOST" }, 409)));
     await expect(resumeBrowserSession({ clientId: "client-a" })).rejects.toEqual(expect.objectContaining<Partial<DesktopApiError>>({ status: 409, code: "BROWSER_SESSION_LOST" }));
+  });
+
+  it("sends an explicit revision-bound Product Session Computer Use review", async () => {
+    const productSessionId = "11111111-1111-4111-8111-111111111111";
+    const updated = {
+      id: productSessionId,
+      clientId: "client/上海",
+      revision: 2,
+      permissionProfile: {
+        level: "PREPARE",
+        computerUse: "interactive",
+        browserProfile: "work-profile",
+        approvalRequired: true
+      }
+    };
+    const request = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(updated));
+    vi.stubGlobal("fetch", request);
+    await expect(configureProductSessionComputerUse("client/上海", productSessionId, {
+      revision: 1,
+      browserProfile: "work-profile",
+      computerUse: "interactive",
+      confirm: true
+    })).resolves.toEqual(updated);
+    expect(request.mock.calls[0]?.[0]).toBe(
+      `/api/clients/client%2F%E4%B8%8A%E6%B5%B7/sessions/${productSessionId}/computer-use`
+    );
+    expect(JSON.parse(String((request.mock.calls[0]?.[1] as RequestInit).body))).toEqual({
+      revision: 1,
+      browserProfile: "work-profile",
+      computerUse: "interactive",
+      confirm: true
+    });
+  });
+
+  it("requests permission state and a session-bound native live frame", async () => {
+    const productSessionId = "11111111-1111-4111-8111-111111111111";
+    const center = {
+      platform: "darwin", nativeDesktop: true, helperAvailable: true, helperVersion: "3",
+      checkedAt: "2026-07-28T00:00:00.000Z", permissions: []
+    };
+    const frame = {
+      frameId: "f".repeat(64), browserSessionId: "b".repeat(32), clientId: "client/上海",
+      dataUrl: "data:image/jpeg;base64,/9j/2Q==", width: 1280, height: 800,
+      source: { width: 2560, height: 1600 }, capturedAt: "2026-07-28T00:00:00.000Z",
+      application: { pid: 42, bundleId: "com.google.Chrome", name: "Google Chrome" },
+      window: { id: "7", bounds: { x: 0, y: 0, width: 1280, height: 800 } },
+      browser: { profile: "work-profile" }
+    };
+    const request = vi.fn(async (input: RequestInfo | URL) =>
+      jsonResponse(String(input).includes("live-frame") ? frame : center)
+    );
+    vi.stubGlobal("fetch", request);
+
+    await expect(getDesktopPermissions("client/上海")).resolves.toEqual(center);
+    await expect(getDesktopLiveFrame("client/上海", productSessionId, "b".repeat(32))).resolves.toEqual(frame);
+    expect(request.mock.calls.map((call) => call[0])).toEqual([
+      "/api/desktop-native/permissions?clientId=client%2F%E4%B8%8A%E6%B5%B7",
+      `/api/desktop-native/live-frame?clientId=client%2F%E4%B8%8A%E6%B5%B7&productSessionId=${productSessionId}&browserSessionId=${"b".repeat(32)}`
+    ]);
   });
 });
 

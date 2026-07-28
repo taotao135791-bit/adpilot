@@ -49,6 +49,40 @@ describe("application visual table assembly", () => {
     expect(JSON.stringify(bus.history("client-a"))).not.toContain("private-b");
   });
 
+  it("publishes only screenshot-space overlay geometry for the live renderer", () => {
+    const event = sanitizeVisualRuntimeEvent({
+      type: "grounded",
+      attempt: 1,
+      tier: "gui",
+      clientId: "client-a",
+      taskId: "task-a",
+      action: {
+        action: "click",
+        x: 720,
+        y: 420,
+        target: "budget input",
+        reason: "visible target",
+        confidence: 0.98,
+        expected_result: "budget editor opens",
+        risk_level: "observe",
+        allowedRegion: {
+          x: 600,
+          y: 300,
+          width: 240,
+          height: 180,
+          coordinateSpace: "screenshot_pixels"
+        }
+      }
+    });
+
+    expect(event.overlay).toEqual({
+      coordinateSpace: "screenshot_pixels",
+      targetBox: { x: 600, y: 300, width: 240, height: 180 },
+      pointer: { x: 720, y: 420 }
+    });
+    expect(JSON.stringify(event)).not.toContain("\"text\"");
+  });
+
   it("transmits a tight identity ROI and masks every non-evidence cell", () => {
     const roi = identitySafeRoi(identityExpectation, 1200, 800);
     expect(roi).toEqual({ x: 100, y: 100, width: 800, height: 460 });

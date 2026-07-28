@@ -181,19 +181,126 @@ describe("product server", () => {
     const runtimeSystem = await createAdPilotSystem({
       workspaceRoot: runtimeRoot,
       env: { ADPILOT_FAST_PROVIDER: "test", ADPILOT_FAST_MODEL: "code", ADPILOT_STRONG_PROVIDER: "test", ADPILOT_STRONG_MODEL: "code" },
-      models
+      models,
+      nativeOperator: {
+        capture: async () => { throw new Error("test operator capture is not expected"); },
+        execute: async () => undefined
+      }
     });
     await runtimeSystem.workspace.initializeClient({ profile: { id: "client-a", name: "Example" }, kpi: { primary: "CPA", target: 10 } });
     expect(runtimeSystem.computer).toBeDefined();
     const runtimeServer = await createServer(runtimeSystem, { uiRoot: join(runtimeRoot, "missing-ui") });
     expect((await runtimeServer.inject({ method: "GET", url: "/api/state?clientId=client-a" })).json()).toMatchObject({ computerUse: { executionStatus: "running" } });
-    expect((await runtimeServer.inject({ method: "POST", url: "/api/computer/pause" })).json()).toEqual({ status: "paused", executionStatus: "paused" });
+    expect((await runtimeServer.inject({ method: "POST", url: "/api/computer/pause" })).json()).toEqual({ status: "paused", executionStatus: "paused", controlState: "paused" });
     expect((await runtimeServer.inject({ method: "GET", url: "/api/state?clientId=client-a" })).json()).toMatchObject({ computerUse: { executionStatus: "paused" } });
-    expect((await runtimeServer.inject({ method: "POST", url: "/api/computer/takeover" })).json()).toEqual({ status: "user_takeover", executionStatus: "paused" });
-    expect((await runtimeServer.inject({ method: "POST", url: "/api/computer/resume" })).json()).toEqual({ status: "running", executionStatus: "running" });
+    expect((await runtimeServer.inject({ method: "POST", url: "/api/computer/takeover" })).json()).toEqual({ status: "user_takeover", executionStatus: "paused", controlState: "user_control" });
+    expect((await runtimeServer.inject({ method: "POST", url: "/api/computer/return-control" })).json()).toEqual({ status: "running", executionStatus: "running", controlState: "running" });
+    expect((await runtimeServer.inject({ method: "POST", url: "/api/computer/pause" })).json()).toEqual({ status: "paused", executionStatus: "paused", controlState: "paused" });
+    expect((await runtimeServer.inject({ method: "POST", url: "/api/computer/resume" })).json()).toEqual({ status: "running", executionStatus: "running", controlState: "running" });
     runtimeSystem.computer?.cancel();
     expect((await runtimeServer.inject({ method: "GET", url: "/api/state?clientId=client-a" })).json()).toMatchObject({ computerUse: { executionStatus: "cancelled" } });
-    expect((await runtimeServer.inject({ method: "POST", url: "/api/computer/resume" })).json()).toEqual({ status: "cancelled", executionStatus: "cancelled" });
+    expect((await runtimeServer.inject({ method: "POST", url: "/api/computer/resume" })).json()).toEqual({ status: "cancelled", executionStatus: "cancelled", controlState: "cancelled" });
+
+    const productSession = await runtimeSystem.sessions.create({ clientId: "client-a" });
+    const boundBrowser = browserSession();
+    vi.spyOn(runtimeSystem.browserSessions, "recover").mockResolvedValue([]);
+    vi.spyOn(runtimeSystem.browserSessions, "list").mockResolvedValue([boundBrowser]);
+    const permission = await runtimeServer.inject({
+      method: "PUT",
+      url: `/api/clients/client-a/sessions/${productSession.id}/computer-use`,
+      payload: {
+        revision: productSession.revision,
+        browserProfile: boundBrowser.browserProfile,
+        computerUse: "interactive",
+        confirm: true
+      }
+    });
+    expect(permission.statusCode).toBe(200);
+    expect(permission.json()).toMatchObject({
+      permissionProfile: {
+        level: "PREPARE",
+        computerUse: "interactive",
+        browserProfile: boundBrowser.browserProfile,
+        approvalRequired: true
+      }
+    });
+    const scopedState = (await runtimeServer.inject({
+      method: "GET",
+      url: `/api/state?clientId=client-a&conversationId=${encodeURIComponent(productSession.runtimeConversationId)}`
+    })).json();
+    expect(scopedState.computerUse).toMatchObject({
+      executionStatus: "running",
+      controlState: "running",
+      productSessionId: productSession.id,
+      computerRevision: 0
+    });
+    const authority = {
+      clientId: "client-a",
+      productSessionId: productSession.id,
+      browserSessionId: boundBrowser.sessionId,
+      computerSessionId: scopedState.computerUse.computerSessionId,
+      computerRevision: scopedState.computerUse.computerRevision
+    };
+    const scopedPause = await runtimeServer.inject({
+      method: "POST",
+      url: "/api/computer/pause",
+      payload: authority
+    });
+    expect(scopedPause.statusCode).toBe(200);
+    expect(scopedPause.json()).toMatchObject({
+      executionStatus: "paused",
+      controlState: "paused",
+      computerSessionId: authority.computerSessionId,
+      computerRevision: 1
+    });
+    const staleResume = await runtimeServer.inject({
+      method: "POST",
+      url: "/api/computer/resume",
+      payload: authority
+    });
+    expect(staleResume.statusCode).toBe(409);
+    expect(staleResume.json()).toMatchObject({ code: "COMPUTER_CONTROL_REVISION_CONFLICT" });
+    const scopedResume = await runtimeServer.inject({
+      method: "POST",
+      url: "/api/computer/resume",
+      payload: { ...authority, computerRevision: 1 }
+    });
+    expect(scopedResume.statusCode).toBe(200);
+    expect(scopedResume.json()).toMatchObject({ controlState: "running", computerRevision: 2 });
+    const disabled = await runtimeServer.inject({
+      method: "PUT",
+      url: `/api/clients/client-a/sessions/${productSession.id}/computer-use`,
+      payload: {
+        revision: permission.json().revision,
+        browserProfile: boundBrowser.browserProfile,
+        computerUse: "disabled",
+        confirm: true
+      }
+    });
+    expect(disabled.statusCode).toBe(200);
+    expect(disabled.json()).toMatchObject({ permissionProfile: { level: "OBSERVE", computerUse: "disabled" } });
+    const emergencyAuthority = { ...authority, computerRevision: 2 };
+    const emergencyTakeover = await runtimeServer.inject({
+      method: "POST",
+      url: "/api/computer/takeover",
+      payload: emergencyAuthority
+    });
+    expect(emergencyTakeover.statusCode).toBe(200);
+    expect(emergencyTakeover.json()).toMatchObject({ controlState: "user_control", computerRevision: 3 });
+    const forbiddenReturn = await runtimeServer.inject({
+      method: "POST",
+      url: "/api/computer/return-control",
+      payload: { ...authority, computerRevision: 3 }
+    });
+    expect(forbiddenReturn.statusCode).toBe(409);
+    expect(forbiddenReturn.json()).toMatchObject({ code: "DESKTOP_NATIVE_BINDING_MISMATCH" });
+    const emergencyStop = await runtimeServer.inject({
+      method: "POST",
+      url: "/api/computer/stop",
+      payload: { ...authority, computerRevision: 3 }
+    });
+    expect(emergencyStop.statusCode).toBe(200);
+    expect(emergencyStop.json()).toMatchObject({ controlState: "cancelled", computerRevision: 4 });
     await runtimeServer.close();
   });
 

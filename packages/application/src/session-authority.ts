@@ -1,4 +1,5 @@
 import type { AuditLog } from "@adpilot/audit";
+import { stableJson } from "@adpilot/shared";
 import {
   FileSessionRepository,
   SessionService,
@@ -61,7 +62,32 @@ export async function createSessionAuthority(options: {
     options.owner ?? "adpilot-daemon"
   );
   const repository = new FileSessionRepository(workspace, { writerLease: lease });
-  const service = new SessionService(repository);
+  const consumedPermissionApprovalIds = new Set<string>();
+  const service = new SessionService(repository, {
+    verifyPermissionEscalation: async ({ session, requestedProfile, approval }) => {
+      if (!options.audit || consumedPermissionApprovalIds.has(approval.approvalId)) return false;
+      const events = await options.audit.list(session.clientId);
+      const review = events.find((event) =>
+        event.id === approval.approvalId
+        && event.sessionId === session.id
+        && event.actor === approval.approvedBy
+        && event.action === "session_permission_escalation_reviewed"
+        && event.status === "succeeded"
+      );
+      if (!review
+        || approval.approvedAt !== review.at
+        || review.details.expectedRevision !== session.revision
+        || stableJson(review.details.requestedProfile) !== stableJson(requestedProfile)) {
+        return false;
+      }
+      const ageMs = Date.now() - Date.parse(review.at);
+      if (!Number.isFinite(ageMs) || ageMs < -5_000 || ageMs > 60_000) return false;
+      // Consume before the repository CAS. A conflict burns the approval
+      // instead of allowing a stale review to be replayed against new state.
+      consumedPermissionApprovalIds.add(approval.approvalId);
+      return true;
+    }
+  });
   const migration = await service.migrateLegacy(workspace);
   const interruptedSessionIds: string[] = [];
   for (const session of await repository.listSessions()) {

@@ -23,13 +23,19 @@ import { IconAlert, IconBot, IconError, IconFork, IconInfo } from "../icons.js";
  * conversationTimeline.ts; this component only renders. Conversation
  * switching lives in the sidebar, not in the feed.
  */
-export function ConversationFeed({ copy, locale, timeline, experiments, audit, computerMode, guiConfigured, submitting, onFork, onRiskReview, onApprove, onCommit, onComputerControl }: {
+export function ConversationFeed({ copy, locale, timeline, experiments, audit, computerMode, computerControlState, computerPermission, clientId, productSessionId, browserSessionId, browserBindingKey, guiConfigured, submitting, onFork, onRiskReview, onApprove, onCommit, onComputerControl }: {
   copy: ConsoleCopy;
   locale: AppLocale;
   timeline: TimelineItem<ConversationMessage, Approval>[];
   experiments: Experiment[];
   audit: Audit[];
   computerMode: ComputerExecutionStatus;
+  computerControlState?: string;
+  computerPermission?: "disabled" | "observe" | "interactive" | "execute";
+  clientId?: string;
+  productSessionId?: string;
+  browserSessionId?: string;
+  browserBindingKey?: string;
   guiConfigured: boolean;
   submitting: boolean;
   onFork: (messageId: string) => void;
@@ -47,7 +53,21 @@ export function ConversationFeed({ copy, locale, timeline, experiments, audit, c
           case "approval":
             return <ApprovalCard approval={item.approval} locale={locale} copy={copy} onRiskReview={onRiskReview} onApprove={onApprove} onCommit={onCommit} key={item.id} />;
           case "computer":
-            return <ComputerUseCard copy={copy} locale={locale} mode={computerMode} computer={item.computer} guiConfigured={guiConfigured} onControl={onComputerControl} key={item.id} />;
+            return <ComputerUseCard
+              copy={copy}
+              locale={locale}
+              mode={computerMode}
+              {...(computerControlState ? { controlState: computerControlState } : {})}
+              {...(computerPermission ? { computerPermission } : {})}
+              computer={item.computer}
+              guiConfigured={guiConfigured}
+              {...(clientId ? { clientId } : {})}
+              {...(productSessionId ? { productSessionId } : {})}
+              {...(browserSessionId ? { browserSessionId } : {})}
+              {...(browserBindingKey ? { browserBindingKey } : {})}
+              onControl={onComputerControl}
+              key={item.id}
+            />;
           case "insight":
             return item.insight.kind === "experiments"
               ? <ExperimentsCard copy={copy} locale={locale} experiments={experiments} at={item.insight.at} key={item.id} />

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -89,5 +89,33 @@ describe("Computer Runtime durable stores", () => {
     const outcomes = await Promise.all([left.claim(claim), right.claim(claim)]);
     expect(outcomes.sort()).toEqual([false, true]);
     expect(await left.get(mutationKey)).toEqual(claim);
+  });
+
+  it("refuses symlinked mutation claims and replay directories", async () => {
+    const root = await temporaryRoot();
+    const directory = join(root, "mutation-claims");
+    const store = new FileMutationReplayStore(directory);
+    const claim = {
+      mutationKey: "b".repeat(64),
+      sessionId: randomUUID(),
+      actionId: randomUUID(),
+      approvalId: randomUUID(),
+      claimedAt: "2026-07-28T00:00:00.000Z"
+    };
+    await store.claim({ ...claim, mutationKey: "c".repeat(64) });
+    const outside = join(root, "outside-claim.json");
+    await writeFile(outside, `${JSON.stringify(claim)}\n`);
+    await symlink(outside, join(directory, `${claim.mutationKey}.json`));
+    await expect(store.claim(claim)).rejects.toThrow("symlink");
+    await expect(store.get(claim.mutationKey)).rejects.toThrow("symlink");
+
+    const redirected = join(root, "redirected-claims");
+    const outsideDirectory = join(root, "outside-directory");
+    await mkdir(outsideDirectory);
+    await symlink(outsideDirectory, redirected, "dir");
+    const redirectedStore = new FileMutationReplayStore(redirected);
+    await expect(redirectedStore.claim({ ...claim, mutationKey: "d".repeat(64) })).rejects.toThrow(
+      "real private directory"
+    );
   });
 });

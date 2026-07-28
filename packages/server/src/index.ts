@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { timingSafeEqual } from "node:crypto";
 import { resolve } from "node:path";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
@@ -23,7 +24,11 @@ import {
   type SessionFilter
 } from "@adpilot/application";
 import { ApprovalOperation } from "@adpilot/approvals";
-import { StartBrowserSessionInput, type BrowserSession } from "@adpilot/computer-use";
+import {
+  StartBrowserSessionInput,
+  type BrowserSession,
+  type VisualComputerControlSnapshot
+} from "@adpilot/computer-use";
 import { SettingsUpdate } from "@adpilot/configuration";
 import { resolvePiSessionId, type SessionModelOverride } from "@adpilot/runtime";
 import { ConversationMessage, MonitoringAlert, MonitoringAlertInput, Platform, TaskState, type TaskState as TaskStateValue } from "@adpilot/shared";
@@ -39,6 +44,19 @@ import {
   renderSlashParseError,
   splitSlashInput
 } from "./slash-commands.js";
+import {
+  DesktopLiveFrame,
+  DesktopLiveFrameBroker,
+  DesktopNativeBindingError,
+  DesktopNativeUnavailableError,
+  DesktopPermissionCenter,
+  DesktopPermissionId,
+  DesktopPermissionTestResult,
+  type DesktopNativeBridge,
+  type DesktopNativeContext
+} from "./desktop-native.js";
+
+export * from "./desktop-native.js";
 
 const BrowserSessionStartRequest = z.object({
   clientId: z.string().min(1),
@@ -46,6 +64,13 @@ const BrowserSessionStartRequest = z.object({
   platform: Platform.default("google_ads")
 });
 const BrowserSessionLookup = z.object({ clientId: z.string().min(1), browserProfile: z.string().min(1).optional() });
+const ComputerControlRequest = z.object({
+  clientId: z.string().min(1).max(256).optional(),
+  productSessionId: z.string().uuid().optional(),
+  browserSessionId: z.string().regex(/^[a-f0-9]{32}$/).optional(),
+  computerSessionId: z.string().min(1).max(256).optional(),
+  computerRevision: z.number().int().nonnegative().optional()
+}).strict();
 
 const SessionClientParams = z.object({ id: z.string().min(1) });
 const SessionParams = z.object({ id: z.string().min(1), sid: z.string().uuid() });
@@ -76,6 +101,12 @@ const SessionPatchBody = z.object({
 }).strict().refine((value) => value.title !== undefined || value.pinned !== undefined, {
   message: "at least one of title or pinned is required"
 });
+const SessionComputerUseBody = z.object({
+  revision: z.number().int().positive(),
+  browserProfile: z.string().trim().min(1).max(1_024),
+  computerUse: z.enum(["disabled", "observe", "interactive", "execute"]),
+  confirm: z.literal(true)
+}).strict();
 const SessionMutationBody = z.object({
   revision: z.number().int().positive().optional(),
   actor: SessionActor
@@ -102,11 +133,37 @@ const PluginMutationBody = z.object({
   acceptPermissions: z.literal(true).optional()
 }).strict();
 
-export async function createServer(system: AdPilotSystem, options: { uiRoot?: string; onRestartRequested?: () => void } = {}) {
+export async function createServer(system: AdPilotSystem, options: {
+  uiRoot?: string;
+  onRestartRequested?: () => void;
+  desktopNative?: DesktopNativeBridge;
+  desktopNativeAuthToken?: string;
+} = {}) {
   const app = Fastify({ logger: false });
+  const desktopFrames = new DesktopLiveFrameBroker();
   type AuthSession = { id: string; providerId: string; status: "running" | "complete" | "failed"; events: AuthEvent[]; prompt?: AuthPrompt; answer?: (value: string) => void; error?: string };
   const authSessions = new Map<string, AuthSession>();
   await app.register(cors, { origin: false });
+  if (options.desktopNative) {
+    if (!options.desktopNativeAuthToken || options.desktopNativeAuthToken.length < 32) {
+      throw new Error("desktop native routes require an instance-bound authentication token");
+    }
+    app.addHook("onRequest", async (request, reply) => {
+      const path = request.url.split("?")[0]!;
+      const productComputerPermission = /^\/api\/clients\/[^/]+\/sessions\/[^/]+\/computer-use$/.test(path);
+      if (!path.startsWith("/api/desktop-native/")
+        && !path.startsWith("/api/computer/")
+        && !productComputerPermission) return;
+      const fetchSite = request.headers["sec-fetch-site"];
+      if (fetchSite !== undefined && fetchSite !== "same-origin") {
+        return reply.code(403).send({ error: "desktop native routes require a same-origin request", code: "DESKTOP_NATIVE_FORBIDDEN" });
+      }
+      const token = cookieValue(request.headers.cookie, "adpilot_native_instance");
+      if (!token || !constantTimeTextEqual(token, options.desktopNativeAuthToken!)) {
+        return reply.code(403).send({ error: "desktop native instance authentication failed", code: "DESKTOP_NATIVE_FORBIDDEN" });
+      }
+    });
+  }
 
   if ((await system.workspace.listClients()).length === 0) {
     await system.workspace.initializeClient({
@@ -153,6 +210,77 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     reply.send({ restarting: true });
     setTimeout(options.onRestartRequested, 80);
   });
+  app.get("/api/desktop-native/permissions", async (request, reply) => {
+    const query = z.object({
+      clientId: z.string().min(1).max(256).optional(),
+      productSessionId: z.string().uuid().optional(),
+      browserSessionId: z.string().regex(/^[a-f0-9]{32}$/).optional()
+    }).strict().parse(request.query);
+    const native = requireDesktopNative(options.desktopNative);
+    const context = await desktopNativeContext(system, query.clientId, query.productSessionId, query.browserSessionId);
+    const result = DesktopPermissionCenter.parse(await native.permissionCenter(context));
+    reply.header("cache-control", "no-store");
+    return result;
+  });
+  app.post("/api/desktop-native/permissions/request", async (request, reply) => {
+    const body = z.object({
+      clientId: z.string().min(1).max(256).optional(),
+      productSessionId: z.string().uuid().optional(),
+      browserSessionId: z.string().regex(/^[a-f0-9]{32}$/).optional(),
+      permissions: z.array(z.enum(["screen-recording", "accessibility"]))
+        .min(1)
+        .max(2)
+        .refine((items) => new Set(items).size === items.length, "permissions must not contain duplicates")
+    }).strict().parse(request.body);
+    const native = requireDesktopNative(options.desktopNative);
+    const context = await desktopNativeContext(system, body.clientId, body.productSessionId, body.browserSessionId);
+    const result = DesktopPermissionCenter.parse(await native.requestPermissions(body.permissions, context));
+    reply.header("cache-control", "no-store");
+    return result;
+  });
+  app.post("/api/desktop-native/permissions/open", async (request) => {
+    const body = z.object({ permission: DesktopPermissionId }).strict().parse(request.body);
+    const native = requireDesktopNative(options.desktopNative);
+    await native.openPermissionSettings(body.permission);
+    return { opened: true, permission: body.permission };
+  });
+  app.post("/api/desktop-native/permissions/test", async (request, reply) => {
+    const body = z.object({
+      permission: DesktopPermissionId,
+      clientId: z.string().min(1).max(256).optional(),
+      productSessionId: z.string().uuid().optional(),
+      browserSessionId: z.string().regex(/^[a-f0-9]{32}$/).optional()
+    }).strict().parse(request.body);
+    const native = requireDesktopNative(options.desktopNative);
+    const context = await desktopNativeContext(system, body.clientId, body.productSessionId, body.browserSessionId);
+    const result = DesktopPermissionTestResult.parse(await native.testPermission(body.permission, context));
+    reply.header("cache-control", "no-store");
+    return result;
+  });
+  app.get("/api/desktop-native/live-frame", async (request, reply) => {
+    const query = z.object({
+      clientId: z.string().min(1).max(256),
+      productSessionId: z.string().uuid(),
+      browserSessionId: z.string().regex(/^[a-f0-9]{32}$/)
+    }).strict().parse(request.query);
+    const native = requireDesktopNative(options.desktopNative);
+    const context = await requiredDesktopLiveContext(system, query.clientId, query.productSessionId, query.browserSessionId);
+    const binding = context.browserSession;
+    const frame = await desktopFrames.capture(
+      `${query.clientId}:${query.productSessionId}:${query.browserSessionId}:${binding.processId}:${binding.windowId}`,
+      async () => {
+        const captured = DesktopLiveFrame.parse(await native.captureLiveFrame(context));
+        assertDesktopFrameBinding(captured, context);
+        return captured;
+      }
+    );
+    reply.headers({
+      "cache-control": "no-store, max-age=0",
+      pragma: "no-cache",
+      "x-content-type-options": "nosniff"
+    });
+    return frame;
+  });
   app.post("/api/settings/oauth/:providerId", async (request, reply) => {
     const { providerId } = z.object({ providerId: z.string() }).parse(request.params);
     const provider = system.models.getProvider(providerId);
@@ -192,9 +320,11 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const query = z.object({ clientId: z.string().optional(), conversationId: z.string().min(1).default("primary") }).parse(request.query);
     const clients = await system.workspace.listClients();
     const clientId = query.clientId ?? clients[0]?.id;
-    const computerUse = await computerUseState(system, clientId);
-    const models = { ...system.modelStatus, browserSession: computerUse.browserStatus };
-    if (!clientId) return { clients, tasks: [], approvals: [], experiments: [], audit: [], messages: [], sessions: [], selectedSessionId: null, browserSessions: computerUse.sessions, computerUse, events: [], models };
+    if (!clientId) {
+      const computerUse = await computerUseState(system);
+      const models = { ...system.modelStatus, browserSession: computerUse.browserStatus };
+      return { clients, tasks: [], approvals: [], experiments: [], audit: [], messages: [], sessions: [], selectedSessionId: null, browserSessions: computerUse.sessions, computerUse, events: [], models };
+    }
     const [tasks, approvals, experiments, audit, messages, settings, planMode, autonomy, sessions] = await Promise.all([
       system.workspace.listTasks(clientId), system.approvals.list(clientId), system.experiments.list(clientId), system.audit.list(clientId),
       system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage), system.settings.publicView(),
@@ -202,11 +332,21 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
       system.autonomy.get(clientId),
       system.sessions.list({ clientId })
     ]);
+    const selectedProductSession = sessions.find((session) => session.runtimeConversationId === query.conversationId);
+    const computerUse = await computerUseState(
+      system,
+      clientId,
+      false,
+      selectedProductSession?.permissionProfile.browserProfile,
+      selectedProductSession?.id,
+      selectedProductSession?.permissionProfile.computerUse
+    );
+    const models = { ...system.modelStatus, browserSession: computerUse.browserStatus };
     return {
       clients,
       selectedClientId: clientId,
       selectedConversationId: query.conversationId,
-      selectedSessionId: sessions.find((session) => session.runtimeConversationId === query.conversationId)?.id ?? null,
+      selectedSessionId: selectedProductSession?.id ?? null,
       // Tasks are scoped to the selected conversation (like messages) and each
       // carries its resolved conversationId/sessionId; archived tasks are
       // dismissed and never listed. See scopeTasksForConversation.
@@ -388,25 +528,55 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     return runConversation(prompt);
   });
 
-  app.post("/api/computer/pause", async (_request, reply) => {
+  app.post("/api/computer/pause", async (request, reply) => {
     const computer = system.computer;
     if (!computer) return reply.code(409).send(computerUnavailableResponse());
-    computer.pause();
-    return { status: computer.executionStatus(), executionStatus: computer.executionStatus() };
+    const authority = await validateComputerControlBinding(system, ComputerControlRequest.parse(request.body ?? {}), "emergency");
+    computer.pause(authority.computerSessionId, authority.computerRevision);
+    desktopFrames.clear();
+    return computerControlResponse(computer, authority.computerSessionId);
   });
-  app.post("/api/computer/takeover", async (_request, reply) => {
+  app.post("/api/computer/takeover", async (request, reply) => {
     const computer = system.computer;
     if (!computer) return reply.code(409).send(computerUnavailableResponse());
-    computer.pause();
-    // Takeover is a user intent, not a second runtime state. The actual state
-    // exposed to every client remains `paused` until the user explicitly resumes.
-    return { status: "user_takeover", executionStatus: computer.executionStatus() };
+    const authority = await validateComputerControlBinding(system, ComputerControlRequest.parse(request.body ?? {}), "emergency");
+    computer.takeover(authority.computerSessionId, authority.computerRevision);
+    desktopFrames.clear();
+    return computerControlResponse(computer, authority.computerSessionId);
   });
-  app.post("/api/computer/resume", async (_request, reply) => {
+  app.post("/api/computer/resume", async (request, reply) => {
     const computer = system.computer;
     if (!computer) return reply.code(409).send(computerUnavailableResponse());
-    computer.resume();
-    return { status: computer.executionStatus(), executionStatus: computer.executionStatus() };
+    const authority = await validateComputerControlBinding(system, ComputerControlRequest.parse(request.body ?? {}), "interactive");
+    computer.resume(authority.computerSessionId, authority.computerRevision);
+    desktopFrames.clear();
+    return computerControlResponse(computer, authority.computerSessionId);
+  });
+  app.post("/api/computer/return-control", async (request, reply) => {
+    const computer = system.computer;
+    if (!computer) return reply.code(409).send(computerUnavailableResponse());
+    const authority = await validateComputerControlBinding(system, ComputerControlRequest.parse(request.body ?? {}), "interactive");
+    computer.returnControl(authority.computerSessionId, authority.computerRevision);
+    desktopFrames.clear();
+    return computerControlResponse(computer, authority.computerSessionId);
+  });
+  app.post("/api/computer/stop", async (request, reply) => {
+    const computer = system.computer;
+    if (!computer) return reply.code(409).send(computerUnavailableResponse());
+    const authority = await validateComputerControlBinding(system, ComputerControlRequest.parse(request.body ?? {}), "emergency");
+    computer.stop(authority.computerSessionId, authority.computerRevision);
+    desktopFrames.clear();
+    return computerControlResponse(computer, authority.computerSessionId);
+  });
+  app.post("/api/computer/step", async (request, reply) => {
+    const computer = system.computer;
+    if (!computer) return reply.code(409).send(computerUnavailableResponse());
+    const authority = await validateComputerControlBinding(system, ComputerControlRequest.parse(request.body ?? {}), "interactive");
+    return reply.code(409).send({
+      error: "no queued atomic Computer Use action is available for single-step execution",
+      code: "COMPUTER_STEP_UNAVAILABLE",
+      ...computerControlResponse(computer, authority.computerSessionId)
+    });
   });
 
   const startManagedBrowser = async (bodyInput: unknown) => {
@@ -667,6 +837,77 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     return session;
   });
 
+  app.put("/api/clients/:id/sessions/:sid/computer-use", async (request) => {
+    const params = SessionParams.parse(request.params);
+    const body = SessionComputerUseBody.parse(request.body);
+    const client = await system.workspace.readClient(params.id);
+    const current = await requireClientSession(params.id, params.sid);
+    if (body.revision !== current.revision) {
+      throw new RevisionConflictError(current.id, body.revision, current.revision);
+    }
+    await system.browserSessions.recover();
+    const managedProfiles = new Set([
+      ...(client.accounts?.accounts ?? []).map((account) => account.browserProfile),
+      ...(await system.browserSessions.list())
+        .filter((session) => session.clientId === params.id)
+        .map((session) => session.browserProfile)
+    ]);
+    if (!managedProfiles.has(body.browserProfile)) {
+      throw new DesktopNativeBindingError("the selected browser Profile is not an existing managed browser Profile");
+    }
+    const requestedProfile = SessionPermissionProfile.parse({
+      ...current.permissionProfile,
+      level: body.computerUse === "execute"
+        ? "EXECUTE"
+        : body.computerUse === "interactive"
+          ? "PREPARE"
+          : "OBSERVE",
+      browserProfile: body.browserProfile,
+      computerUse: body.computerUse,
+      // Mutation approval is never disabled by this UI. Preserve stricter
+      // legacy profiles and force it on for execute.
+      approvalRequired: body.computerUse === "execute"
+        ? true
+        : current.permissionProfile.approvalRequired
+    });
+    const escalation = isComputerPermissionEscalation(current.permissionProfile, requestedProfile);
+    const actor = "workspace-owner";
+    const approval = escalation
+      ? await system.audit.append({
+          clientId: params.id,
+          sessionId: current.id,
+          actor,
+          action: "session_permission_escalation_reviewed",
+          status: "succeeded",
+          details: {
+            expectedRevision: body.revision,
+            requestedProfile
+          }
+        })
+      : undefined;
+    const session = await system.sessions.setPermissionProfile(
+      current.id,
+      requestedProfile,
+      body.revision,
+      approval
+        ? {
+            approvalId: approval.id,
+            approvedBy: actor,
+            approvedAt: approval.at
+          }
+        : undefined
+    );
+    await auditSession(session, actor, "session_permission_profile_update", {
+      previousComputerUse: current.permissionProfile.computerUse,
+      computerUse: session.permissionProfile.computerUse,
+      browserProfile: session.permissionProfile.browserProfile,
+      escalated: escalation,
+      revision: session.revision
+    });
+    publishSession(system, session, "permission_updated");
+    return session;
+  });
+
   const sessionStatusMutation = (
     action: "archive" | "unarchive" | "restore",
     mutate: (sessionId: string, revision?: number) => Promise<ProductSessionEntity>
@@ -840,7 +1081,18 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
     const pluginError = pluginErrorResponse(error);
     if (pluginError) return reply.code(pluginError.status).send(pluginError.body);
     const code = errorCode(error);
-    reply.status(code === "BROWSER_SESSION_LOST" ? 409 : code === "PRIVACY_MODE_REMOTE_PROVIDER_BLOCKED" ? 403 : 400)
+    reply.status(
+      code === "BROWSER_SESSION_LOST"
+        || code === "DESKTOP_NATIVE_BINDING_MISMATCH"
+        || code === "COMPUTER_CONTROL_REVISION_CONFLICT"
+        || code === "COMPUTER_SESSION_NOT_FOUND"
+        ? 409
+        : code === "PRIVACY_MODE_REMOTE_PROVIDER_BLOCKED" || code === "DESKTOP_NATIVE_FORBIDDEN"
+          ? 403
+          : code === "DESKTOP_NATIVE_UNAVAILABLE"
+            ? 503
+            : 400
+    )
       .send({ error: error instanceof Error ? error.message : String(error), ...(code ? { code } : {}) });
   });
 
@@ -852,12 +1104,267 @@ export async function createServer(system: AdPilotSystem, options: { uiRoot?: st
   return app;
 }
 
-async function computerUseState(system: AdPilotSystem, clientId?: string, refresh = true, browserProfile?: string) {
+function requireDesktopNative(native: DesktopNativeBridge | undefined): DesktopNativeBridge {
+  if (!native) throw new DesktopNativeUnavailableError();
+  return native;
+}
+
+async function desktopNativeContext(
+  system: AdPilotSystem,
+  clientId?: string,
+  productSessionId?: string,
+  browserSessionId?: string
+): Promise<DesktopNativeContext> {
+  if (!clientId) {
+    if (productSessionId || browserSessionId) {
+      throw new DesktopNativeBindingError("Product Session or browser session context requires a client");
+    }
+    return {};
+  }
+  await system.workspace.readClient(clientId);
+  const productSession = productSessionId
+    ? await requiredProductSessionBinding(system, clientId, productSessionId)
+    : undefined;
+  if (browserSessionId && !productSession) {
+    throw new DesktopNativeBindingError("browser session context requires the selected Product Session");
+  }
+  const sessions = await system.browserSessions.list();
+  const connected = sessions.filter((candidate) =>
+    candidate.clientId === clientId
+    && candidate.sessionStatus === "connected"
+    && (!productSession
+      || (productSession.permissionProfile.browserProfile !== undefined
+        && candidate.browserProfile === productSession.permissionProfile.browserProfile))
+  );
+  const session = browserSessionId
+    ? connected.find((candidate) => candidate.sessionId === browserSessionId)
+    : connected.length === 1 ? connected[0] : undefined;
+  if (browserSessionId && !session) {
+    throw new DesktopNativeBindingError("permission context browser session does not match the selected client");
+  }
+  return {
+    clientId,
+    ...(productSession ? { productSessionId: productSession.id } : {}),
+    ...(session?.processId && session.windowId
+      ? { browserSession: desktopBrowserSessionContext(session) }
+      : {})
+  };
+}
+
+async function requiredDesktopLiveContext(
+  system: AdPilotSystem,
+  clientId: string,
+  productSessionId: string,
+  browserSessionId: string
+): Promise<DesktopNativeContext & { browserSession: NonNullable<DesktopNativeContext["browserSession"]> }> {
+  await system.workspace.readClient(clientId);
+  await system.browserSessions.recover();
+  const sessions = await system.browserSessions.list();
+  const session = sessions.find((candidate) => candidate.sessionId === browserSessionId);
+  if (!session) throw new DesktopNativeBindingError("the requested browser session does not exist");
+  if (session.clientId !== clientId) {
+    throw new DesktopNativeBindingError("the requested browser session belongs to another client");
+  }
+  if (session.sessionStatus !== "connected" || !session.processId || !session.windowId) {
+    throw new DesktopNativeBindingError("the requested browser session is not connected");
+  }
+  await requiredProductSessionBinding(system, clientId, productSessionId, session.browserProfile, "observe");
+  return { clientId, productSessionId, browserSession: desktopBrowserSessionContext(session) };
+}
+
+async function requiredProductSessionBinding(
+  system: AdPilotSystem,
+  clientId: string,
+  productSessionId: string,
+  browserProfile?: string,
+  minimumComputerUse?: "observe" | "interactive" | "execute"
+): Promise<ProductSessionEntity> {
+  let productSession: ProductSessionEntity;
+  try {
+    productSession = await system.sessions.require(productSessionId);
+  } catch {
+    throw new DesktopNativeBindingError("the selected Product Session is not active");
+  }
+  if (productSession.clientId !== clientId) {
+    throw new DesktopNativeBindingError("the selected Product Session belongs to another client");
+  }
+  if (browserProfile !== undefined
+    && productSession.permissionProfile.browserProfile !== browserProfile) {
+    throw new DesktopNativeBindingError("the browser profile is not bound to the selected Product Session");
+  }
+  if (minimumComputerUse !== undefined) {
+    const ranks = { disabled: 0, observe: 1, interactive: 2, execute: 3 } as const;
+    if (ranks[productSession.permissionProfile.computerUse] < ranks[minimumComputerUse]) {
+      throw new DesktopNativeBindingError(
+        `the selected Product Session does not allow ${minimumComputerUse} Computer Use`
+      );
+    }
+  }
+  return productSession;
+}
+
+function desktopBrowserSessionContext(session: BrowserSession): NonNullable<DesktopNativeContext["browserSession"]> {
+  if (!session.processId || !session.windowId) {
+    throw new DesktopNativeBindingError("browser session has no authoritative process and window binding");
+  }
+  return {
+    sessionId: session.sessionId,
+    clientId: session.clientId,
+    processId: session.processId,
+    windowId: session.windowId,
+    bundleId: session.browserApplicationId,
+    applicationName: session.browserApp,
+    browserProfile: session.browserProfile,
+    nativeProfileFingerprint: session.nativeProfileFingerprint
+  };
+}
+
+function assertDesktopFrameBinding(
+  frame: z.infer<typeof DesktopLiveFrame>,
+  context: DesktopNativeContext & { browserSession: NonNullable<DesktopNativeContext["browserSession"]> }
+): void {
+  const binding = context.browserSession;
+  const mismatches: string[] = [];
+  if (frame.clientId !== context.clientId) mismatches.push("client");
+  if (frame.browserSessionId !== binding.sessionId) mismatches.push("browser session");
+  if (frame.application.pid !== binding.processId) mismatches.push("process");
+  if (frame.application.bundleId !== binding.bundleId) mismatches.push("application");
+  if (frame.window.id !== binding.windowId) mismatches.push("window");
+  if (frame.browser.profile !== binding.browserProfile) mismatches.push("browser profile");
+  if (mismatches.length) {
+    throw new DesktopNativeBindingError(`native live frame differs from the authoritative ${mismatches.join(", ")} binding`);
+  }
+}
+
+function cookieValue(header: string | undefined, name: string): string | undefined {
+  if (!header) return undefined;
+  for (const pair of header.split(";")) {
+    const separator = pair.indexOf("=");
+    if (separator < 0 || pair.slice(0, separator).trim() !== name) continue;
+    try {
+      return decodeURIComponent(pair.slice(separator + 1).trim());
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function constantTimeTextEqual(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left, "utf8");
+  const rightBytes = Buffer.from(right, "utf8");
+  return leftBytes.byteLength === rightBytes.byteLength && timingSafeEqual(leftBytes, rightBytes);
+}
+
+async function validateComputerControlBinding(
+  system: AdPilotSystem,
+  input: z.infer<typeof ComputerControlRequest>,
+  requiredPermission: "emergency" | "interactive" | "execute"
+): Promise<{ computerSessionId?: string; computerRevision?: number }> {
+  await system.browserSessions.recover();
+  const sessions = await system.browserSessions.list();
+  const connected = sessions.filter((session) => session.sessionStatus === "connected");
+  const strictRequested = input.clientId !== undefined
+    || input.productSessionId !== undefined
+    || input.browserSessionId !== undefined
+    || input.computerSessionId !== undefined
+    || input.computerRevision !== undefined;
+  // Legacy test and headless configurations can control a runtime before any
+  // native browser exists. Any scoped request, and every request once a real
+  // surface is connected, must present the complete optimistic-control tuple.
+  if (!strictRequested && !connected.length) return {};
+  if (!input.clientId
+    || !input.productSessionId
+    || !input.browserSessionId
+    || !input.computerSessionId
+    || input.computerRevision === undefined) {
+    throw new DesktopNativeBindingError(
+      "Computer control requires Product Session, browser session, Computer Session, and revision bindings"
+    );
+  }
+  const target = sessions.find((session) => session.sessionId === input.browserSessionId);
+  if (!target || target.clientId !== input.clientId) {
+    throw new DesktopNativeBindingError("Computer control browser session does not match the authoritative binding");
+  }
+  const computer = system.computer;
+  if (!computer) throw new DesktopNativeBindingError("Computer controller is unavailable");
+  const snapshot = computer.controlSnapshot(input.computerSessionId);
+  if (snapshot.computerSessionId !== input.computerSessionId
+    || snapshot.adPilotSessionId !== input.productSessionId
+    || snapshot.browserSessionId !== input.browserSessionId) {
+    throw new DesktopNativeBindingError("Computer Session does not match the selected Product and browser sessions");
+  }
+  await requiredProductSessionBinding(
+    system,
+    input.clientId,
+    input.productSessionId,
+    target.browserProfile,
+    requiredPermission === "emergency" ? undefined : requiredPermission
+  );
+  return {
+    computerSessionId: snapshot.computerSessionId,
+    computerRevision: input.computerRevision
+  };
+}
+
+function computerControlResponse(
+  computer: NonNullable<AdPilotSystem["computer"]>,
+  selector?: string
+) {
+  if (!selector) {
+    const controlState = computer.controlStatus();
+    return {
+      status: controlState === "user_control" ? "user_takeover" : computer.executionStatus(),
+      executionStatus: computer.executionStatus(),
+      controlState
+    };
+  }
+  const snapshot = computer.controlSnapshot(selector);
+  return {
+    status: snapshot.controlState === "user_control" ? "user_takeover" : snapshot.executionStatus,
+    executionStatus: snapshot.executionStatus,
+    controlState: snapshot.controlState,
+    productSessionId: snapshot.adPilotSessionId,
+    browserSessionId: snapshot.browserSessionId,
+    computerSessionId: snapshot.computerSessionId,
+    computerRevision: snapshot.revision
+  };
+}
+
+async function computerUseState(
+  system: AdPilotSystem,
+  clientId?: string,
+  refresh = true,
+  browserProfile?: string,
+  productSessionId?: string,
+  computerUsePermission?: ProductSessionEntity["permissionProfile"]["computerUse"]
+) {
   if (refresh) await system.browserSessions.recover();
-  const sessions = (await system.browserSessions.list())
+  let sessions = (await system.browserSessions.list())
     .filter((session) => (!clientId || session.clientId === clientId) && (!browserProfile || session.browserProfile === browserProfile));
+  const pageCandidate = sessions.filter((session) => session.sessionStatus === "connected");
+  if (refresh && clientId && pageCandidate.length === 1) {
+    // Status/Live View remains observable when Accessibility is unavailable.
+    // The manager records an explicit unavailable page state in production;
+    // a stale test/embedding adapter must not turn a read-only status route
+    // into a control mutation or a blind fallback URL.
+    await system.browserSessions.observePageIdentity(
+      clientId,
+      pageCandidate[0]!.browserProfile,
+      pageCandidate[0]!.platform
+    ).catch(() => undefined);
+    sessions = (await system.browserSessions.list())
+      .filter((session) => session.clientId === clientId && (!browserProfile || session.browserProfile === browserProfile));
+  }
   const publicSessions = sessions.map(publicBrowserSession);
-  const currentBrowser = publicSessions.find((session) => session.sessionStatus === "connected") ?? publicSessions[0] ?? null;
+  const connected = publicSessions.filter((session) => session.sessionStatus === "connected");
+  const currentBrowser = connected.length === 1
+    ? connected[0]!
+    : connected.length > 1
+      ? null
+      : publicSessions.length === 1
+        ? publicSessions[0]!
+        : null;
   const browserStatus = sessions.some((session) => session.sessionStatus === "connected")
     ? "connected"
     : sessions.some((session) => session.sessionStatus === "starting")
@@ -867,9 +1374,33 @@ async function computerUseState(system: AdPilotSystem, clientId?: string, refres
         : sessions.some((session) => session.sessionStatus === "closed")
           ? "closed"
           : "not_connected";
+  const existingControlSnapshot = system.computer && productSessionId && currentBrowser
+    ? system.computer.listControlSnapshots().find((snapshot) =>
+        snapshot.adPilotSessionId === productSessionId
+        && snapshot.browserSessionId === currentBrowser.sessionId
+      )
+    : undefined;
+  const controlSnapshot: VisualComputerControlSnapshot | undefined = existingControlSnapshot
+    ?? (system.computer
+      && productSessionId
+      && currentBrowser?.sessionStatus === "connected"
+      && computerUsePermission !== "disabled"
+        ? system.computer.ensureControlSession({
+            adPilotSessionId: productSessionId,
+            browserSessionId: currentBrowser.sessionId
+          })
+        : undefined);
   return {
     status: system.computer && system.modelStatus.guiConfigured ? "ready" : "not_ready",
-    executionStatus: system.computer?.executionStatus() ?? "unavailable",
+    executionStatus: controlSnapshot?.executionStatus
+      ?? (productSessionId ? "unavailable" : system.computer?.executionStatus() ?? "unavailable"),
+    controlState: controlSnapshot?.controlState
+      ?? (productSessionId ? "unavailable" : system.computer?.controlStatus() ?? "unavailable"),
+    ...(controlSnapshot ? {
+      productSessionId: controlSnapshot.adPilotSessionId,
+      computerSessionId: controlSnapshot.computerSessionId,
+      computerRevision: controlSnapshot.revision
+    } : {}),
     visualExecution: "automatic",
     failureEscalation: system.modelStatus.guiConfigured ? "enabled" : "unavailable",
     currentVisualModel: system.modelStatus.gui,
@@ -887,6 +1418,18 @@ function computerUnavailableResponse() {
     error: "Computer Use is unavailable because no visual runtime is configured",
     code: "COMPUTER_USE_UNAVAILABLE"
   } as const;
+}
+
+function isComputerPermissionEscalation(
+  current: ProductSessionEntity["permissionProfile"],
+  requested: ProductSessionEntity["permissionProfile"]
+): boolean {
+  const levelRank = { OBSERVE: 0, PREPARE: 1, EXECUTE: 2 } as const;
+  const computerUseRank = { disabled: 0, observe: 1, interactive: 2, execute: 3 } as const;
+  return levelRank[requested.level] > levelRank[current.level]
+    || computerUseRank[requested.computerUse] > computerUseRank[current.computerUse]
+    || (current.approvalRequired && !requested.approvalRequired)
+    || (requested.browserProfile !== undefined && requested.browserProfile !== current.browserProfile);
 }
 
 async function browserSessionView(system: AdPilotSystem, clientId: string, browserProfile?: string) {
@@ -932,8 +1475,30 @@ function publicBrowserSession(session: BrowserSession) {
     startedAt: session.startedAt,
     updatedAt: session.updatedAt,
     lastValidatedAt: session.lastValidatedAt ?? null,
+    pageIdentity: session.pageIdentity ? publicBrowserPageIdentity(session.pageIdentity) : null,
     lostAt: session.lostAt ?? null,
     lostReason: session.lostReason ?? null
+  };
+}
+
+function publicBrowserPageIdentity(identity: NonNullable<BrowserSession["pageIdentity"]>) {
+  if (identity.status === "unavailable") {
+    return {
+      status: identity.status,
+      observedAt: identity.observedAt,
+      code: identity.code,
+      reason: identity.reason
+    };
+  }
+  return {
+    status: identity.status,
+    source: identity.source,
+    observedAt: identity.observedAt,
+    url: identity.url,
+    origin: identity.origin,
+    title: identity.title,
+    fingerprint: identity.fingerprint,
+    ...(identity.tabId ? { tabId: identity.tabId } : {})
   };
 }
 

@@ -1,3 +1,5 @@
+import type { ProductSession } from "./types.js";
+
 export type BrowserSessionStatus = "starting" | "connected" | "lost" | "closed";
 
 export type BrowserSession = {
@@ -51,6 +53,100 @@ export type ScreenshotAudit = {
   dataRetentionPolicy: string;
   outcome: "prepared" | "blocked";
   createdAt: string;
+};
+
+export type DesktopPermissionId =
+  | "screen-recording"
+  | "accessibility"
+  | "files-and-folders"
+  | "browser-control"
+  | "notifications"
+  | "keychain"
+  | "native-helper"
+  | "background-service";
+
+export type DesktopPermissionStatus =
+  | "granted"
+  | "denied"
+  | "not-determined"
+  | "restricted"
+  | "requires-restart"
+  | "helper-unavailable"
+  | "unknown";
+
+export type DesktopPermissionItem = {
+  id: DesktopPermissionId;
+  status: DesktopPermissionStatus;
+  checkedAt: string;
+  processName: string;
+  bundleId: string | null;
+  reason: string;
+  affectedFeatures: string[];
+  canRequest: boolean;
+  canOpenSettings: boolean;
+  canTest: boolean;
+  requiresRestart: boolean;
+};
+
+export type DesktopPermissionCenter = {
+  platform: "darwin" | "win32" | "linux";
+  nativeDesktop: boolean;
+  helperAvailable: boolean;
+  helperVersion: string | null;
+  checkedAt: string;
+  permissions: DesktopPermissionItem[];
+};
+
+export type DesktopPermissionTestResult = {
+  permission: DesktopPermissionId;
+  ok: boolean;
+  status: DesktopPermissionStatus;
+  checkedAt: string;
+  message: string;
+  preview?: {
+    dataUrl: string;
+    width: number;
+    height: number;
+    capturedAt: string;
+  };
+};
+
+export type DesktopLiveFrame = {
+  frameId: string;
+  browserSessionId: string;
+  clientId: string;
+  dataUrl: string;
+  width: number;
+  height: number;
+  source: { width: number; height: number };
+  capturedAt: string;
+  application: { pid: number; bundleId: string; name: string };
+  window: {
+    id: string;
+    title?: string;
+    bounds: { x: number; y: number; width: number; height: number };
+  };
+  browser: {
+    profile: string;
+    url?: string;
+    title?: string;
+    pageIdentity:
+      | {
+          status: "available";
+          observedAt: string;
+          url: string;
+          origin: string;
+          title: string;
+          fingerprint: string;
+        }
+      | {
+          status: "unavailable";
+          observedAt: string;
+          code: string;
+          reason: string;
+        };
+  };
+  cursor?: { x: number; y: number };
 };
 
 export class DesktopApiError extends Error {
@@ -118,6 +214,109 @@ export async function getScreenshotAudits(clientId: string, signal?: AbortSignal
   if (Array.isArray(payload)) return payload as ScreenshotAudit[];
   if (isRecord(payload) && Array.isArray(payload.audits)) return payload.audits as ScreenshotAudit[];
   return [];
+}
+
+export async function configureProductSessionComputerUse(
+  clientId: string,
+  productSessionId: string,
+  input: {
+    revision: number;
+    browserProfile: string;
+    computerUse: "disabled" | "observe" | "interactive" | "execute";
+    confirm: true;
+  },
+  signal?: AbortSignal
+): Promise<ProductSession> {
+  return await requestJson(
+    `/api/clients/${encodeURIComponent(clientId)}/sessions/${encodeURIComponent(productSessionId)}/computer-use`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+      ...(signal ? { signal } : {})
+    }
+  ) as ProductSession;
+}
+
+export async function getDesktopPermissions(
+  clientId?: string,
+  productSessionId?: string,
+  browserSessionId?: string,
+  signal?: AbortSignal
+): Promise<DesktopPermissionCenter> {
+  const params = new URLSearchParams();
+  if (clientId) params.set("clientId", clientId);
+  if (productSessionId) params.set("productSessionId", productSessionId);
+  if (browserSessionId) params.set("browserSessionId", browserSessionId);
+  const serialized = params.toString();
+  const query = serialized ? `?${serialized}` : "";
+  return await requestJson(`/api/desktop-native/permissions${query}`, {
+    ...(signal ? { signal } : {})
+  }) as DesktopPermissionCenter;
+}
+
+export async function requestDesktopPermissions(
+  permissions: Array<"screen-recording" | "accessibility">,
+  clientId?: string,
+  productSessionId?: string,
+  browserSessionId?: string,
+  signal?: AbortSignal
+): Promise<DesktopPermissionCenter> {
+  return await requestJson("/api/desktop-native/permissions/request", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      permissions,
+      ...(clientId ? { clientId } : {}),
+      ...(productSessionId ? { productSessionId } : {}),
+      ...(browserSessionId ? { browserSessionId } : {})
+    }),
+    ...(signal ? { signal } : {})
+  }) as DesktopPermissionCenter;
+}
+
+export async function openDesktopPermissionSettings(
+  permission: DesktopPermissionId,
+  signal?: AbortSignal
+): Promise<void> {
+  await requestJson("/api/desktop-native/permissions/open", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ permission }),
+    ...(signal ? { signal } : {})
+  });
+}
+
+export async function testDesktopPermission(
+  permission: DesktopPermissionId,
+  clientId?: string,
+  productSessionId?: string,
+  browserSessionId?: string,
+  signal?: AbortSignal
+): Promise<DesktopPermissionTestResult> {
+  return await requestJson("/api/desktop-native/permissions/test", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      permission,
+      ...(clientId ? { clientId } : {}),
+      ...(productSessionId ? { productSessionId } : {}),
+      ...(browserSessionId ? { browserSessionId } : {})
+    }),
+    ...(signal ? { signal } : {})
+  }) as DesktopPermissionTestResult;
+}
+
+export async function getDesktopLiveFrame(
+  clientId: string,
+  productSessionId: string,
+  browserSessionId: string,
+  signal?: AbortSignal
+): Promise<DesktopLiveFrame> {
+  const query = new URLSearchParams({ clientId, productSessionId, browserSessionId });
+  return await requestJson(`/api/desktop-native/live-frame?${query.toString()}`, {
+    ...(signal ? { signal } : {})
+  }) as DesktopLiveFrame;
 }
 
 export function normalizeSessionView(payload: unknown): BrowserSessionView {

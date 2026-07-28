@@ -212,7 +212,24 @@ describe("AdPilot managed browser sessions", () => {
       assertCapturedSurface: vi.fn(async (clientId: string, _surface: NativeSurface | undefined, profile: string, platform: string) => {
         calls.push(`captured:${clientId}:${profile}:${platform}`);
         return {};
-      })
+      }),
+      assertPageIdentityForTask: vi.fn(async (task: VisualMicroTask) => ({
+        status: "available",
+        source: "macos_accessibility",
+        browserSessionId: `${task.clientId === "client-a" ? "a" : "b"}`.repeat(32),
+        clientId: task.clientId!,
+        browserProfile: task.surface.browserProfile!,
+        nativeProfileFingerprint: task.surface.browserProfile!,
+        processId: task.clientId === "client-a" ? 401 : 402,
+        windowId: task.clientId === "client-a" ? "window-a" : "window-b",
+        applicationId: "com.google.Chrome",
+        observedAt: "2026-07-28T00:00:00.000Z",
+        url: task.clientId === "client-a" ? "https://ads.google.com/" : "https://business.facebook.com/",
+        origin: task.clientId === "client-a" ? "https://ads.google.com" : "https://business.facebook.com",
+        title: task.target,
+        fingerprint: `${task.clientId === "client-a" ? "a" : "b"}`.repeat(64)
+      })),
+      invalidatePageIdentity: vi.fn()
     } as unknown as BrowserSessionManager;
     const screenshot: Screenshot = {
       base64: "screen",

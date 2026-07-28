@@ -337,6 +337,18 @@ export const ComputerActionRecord = z.object({
   id: z.string().uuid(),
   sessionId: z.string().uuid(),
   runId: z.string().min(1),
+  binding: z.object({
+    adPilotSessionId: z.string().min(1),
+    browserSessionId: z.string().min(1),
+    clientId: z.string().min(1).optional(),
+    browserProfileId: z.string().min(1).optional()
+  }).strict().optional(),
+  controlRevision: z.number().int().nonnegative().optional(),
+  taskId: z.string().min(1).optional(),
+  stepId: z.string().min(1).optional(),
+  planId: z.string().min(1).optional(),
+  surfaceFingerprint: Sha256.optional(),
+  beforeFrameSha256: Sha256.optional(),
   appPid: z.number().int().positive(),
   appBundleId: z.string().min(1),
   windowId: z.string().min(1),

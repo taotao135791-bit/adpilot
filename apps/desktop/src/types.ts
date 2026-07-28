@@ -44,6 +44,12 @@ export type ProductSession = {
   runtimeConversationId: string;
   title: string;
   status: SessionStatus;
+  permissionProfile?: {
+    level: "OBSERVE" | "PREPARE" | "EXECUTE";
+    browserProfile?: string;
+    computerUse: "disabled" | "observe" | "interactive" | "execute";
+    approvalRequired: boolean;
+  };
   pinnedAt?: string;
   archivedAt?: string;
   deletedAt?: string;
@@ -58,8 +64,24 @@ export type ComputerVisualEvent = {
   type: string;
   phase?: string;
   attempt?: number;
-  screenshot?: { width: number; height: number; capturedAt: string; sha256: string };
-  action?: { action: string; target: string; reason: string };
+  screenshot?: { width: number; height: number; scaleFactor?: number; capturedAt: string; sha256: string };
+  action?: {
+    action: string;
+    target: string;
+    reason: string;
+    confidence?: number;
+    expectedResult?: string;
+    riskLevel?: string;
+  };
+  overlay?: {
+    coordinateSpace: "screenshot_pixels";
+    targetBox?: { x: number; y: number; width: number; height: number };
+    pointer?: { x: number; y: number };
+    dragTo?: { x: number; y: number };
+  };
+  matched?: boolean;
+  confidence?: number;
+  code?: string;
   reason?: string;
 };
 
@@ -112,7 +134,32 @@ export type State = {
   planMode?: PlanModeState;
   /** Workspace autonomy switch, carried by /api/state (see autonomy.ts). */
   autonomy?: { mode?: string };
-  computerUse?: { executionStatus?: ComputerExecutionStatus };
+  computerUse?: {
+    executionStatus?: ComputerExecutionStatus;
+    controlState?: string;
+    productSessionId?: string;
+    computerSessionId?: string;
+    computerRevision?: number;
+    currentBrowser?: {
+      sessionId: string;
+      clientId: string;
+      browserProfile: string;
+      processId?: number | null;
+      windowId?: string | null;
+      browserApplicationId: string;
+      browserApp: string;
+      sessionStatus: string;
+      pageIdentity?: {
+        status: "available" | "unavailable";
+        observedAt: string;
+        url?: string;
+        origin?: string;
+        title?: string;
+        code?: string;
+        reason?: string;
+      } | null;
+    } | null;
+  };
   models: ModelStatus;
 };
 

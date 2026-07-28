@@ -43,6 +43,9 @@ export interface NativeWindowCapture {
 
 /** Cross-platform contract. Platform implementations must identify and capture the same active surface. */
 export interface NativeSurfaceIdentity {
+  /** Bind a launched browser PID to its non-reversible managed Profile proof. */
+  registerBrowserProfile?(processId: number, nativeProfileFingerprint: string): void;
+  forgetBrowserProfile?(processId: number): void;
   identifyActiveSurface(): Promise<NativeSurface>;
   /** Resolve a managed window without requiring it to be foreground. */
   identifySurfaceByProcess?(processId: number): Promise<NativeSurface | undefined>;

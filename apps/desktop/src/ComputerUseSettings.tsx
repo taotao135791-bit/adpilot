@@ -13,8 +13,9 @@ import {
   runtimePlatformLabel,
   type AppLocale
 } from "./labels.js";
-import type { ModelStatus } from "./types.js";
+import type { ModelStatus, ProductSession } from "./types.js";
 import {
+  configureProductSessionComputerUse,
   DesktopApiError,
   closeBrowserSession,
   getBrowserSession,
@@ -41,15 +42,19 @@ type Resource<T> =
 export function ComputerUseSettings({
   locale,
   clientId,
+  productSession,
   runtime,
   privacyMode,
-  onPrivacyMode
+  onPrivacyMode,
+  onProductSessionUpdated
 }: {
   locale: AppLocale;
   clientId?: string;
+  productSession?: ProductSession;
   runtime: RuntimeModels;
   privacyMode: string;
   onPrivacyMode: (value: "standard" | "local-only") => void;
+  onProductSessionUpdated: (session: ProductSession) => void;
 }) {
   const copy = computerUseCopy(locale);
   const [browser, setBrowser] = useState<Resource<BrowserSessionView>>(clientId ? { status: "loading" } : { status: "empty" });
@@ -57,6 +62,15 @@ export function ComputerUseSettings({
   const [browserProfile, setBrowserProfile] = useState("");
   const [browserAction, setBrowserAction] = useState<"start" | "resume" | "close" | undefined>();
   const [browserActionError, setBrowserActionError] = useState<unknown>();
+  const [permissionMode, setPermissionMode] = useState<ProductSessionComputerUse>(
+    productSession?.permissionProfile?.computerUse ?? "disabled"
+  );
+  const [permissionBrowserProfile, setPermissionBrowserProfile] = useState(
+    productSession?.permissionProfile?.browserProfile ?? ""
+  );
+  const [permissionConfirmed, setPermissionConfirmed] = useState(false);
+  const [permissionSaving, setPermissionSaving] = useState(false);
+  const [permissionMessage, setPermissionMessage] = useState("");
 
   const loadBrowser = useCallback(async (signal?: AbortSignal) => {
     if (!clientId) { setBrowser({ status: "empty" }); return; }
@@ -89,9 +103,31 @@ export function ComputerUseSettings({
     return () => controller.abort();
   }, [loadBrowser, loadAudits]);
 
+  useEffect(() => {
+    setPermissionMode(productSession?.permissionProfile?.computerUse ?? "disabled");
+    setPermissionBrowserProfile(productSession?.permissionProfile?.browserProfile ?? "");
+    setPermissionConfirmed(false);
+    setPermissionMessage("");
+  }, [productSession?.id, productSession?.revision]);
+
   const session = browser.status === "ready" ? browser.value.session : null;
   const profiles = browser.status === "ready" ? browser.value.profiles : [];
   const profileOption = profiles.find((item) => item.browserProfile === browserProfile);
+  const permissionProfiles = useMemo(() => [...new Set([
+    productSession?.permissionProfile?.browserProfile,
+    session?.browserProfile,
+    ...profiles.map((item) => item.browserProfile)
+  ].filter((value): value is string => Boolean(value)))], [
+    productSession?.permissionProfile?.browserProfile,
+    profiles,
+    session?.browserProfile
+  ]);
+
+  useEffect(() => {
+    if (!permissionBrowserProfile && permissionProfiles[0]) {
+      setPermissionBrowserProfile(permissionProfiles[0]);
+    }
+  }, [permissionBrowserProfile, permissionProfiles]);
 
   async function runBrowserAction(action: "start" | "resume" | "close") {
     if (!clientId || browserAction) return;
@@ -110,6 +146,29 @@ export function ComputerUseSettings({
       setBrowserActionError(error);
     } finally {
       setBrowserAction(undefined);
+    }
+  }
+
+  async function saveSessionComputerPermission() {
+    if (!clientId || !productSession || !permissionBrowserProfile || !permissionConfirmed || permissionSaving) return;
+    setPermissionSaving(true);
+    setPermissionMessage("");
+    try {
+      const updated = await configureProductSessionComputerUse(clientId, productSession.id, {
+        revision: productSession.revision,
+        browserProfile: permissionBrowserProfile,
+        computerUse: permissionMode,
+        confirm: true
+      });
+      onProductSessionUpdated(updated);
+      setPermissionConfirmed(false);
+      setPermissionMessage(sessionComputerPermissionCopy(locale).saved);
+    } catch (error) {
+      setPermissionMessage(error instanceof DesktopApiError
+        ? error.message
+        : sessionComputerPermissionCopy(locale).saveFailed);
+    } finally {
+      setPermissionSaving(false);
     }
   }
 
@@ -188,6 +247,21 @@ export function ComputerUseSettings({
       {browserActionError !== undefined && <ComputerError message={resourceError(copy.browserActionFailed, browserActionError, locale)} retry={copy.retry} onRetry={() => session?.sessionStatus === "lost" ? void runBrowserAction("resume") : void loadBrowser()} />}
     </section>
 
+    <SessionComputerPermission
+      locale={locale}
+      {...(productSession ? { productSession } : {})}
+      profiles={permissionProfiles}
+      profile={permissionBrowserProfile}
+      mode={permissionMode}
+      confirmed={permissionConfirmed}
+      saving={permissionSaving}
+      message={permissionMessage}
+      onProfile={(value) => { setPermissionBrowserProfile(value); setPermissionConfirmed(false); }}
+      onMode={(value) => { setPermissionMode(value); setPermissionConfirmed(false); }}
+      onConfirmed={setPermissionConfirmed}
+      onSave={() => void saveSessionComputerPermission()}
+    />
+
     <section className="computer-subsection" aria-labelledby="screenshot-audits-title">
       <div className="computer-subsection-heading">
         <div><h3 id="screenshot-audits-title">{copy.screenshotAudits}</h3><p>{copy.screenshotAuditsBody}</p></div>
@@ -200,6 +274,91 @@ export function ComputerUseSettings({
               : <ComputerEmpty icon={<IconHistory size={18} />} title={copy.noAudits} body={copy.noAuditsBody} />}
     </section>
   </div>;
+}
+
+type ProductSessionComputerUse = "disabled" | "observe" | "interactive" | "execute";
+
+function SessionComputerPermission({ locale, productSession, profiles, profile, mode, confirmed, saving, message, onProfile, onMode, onConfirmed, onSave }: {
+  locale: AppLocale;
+  productSession?: ProductSession;
+  profiles: string[];
+  profile: string;
+  mode: ProductSessionComputerUse;
+  confirmed: boolean;
+  saving: boolean;
+  message: string;
+  onProfile: (profile: string) => void;
+  onMode: (mode: ProductSessionComputerUse) => void;
+  onConfirmed: (confirmed: boolean) => void;
+  onSave: () => void;
+}) {
+  const text = sessionComputerPermissionCopy(locale);
+  return <section className="computer-subsection session-computer-permission" aria-labelledby="session-computer-permission-title">
+    <div className="computer-subsection-heading">
+      <div>
+        <h3 id="session-computer-permission-title">{text.title}</h3>
+        <p>{text.body}</p>
+      </div>
+      <IconShieldLock size={16} />
+    </div>
+    {!productSession
+      ? <ComputerEmpty icon={<IconShieldLock size={18} />} title={text.noSession} body={text.noSessionBody} />
+      : <>
+          <div className="session-permission-binding">
+            <label className="browser-profile-field">
+              <span>{text.profile}</span>
+              <select value={profile} disabled={!profiles.length || saving} onChange={(event) => onProfile(event.target.value)}>
+                {!profiles.length && <option value="">{text.noProfiles}</option>}
+                {profiles.map((item) => <option value={item} key={item}>{item}</option>)}
+              </select>
+              <small>{text.profileHint}</small>
+            </label>
+            <div className="computer-permission-grid" role="radiogroup" aria-label={text.mode}>
+              {(["disabled", "observe", "interactive", "execute"] as const).map((value) => <button
+                type="button"
+                role="radio"
+                aria-checked={mode === value}
+                data-active={mode === value}
+                disabled={saving}
+                onClick={() => onMode(value)}
+                key={value}
+              >
+                <strong>{text.modes[value].label}</strong>
+                <span>{text.modes[value].body}</span>
+              </button>)}
+            </div>
+          </div>
+          <div className="session-permission-review" data-mode={mode}>
+            <strong>{text.reviewTitle}</strong>
+            <p>{text.review[mode]}</p>
+            <label>
+              <input
+                type="checkbox"
+                checked={confirmed}
+                disabled={saving || !profile}
+                onChange={(event) => onConfirmed(event.target.checked)}
+              />
+              <span>{text.confirm}</span>
+            </label>
+          </div>
+          <div className="session-permission-actions">
+            <div>
+              <span>{text.current}</span>
+              <strong>{text.modes[productSession.permissionProfile?.computerUse ?? "disabled"].label}</strong>
+              <code>{productSession.permissionProfile?.browserProfile ?? "—"}</code>
+            </div>
+            <Button
+              variant="primary"
+              icon={<IconShieldLock size={13} />}
+              disabled={!profile || !confirmed || saving}
+              onClick={onSave}
+            >
+              {saving ? text.saving : text.save}
+            </Button>
+          </div>
+          {message && <p className="computer-inline-note" role="status">{message}</p>}
+        </>}
+  </section>;
 }
 
 function BrowserSessionCard({ locale, copy, session, profiles, profile, action, onProfile, onStart, onResume, onClose }: {
@@ -292,3 +451,65 @@ function resourceError(fallback: string, error: unknown, locale: AppLocale): str
   return fallback;
 }
 
+function sessionComputerPermissionCopy(locale: AppLocale) {
+  if (locale === "zh-CN") {
+    return {
+      title: "产品会话的 Computer Use 权限",
+      body: "权限只对当前产品会话和一个受管浏览器 Profile 生效。更换会话或 Profile 不会继承授权。",
+      noSession: "未选择产品会话",
+      noSessionBody: "请先从侧边栏选择一个产品会话。",
+      profile: "绑定的浏览器 Profile",
+      profileHint: "只能选择当前客户下已经存在的受管 Profile。",
+      noProfiles: "没有可绑定的受管 Profile",
+      mode: "Computer Use 模式",
+      modes: {
+        disabled: { label: "关闭", body: "不允许此会话使用屏幕或原生输入。" },
+        observe: { label: "观察", body: "允许真实画面与只读视觉检查，不允许原生输入。" },
+        interactive: { label: "交互", body: "允许受策略约束的导航和输入；广告变更仍不可直接执行。" },
+        execute: { label: "执行", body: "允许执行已批准的工作；每次广告变更仍必须单独审批。" }
+      },
+      reviewTitle: "授权审查",
+      review: {
+        disabled: "这会立即降级当前会话，并保留 Profile 绑定以便审计。暂停、接管和停止仍可作为紧急控制。",
+        observe: "AdPilot 可捕获绑定窗口并显示 Live View，但不会发送鼠标或键盘输入。",
+        interactive: "AdPilot 可在绑定窗口内导航和输入。此授权映射为 PREPARE，不允许绕过变更审批。",
+        execute: "此授权映射为 EXECUTE，但 approvalRequired 始终保持开启；任何广告 mutation 都必须再次确认。"
+      },
+      confirm: "我确认只为当前产品会话和上述 Profile 授权，并理解该选择会写入审计日志。",
+      current: "当前",
+      save: "确认并应用",
+      saving: "正在应用…",
+      saved: "Computer Use 权限已更新。",
+      saveFailed: "无法更新 Computer Use 权限，请刷新会话后重试。"
+    } as const;
+  }
+  return {
+    title: "Product Session Computer Use",
+    body: "Permission applies only to this Product Session and one managed browser Profile. It is not inherited by another Session or Profile.",
+    noSession: "No Product Session selected",
+    noSessionBody: "Select a Product Session from the sidebar first.",
+    profile: "Bound browser Profile",
+    profileHint: "Only an existing managed Profile for this client can be selected.",
+    noProfiles: "No managed Profile is available",
+    mode: "Computer Use mode",
+    modes: {
+      disabled: { label: "Disabled", body: "Do not allow screen or native input for this Session." },
+      observe: { label: "Observe", body: "Allow the real frame and read-only visual checks, without native input." },
+      interactive: { label: "Interactive", body: "Allow policy-bound navigation and input; ad mutations still cannot run directly." },
+      execute: { label: "Execute", body: "Allow approved work to run; every ad mutation still needs separate approval." }
+    },
+    reviewTitle: "Permission review",
+    review: {
+      disabled: "This immediately downgrades the Session and retains the Profile binding for audit. Pause, Take Over, and Stop remain emergency controls.",
+      observe: "AdPilot may capture the bound window and show Live View, but will not post mouse or keyboard input.",
+      interactive: "AdPilot may navigate and type in the bound window. This maps to PREPARE and cannot bypass mutation approval.",
+      execute: "This maps to EXECUTE, but approvalRequired always remains enabled; every ad mutation still requires confirmation."
+    },
+    confirm: "I confirm this grant is only for the current Product Session and Profile, and understand it is written to the audit log.",
+    current: "Current",
+    save: "Confirm and apply",
+    saving: "Applying…",
+    saved: "Computer Use permission updated.",
+    saveFailed: "Computer Use permission could not be updated. Refresh the Session and try again."
+  } as const;
+}

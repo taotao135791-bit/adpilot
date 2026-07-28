@@ -12,6 +12,8 @@ import {
   DualVisualIdentityVerifier,
   FileScreenshotArtifactStore,
   FileScreenshotModelCallAuditStore,
+  FileComputerActionRecordStore,
+  FileMutationReplayStore,
   GuiGroundingProviderRouter,
   OpenAICompatibleVisualIdentityReviewer,
   OpenAICompatibleUiTarsProvider,
@@ -22,20 +24,30 @@ import {
   PrivacyAwareVisualIdentityReviewer,
   PrivacyAwareVisualVerifier,
   ScreenshotPrivacyPipeline,
-  UiTarsNativeOperator,
+  NativeHelperOperator,
+  NativeHelperBrowserPageIdentity,
+  NativeHelperSurfaceIdentity,
   VisualComputerRuntime,
   defaultBrowserContentRoi,
   masksOutsideProtectedRegions,
   minimumIdentityDisclosure,
   type ExpectedVisualIdentity,
   type ModelPrivacyDescriptor,
+  type NativeOperator,
   type Screenshot,
   type ScreenshotPrivacyMode,
   type VisualMicroTask,
+  type VisualAction,
   type VisualRuntimeEvent,
   type VisualGroundingProvider,
   type VisualVerifier
 } from "@adpilot/computer-use";
+import {
+  NATIVE_HELPER_BUNDLE_ID,
+  NativeComputerHostSupervisor,
+  type NativeComputerService,
+  resolveNativeHelperExecutable
+} from "@adpilot/native-computer-host";
 import { ExperimentStore } from "@adpilot/experiments";
 import { createPiModels, modelRouterFromEnv, resolvePiModel } from "@adpilot/model-router";
 import { PiAgentRuntime, AuditRuntimeExtension, AutonomyStore, PlanModeStore, type ReasoningPolicy } from "@adpilot/runtime";
@@ -110,6 +122,12 @@ export interface PublicVisualRuntimeEvent {
   tier?: string;
   screenshot?: Pick<Screenshot, "width" | "height" | "scaleFactor" | "capturedAt" | "sha256" | "surfaceFingerprint">;
   action?: { action: string; target: string; reason: string; confidence: number; expectedResult: string; riskLevel: string };
+  overlay?: {
+    coordinateSpace: "screenshot_pixels";
+    targetBox?: { x: number; y: number; width: number; height: number };
+    pointer?: { x: number; y: number };
+    dragTo?: { x: number; y: number };
+  };
   matched?: boolean;
   confidence?: number;
   reason?: string;
@@ -161,6 +179,12 @@ export interface AdPilotSystem {
   agent: AdPilotAgent;
   alerts: AlertMonitor;
   computer: VisualComputerRuntime | undefined;
+  /** The single authenticated Helper actor shared by execution and Electron UI. */
+  nativeComputerHost: NativeComputerService | undefined;
+  /** Fail-closed launch/discovery reason. Never causes a NutJS fallback. */
+  nativeHelperError: string | undefined;
+  /** Releases application-owned native resources. Safe to call more than once. */
+  shutdown(): Promise<void>;
   browserSessions: BrowserSessionManager;
   screenshotAudits: FileScreenshotModelCallAuditStore;
   visualTableReader: VisualTableReader | undefined;
@@ -188,7 +212,24 @@ export interface AdPilotSystem {
   };
 }
 
-export async function createAdPilotSystem(options: { workspaceRoot?: string; env?: NodeJS.ProcessEnv; models?: Models; adpilotHome?: string; pluginCatalog?: { repositoryRoot?: string; curatedRoot?: string; trustRoot?: string } } = {}): Promise<AdPilotSystem> {
+export interface CreateAdPilotSystemOptions {
+  workspaceRoot?: string;
+  env?: NodeJS.ProcessEnv;
+  models?: Models;
+  adpilotHome?: string;
+  pluginCatalog?: { repositoryRoot?: string; curatedRoot?: string; trustRoot?: string };
+  /** Explicit test/embedding seam. Production macOS composition uses the Helper. */
+  nativeOperator?: NativeOperator;
+  /** Inject one already-authenticated actor; application does not own its lifecycle. */
+  nativeComputerHost?: NativeComputerService;
+  nativeHelper?: false | {
+    explicitPath?: string;
+    resourcesPath?: string;
+    repositoryRoot?: string;
+  };
+}
+
+export async function createAdPilotSystem(options: CreateAdPilotSystemOptions = {}): Promise<AdPilotSystem> {
   const baseEnv = options.env ?? process.env;
   const workspaceRoot = options.workspaceRoot ?? baseEnv.ADPILOT_WORKSPACE ?? resolve(process.cwd(), "workspace");
   const settings = new SettingsStore(workspaceRoot, baseEnv);
@@ -196,6 +237,12 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   const env = await settings.effectiveEnv();
   const workspace = new WorkspaceStore(workspaceRoot);
   const events = new ProductEventBus();
+  const native = await resolveApplicationNativeComputer(options, env);
+  try {
+  const nativeHelperOperator = native.host ? new NativeHelperOperator(native.host) : undefined;
+  const nativeOperator = options.nativeOperator
+    ?? nativeHelperOperator;
+  const nativeSurfaceIdentity = native.host ? new NativeHelperSurfaceIdentity(native.host) : undefined;
   // User-extension roots: the user-global AdPilot home and the per-workspace
   // .adpilot directory. Both are optional and simply empty when missing.
   const adpilotHome = resolve(options.adpilotHome ?? env.ADPILOT_HOME ?? join(homedir(), ".adpilot"));
@@ -221,7 +268,10 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
   const screenshotArtifacts = new FileScreenshotArtifactStore(workspaceRoot);
   const screenshotAudits = new FileScreenshotModelCallAuditStore(workspaceRoot);
   const screenshotPrivacy = new ScreenshotPrivacyPipeline(screenshotArtifacts, screenshotAudits);
-  const browserSessions = new BrowserSessionManager(workspaceRoot);
+  const browserSessions = new BrowserSessionManager(workspaceRoot, {
+    ...(nativeSurfaceIdentity ? { surfaceIdentity: nativeSurfaceIdentity } : {}),
+    ...(native.host ? { pageIdentity: new NativeHelperBrowserPageIdentity(native.host) } : {})
+  });
   await browserSessions.recover();
   const router = modelRouterFromEnv(env);
   const models = options.models ?? createPiModels(env, credentials);
@@ -358,9 +408,15 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     : undefined;
   const guiConfigured = Boolean(grounding && verifier && visualIdentity);
   const sharedFacts = new SharedFactLedger(new WorkspaceSharedFactRepository(workspace));
-  const computer = grounding && verifier
+  const computerActionRecords = new FileComputerActionRecordStore(
+    join(workspaceRoot, ".adpilot", "computer-actions")
+  );
+  const computerMutationReplay = new FileMutationReplayStore(
+    join(workspaceRoot, ".adpilot", "computer-mutation-replay")
+  );
+  const computer = grounding && verifier && nativeOperator
     ? new VisualComputerRuntime(
-        new BrowserSessionBoundOperator(new UiTarsNativeOperator(), browserSessions),
+        new BrowserSessionBoundOperator(nativeOperator, browserSessions),
         grounding,
         verifier,
         undefined,
@@ -382,9 +438,16 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
           });
         },
         positiveInteger(env.ADPILOT_GUI_TIMEOUT_MS, 20_000),
-        Math.min(3, positiveInteger(env.ADPILOT_GUI_MAX_RETRIES, 2) + 1)
+        Math.min(3, positiveInteger(env.ADPILOT_GUI_MAX_RETRIES, 2) + 1),
+        computerActionRecords,
+        computerMutationReplay
       )
     : undefined;
+  if (computer && nativeHelperOperator) {
+    nativeHelperOperator.setUserInputHandler((binding) => {
+      computer.notifyUserInput(binding);
+    });
+  }
   const visualTableReader = primaryVision && strongVision
     && (privacyMode !== "local-only" || (primaryVisionPrivacy?.location === "local" && strongVisionPrivacy?.location === "local"))
     ? new VisualTableReader({
@@ -453,6 +516,12 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
     workspace, settings, credentials, models, audit, approvals, experiments, tools, skills, runtime, planMode, autonomy, specialists, agent,
     sessions: sessionAuthority.service, sessionAuthority,
     alerts: alertMonitor, computer,
+    nativeComputerHost: native.host,
+    nativeHelperError: native.error,
+    shutdown: async () => {
+      nativeHelperOperator?.setUserInputHandler(undefined);
+      if (native.owned && native.host && !native.host.closed) await native.host.close();
+    },
     browserSessions, screenshotAudits, visualTableReader, events,
     approvalTokens: new Map(),
     knowledge, userSkills, promptTemplates, plugins,
@@ -469,6 +538,12 @@ export async function createAdPilotSystem(options: { workspaceRoot?: string; env
       permission: "OBSERVE"
     }
   };
+  } catch (error) {
+    if (native.owned && native.host && !native.host.closed) {
+      await native.host.close().catch(() => undefined);
+    }
+    throw error;
+  }
 }
 
 /** Never expose complete screenshot bytes or native window titles through UI events. */
@@ -490,6 +565,7 @@ export function sanitizeVisualRuntimeEvent(event: VisualRuntimeEvent): PublicVis
     };
   }
   if (event.type === "grounded" || event.type === "executed") {
+    const overlay = publicActionOverlay(event.action);
     return {
       type: event.type,
       attempt: event.attempt,
@@ -503,10 +579,35 @@ export function sanitizeVisualRuntimeEvent(event: VisualRuntimeEvent): PublicVis
         confidence: event.action.confidence,
         expectedResult: event.action.expected_result,
         riskLevel: event.action.risk_level
-      }
+      },
+      ...(overlay ? { overlay } : {})
     };
   }
   return structuredClone(event) as PublicVisualRuntimeEvent;
+}
+
+function publicActionOverlay(action: VisualAction): NonNullable<PublicVisualRuntimeEvent["overlay"]> | undefined {
+  const allowed = action.allowedRegion?.coordinateSpace === "screenshot_pixels"
+    ? {
+        x: action.allowedRegion.x,
+        y: action.allowedRegion.y,
+        width: action.allowedRegion.width,
+        height: action.allowedRegion.height
+      }
+    : undefined;
+  const pointer = "x" in action && "y" in action && action.x !== undefined && action.y !== undefined
+    ? { x: action.x, y: action.y }
+    : undefined;
+  const dragTo = action.action === "drag"
+    ? { x: action.end_x, y: action.end_y }
+    : undefined;
+  if (!allowed && !pointer && !dragTo) return undefined;
+  return {
+    coordinateSpace: "screenshot_pixels",
+    ...(allowed ? { targetBox: allowed } : {}),
+    ...(pointer ? { pointer } : {}),
+    ...(dragTo ? { dragTo } : {})
+  };
 }
 
 function requireTaskClient(task: VisualMicroTask | undefined): string {
@@ -590,6 +691,69 @@ function endpointPrivacy(baseURL: string, modelId: string): ModelPrivacyDescript
     location: local ? "local" : "remote",
     retentionPolicy: local ? "local process; no network transmission" : "provider-configured retention; AdPilot stores no remote image copy"
   };
+}
+
+async function resolveApplicationNativeComputer(
+  options: CreateAdPilotSystemOptions,
+  env: NodeJS.ProcessEnv
+): Promise<{
+  host: NativeComputerService | undefined;
+  error: string | undefined;
+  owned: boolean;
+}> {
+  if (options.nativeComputerHost) {
+    return options.nativeComputerHost.closed
+      ? { host: undefined, error: "injected native Helper host is already closed", owned: false }
+      : { host: options.nativeComputerHost, error: undefined, owned: false };
+  }
+  // An explicit operator is a test/embedding seam and never causes a second
+  // Helper actor to be discovered or launched.
+  if (options.nativeOperator) return { host: undefined, error: undefined, owned: false };
+  if (options.nativeHelper === false) {
+    return { host: undefined, error: "native Helper was explicitly disabled", owned: false };
+  }
+  if (process.platform !== "darwin") {
+    return { host: undefined, error: `native Computer Use is unavailable on ${process.platform}`, owned: false };
+  }
+
+  const explicitPath = options.nativeHelper?.explicitPath ?? env.ADPILOT_NATIVE_HELPER_PATH;
+  const repositoryRoot = options.nativeHelper?.repositoryRoot
+    // Vitest systems must opt in to a real child process. This is not a
+    // production fallback; production and development discover the stable path.
+    ?? (process.env.VITEST ? undefined : process.cwd());
+  try {
+    const executablePath = await resolveNativeHelperExecutable({
+      ...(explicitPath ? { explicitPath } : {}),
+      ...(options.nativeHelper?.resourcesPath ? { resourcesPath: options.nativeHelper.resourcesPath } : {}),
+      ...(repositoryRoot ? { repositoryRoot } : {})
+    });
+    if (!executablePath) {
+      return { host: undefined, error: "native Helper executable was not found at a supported stable path", owned: false };
+    }
+    const packaged = executablePath.includes(".app/Contents/MacOS/");
+    const host = await NativeComputerHostSupervisor.launch({
+      executablePath,
+      sessionId: `adpilot-application-${process.pid}`,
+      ...(packaged
+        ? {
+            expectedIdentity: {
+              bundleIdentifier: NATIVE_HELPER_BUNDLE_ID,
+              signingIdentifier: NATIVE_HELPER_BUNDLE_ID
+            }
+          }
+        : {})
+    });
+    return { host, error: undefined, owned: true };
+  } catch (error) {
+    const code = typeof error === "object" && error && "code" in error
+      ? String((error as { code?: unknown }).code ?? "NATIVE_HELPER_UNAVAILABLE")
+      : "NATIVE_HELPER_UNAVAILABLE";
+    return {
+      host: undefined,
+      error: `${code}: ${error instanceof Error ? error.message : String(error)}`,
+      owned: false
+    };
+  }
 }
 
 function positiveInteger(value: string | undefined, fallback: number): number {
