@@ -6,6 +6,7 @@ import {
   localTerminalChunk,
   mergeTerminalChunks,
   serverLastSeq,
+  stripAnsi,
   terminalActionUrl,
   terminalOutputUrl,
   terminalUrl,
@@ -251,7 +252,7 @@ export function TerminalPanel({ locale, defaultCwd, projectName }: {
       <div className="term-output" ref={outputRef} aria-live="polite">
         {booting && <div className="term-line" data-stream="meta">{copy.terminalStarting}</div>}
         {activeChunks.map((chunk) => (
-          <div key={chunk.seq} className="term-line" data-stream={chunk.stream}>{chunk.data}</div>
+          <div key={chunk.seq} className="term-line" data-stream={chunk.stream}>{stripAnsi(chunk.data)}</div>
         ))}
         {activeExited && <div className="term-line" data-stream="meta">{copy.terminalExited}</div>}
       </div>

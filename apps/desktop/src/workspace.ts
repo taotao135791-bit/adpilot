@@ -252,6 +252,17 @@ export function serverLastSeq(chunks: readonly TerminalChunk[]): number {
   return last;
 }
 
+/**
+ * Strip ANSI escape sequences (CSI color/style, OSC titles, and the private
+ * charset/ mode toggles interactive shells emit). The terminal view is a
+ * plain-text log, not an emulator — raw codes would render as noise.
+ */
+const ANSI_PATTERN = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[()][0-2]|\x1b[=>]/g;
+
+export function stripAnsi(data: string): string {
+  return data.replace(ANSI_PATTERN, "");
+}
+
 /** Diff line classification for the colored diff view. */
 export type DiffLineKind = "add" | "del" | "hunk" | "meta" | "context";
 

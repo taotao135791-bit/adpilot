@@ -19,6 +19,7 @@ import {
   shortId,
   sortArtifactsRecent,
   serverLastSeq,
+  stripAnsi,
   terminalLastSeq,
   terminalOutputUrl,
   type KernelArtifact,
@@ -189,5 +190,12 @@ describe("misc view logic", () => {
 
   it("shortens ids for display", () => {
     expect(shortId("12345678-abcd")).toBe("12345678");
+  });
+
+  it("strips ANSI escape sequences from shell output", () => {
+    expect(stripAnsi("[1m[7m[27m[1m[0m guolu%")).toBe(" guolu%");
+    expect(stripAnsi("[31merror[0m: failed")).toBe("error: failed");
+    expect(stripAnsi("plain text")).toBe("plain text");
+    expect(stripAnsi("[1;32m✓[0m done")).toBe("✓ done");
   });
 });
