@@ -91,6 +91,7 @@ export function parseValidationArguments(
   const required = ["--client", "--browser-profile", "--campaign"];
   const allowed = new Set([
     ...required,
+    "--test-account",
     ...(mode === "prepare" ? ["--draft-budget"] : [])
   ]);
   const tokens = inputTokens.filter((token, index) => !(index === 0 && token === "--"));

@@ -31,8 +31,8 @@ const usage = [
   "Google Ads logged-in-browser pure-vision validation (never uses DOM/Playwright).",
   "",
   "Usage:",
-  "  pnpm validate:visual:google-ads:observe -- --client <id> --browser-profile <name> --campaign <name>",
-  "  pnpm validate:visual:google-ads:prepare -- --client <id> --browser-profile <name> --campaign <name> --draft-budget <value>",
+  "  pnpm validate:visual:google-ads:observe -- --client <id> --test-account <account-ref> --browser-profile <name> --campaign <name>",
+  "  pnpm validate:visual:google-ads:prepare -- --client <id> --test-account <account-ref> --browser-profile <name> --campaign <name> --draft-budget <value>",
   "",
   "Start the AdPilot-managed browser first, then log in manually and leave its bound window in the foreground.",
   "For prepare, manually open the budget editor and focus the budget input before running the command.",
@@ -53,6 +53,7 @@ const cliArguments = parseValidationArguments(mode, process.argv.slice(3));
 const clientId = cliArguments.get("--client")!;
 const browserProfile = cliArguments.get("--browser-profile")!;
 const campaign = cliArguments.get("--campaign")!;
+const expectedAccountRef = cliArguments.get("--test-account");
 const draftBudget = cliArguments.get("--draft-budget");
 if (mode === "prepare" && !draftBudget) throw new Error("prepare requires --draft-budget");
 if (draftBudget && (!/^\d+(?:\.\d{1,2})?$/.test(draftBudget) || Number(draftBudget) <= 0)) {
@@ -60,11 +61,15 @@ if (draftBudget && (!/^\d+(?:\.\d{1,2})?$/.test(draftBudget) || Number(draftBudg
 }
 
 const system = await createAdPilotSystem();
-if (!system.computer) throw new Error("Computer Use is not ready; connect an image-capable model in Settings");
 const client = await system.workspace.readClient(clientId);
 const account = client.accounts?.accounts.find((item) => item.platform === "google_ads" && item.browserProfile === browserProfile);
 if (!account || !account.allowedDomains.includes("ads.google.com")) {
   throw new Error(`client ${clientId} has no google_ads account bound to browser profile ${browserProfile} and ads.google.com`);
+}
+if (expectedAccountRef && account.accountRef !== expectedAccountRef) {
+  throw new Error(
+    `named test account does not match the google_ads account bound to browser profile ${browserProfile}`
+  );
 }
 const session = await system.browserSessions.get(clientId, browserProfile);
 if (!session || session.sessionStatus !== "connected") {
@@ -73,6 +78,7 @@ if (!session || session.sessionStatus !== "connected") {
 if (!session.processId || !session.windowId || !session.nativeProfileFingerprint) {
   throw new Error("managed browser lacks the required native PID/window/profile identity");
 }
+if (!system.computer) throw new Error("Computer Use is not ready; connect an image-capable model in Settings");
 await system.browserSessions.assertActive(clientId, browserProfile, "google_ads");
 const taskSurface = {
   app: session.browserApp,

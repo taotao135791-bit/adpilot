@@ -23,6 +23,12 @@ import {
   readRealBrowserManifest,
   verifyRealBrowserEvidence
 } from "./real-browser-manifest.js";
+import {
+  ComputerUseEvaluation,
+  createComputerUseMetrics,
+  currentComputerUseEnvironment,
+  emptyComputerUseTarget
+} from "./computer-use-evaluation.js";
 
 if (process.argv.includes("--help")) {
   console.log([
@@ -103,10 +109,74 @@ const liveModelEval = corpusValidation.status === "passed"
     };
 
 const realBrowserValidation = await loadRealBrowserValidation(process.env.ADPILOT_REAL_BROWSER_REPORT);
+const liveReports = [
+  ...Object.values(liveModelEval.routes),
+  liveModelEval.guiVerificationModel,
+  liveModelEval.visualTableReader,
+  liveModelEval.dualVisualIdentity
+];
+const providerResponses = liveProviderResponses(liveModelEval);
+const liveActionAttempts = Object.values(liveModelEval.routes)
+  .reduce((total, route) => total + route.metrics.providerResponses, 0);
+const liveActionSuccesses = Object.values(liveModelEval.routes)
+  .reduce((total, route) => total + successes(
+    route.metrics.actionSuccessRate,
+    route.metrics.evaluatedCases
+  ), 0);
+const liveVerificationAttempts = liveModelEval.guiVerificationModel.metrics.evaluatedCases;
+const liveVerificationSuccesses = successes(
+  liveModelEval.guiVerificationModel.metrics.verificationAccuracy,
+  liveVerificationAttempts
+);
+const evaluation = ComputerUseEvaluation.parse({
+  schema: "ComputerUseEvaluation",
+  schemaVersion: 1,
+  generatedAt: new Date().toISOString(),
+  command: "pnpm eval:computer-use:live",
+  mode: "live-model",
+  evidenceClass: "live-model-fixture",
+  status: providerResponses === 0
+    ? "not-run"
+    : liveModelEval.status === "failed"
+      ? "failed"
+      : "passed",
+  ...currentComputerUseEnvironment(),
+  execution: {
+    fixtureUsed: true,
+    liveModelCalled: providerResponses > 0,
+    realBrowserUsed: false,
+    nativeInputExecuted: false,
+    mutationExecuted: false
+  },
+  target: emptyComputerUseTarget(),
+  metrics: createComputerUseMetrics({
+    runs: providerResponses > 0 ? 1 : 0,
+    passedRuns: providerResponses > 0 && liveModelEval.status !== "failed" ? 1 : 0,
+    failedRuns: liveModelEval.status === "failed" ? 1 : 0,
+    actionAttempts: liveActionAttempts,
+    successfulActions: liveActionSuccesses,
+    verificationAttempts: liveVerificationAttempts,
+    successfulVerifications: liveVerificationSuccesses
+  }),
+  blockers: providerResponses === 0
+    ? [{
+        code: "LIVE_MODEL_NOT_CONFIGURED",
+        message: providerAssemblyError
+          ?? "No configured live visual provider returned a response."
+      }]
+    : [],
+  artifacts: [],
+  notes: [
+    "This evaluation calls live product model interfaces against sanitized fixtures.",
+    "It does not use a real browser and does not execute native input.",
+    `${liveReports.filter((route) => route.status === "not-run").length} live routes were not run.`
+  ]
+});
 const report = {
   schemaVersion: 2,
   generatedAt: new Date().toISOString(),
   command: "pnpm eval:computer-use:live",
+  evaluation,
   guarantees: {
     liveProvidersCalledDirectly: liveProviderResponses(liveModelEval) > 0,
     liveProviderInvocationMode: "GroundingModel.ground, VisualVerifier.verify, VisualTableReader.read, and DualVisualIdentityVerifier.confirm; no prediction adapter",
@@ -259,4 +329,8 @@ function optionalPositiveInteger(value: string | undefined): number | undefined 
 
 function average(values: number[]): number | null {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+}
+
+function successes(rate: number | null, attempts: number): number {
+  return rate === null ? 0 : Math.round(rate * attempts);
 }
