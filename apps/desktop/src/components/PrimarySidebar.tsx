@@ -1,47 +1,80 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { WorkspaceCopy } from "../labels.js";
+import { useCallback, useRef, useState } from "react";
+import type { WorkspaceCopy, ConsoleCopy, AppLocale } from "../labels.js";
+import { sessionStatusTone } from "../sessionList.js";
+import { sessionStatusLabel } from "../labels.js";
 import { Tooltip } from "../ui.js";
 import {
   IconAsterisk,
+  IconArchive,
   IconBolt,
-  IconDiamond,
+  IconChevronDown,
+  IconDismiss,
   IconDocLines,
+  IconMenu,
   IconMoon,
+  IconPencil,
+  IconPin,
+  IconPlus,
   IconPuzzle,
+  IconRestore,
+  IconSearch,
   IconSettings,
   IconStarFilled
 } from "../icons.js";
-import type { Client } from "../types.js";
+import { LogoMark } from "./LogoMark.js";
+import type { Client, ProductSession } from "../types.js";
 
 export type PrimaryView = "home" | "chat" | "projects" | "project" | "automations" | "skills" | "plugins";
 
-const MIN_WIDTH = 60;
-const COLLAPSE_AT = 132;
+const MIN_WIDTH = 200;
+const HIDE_BELOW = 168;
 const MAX_WIDTH = 340;
-const DEFAULT_WIDTH = 236;
+const DEFAULT_WIDTH = 248;
 const STORAGE_KEY = "adpilot-primary-sidebar-width";
 
 /**
- * The single primary sidebar. Drag its right edge to resize continuously;
- * below the collapse threshold it snaps into a pure icon strip, above it
- * becomes the text navigation column. Double-clicking the edge toggles the
- * two states. This replaces the old icon-rail + text-sidebar pair.
+ * The single primary sidebar, Codex-style: logo row under the traffic
+ * lights, new-session, search, a fixed nav menu, an independently scrolling
+ * session list (with pin/rename/archive), and a footer with workspaces and
+ * app toggles. The parent hides the whole column below the resize
+ * threshold instead of shrinking it into an icon strip.
  */
-export function PrimarySidebar({ copy, view, theme, clients, clientId, pluginsLabel, settingsLabel, themeLabel, onNewSession, onNavigate, onSelectClient, onShowPlugins, onOpenSettings, onToggleTheme }: {
+export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients, clientId, sessions, selectedSessionId, search, pinnedSessions, archivedSessions, archivedOpen, renamingId, renameDraft, pluginsLabel, settingsLabel, themeLabel, onNewSession, onNavigate, onSelectClient, onSelectSession, onTogglePin, onStartRename, onRenameDraft, onCommitRename, onCancelRename, onArchive, onRestore, onToggleArchivedOpen, onSearchChange, onShowPlugins, onOpenSettings, onToggleTheme, onHideSidebar }: {
   copy: WorkspaceCopy;
+  consoleCopy: ConsoleCopy;
+  locale: AppLocale;
   view: PrimaryView;
   theme: "dark" | "light";
   clients: Client[];
   clientId: string;
+  sessions: ProductSession[];
+  selectedSessionId: string | null;
+  search: string;
+  pinnedSessions: ProductSession[];
+  archivedSessions: ProductSession[];
+  archivedOpen: boolean;
+  renamingId: string | null;
+  renameDraft: string;
   pluginsLabel: string;
   settingsLabel: string;
   themeLabel: string;
   onNewSession: () => void;
   onNavigate: (view: "home" | "chat" | "projects" | "automations" | "skills") => void;
   onSelectClient: (clientId: string) => void;
+  onSelectSession: (session: ProductSession) => void;
+  onTogglePin: (session: ProductSession) => void;
+  onStartRename: (session: ProductSession) => void;
+  onRenameDraft: (value: string) => void;
+  onCommitRename: (session: ProductSession) => void;
+  onCancelRename: () => void;
+  onArchive: (session: ProductSession) => void;
+  onRestore: (session: ProductSession) => void;
+  onToggleArchivedOpen: () => void;
+  onSearchChange: (value: string) => void;
   onShowPlugins: () => void;
   onOpenSettings: () => void;
   onToggleTheme: () => void;
+  onHideSidebar: () => void;
 }) {
   const [width, setWidth] = useState(() => {
     const stored = Number(localStorage.getItem(STORAGE_KEY));
@@ -49,11 +82,6 @@ export function PrimarySidebar({ copy, view, theme, clients, clientId, pluginsLa
   });
   const drag = useRef<{ startX: number; startWidth: number } | null>(null);
   const [dragging, setDragging] = useState(false);
-  const collapsed = width < COLLAPSE_AT;
-
-  const persist = useCallback((value: number) => {
-    localStorage.setItem(STORAGE_KEY, String(value));
-  }, []);
 
   const onPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -64,7 +92,7 @@ export function PrimarySidebar({ copy, view, theme, clients, clientId, pluginsLa
 
   const onPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (!drag.current) return;
-    const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, drag.current.startWidth + event.clientX - drag.current.startX));
+    const next = Math.min(MAX_WIDTH, Math.max(0, drag.current.startWidth + event.clientX - drag.current.startX));
     setWidth(next);
   }, []);
 
@@ -73,125 +101,213 @@ export function PrimarySidebar({ copy, view, theme, clients, clientId, pluginsLa
     drag.current = null;
     setDragging(false);
     event.currentTarget.releasePointerCapture(event.pointerId);
-    setWidth((current) => {
-      const snapped = current < COLLAPSE_AT ? MIN_WIDTH : current;
-      persist(snapped);
-      return snapped;
-    });
-  }, [persist]);
+    if (width < HIDE_BELOW) {
+      setWidth(DEFAULT_WIDTH);
+      onHideSidebar();
+      return;
+    }
+    const clamped = Math.max(MIN_WIDTH, width);
+    setWidth(clamped);
+    localStorage.setItem(STORAGE_KEY, String(clamped));
+  }, [width, onHideSidebar]);
 
-  const toggle = useCallback(() => {
-    setWidth((current) => {
-      const next = current < COLLAPSE_AT ? DEFAULT_WIDTH : MIN_WIDTH;
-      persist(next);
-      return next;
-    });
-  }, [persist]);
-
-  useEffect(() => {
-    if (!dragging) return;
-    document.body.classList.add("sidebar-dragging");
-    return () => document.body.classList.remove("sidebar-dragging");
-  }, [dragging]);
-
-  const items: Array<{ key: "home" | "chat" | "projects" | "automations" | "skills"; label: string; icon: React.ReactNode }> = [
-    { key: "home", label: copy.navHome, icon: <IconStarFilled size={16} /> },
-    { key: "chat", label: copy.navChat, icon: <IconDiamond size={16} /> },
-    { key: "projects", label: copy.navProjects, icon: <IconDocLines size={16} /> },
-    { key: "automations", label: copy.navAutomations, icon: <IconBolt size={16} /> },
-    { key: "skills", label: copy.navSkills, icon: <IconAsterisk size={16} /> }
+  const navItems: Array<{ key: "home" | "projects" | "automations" | "skills"; label: string; icon: React.ReactNode }> = [
+    { key: "home", label: copy.navHome, icon: <IconStarFilled size={15} /> },
+    { key: "projects", label: copy.navProjects, icon: <IconDocLines size={15} /> },
+    { key: "automations", label: copy.navAutomations, icon: <IconBolt size={15} /> },
+    { key: "skills", label: copy.navSkills, icon: <IconAsterisk size={15} /> }
   ];
   const isActive = (key: string) => key === "projects" ? view === "projects" || view === "project" : view === key;
+
+  const renderRow = (session: ProductSession, archived: boolean) => {
+    const tone = sessionStatusTone(session.status);
+    const selected = session.id === selectedSessionId;
+    const pinned = Boolean(session.pinnedAt);
+    if (renamingId === session.id) {
+      return (
+        <li key={session.id} className="session-item active">
+          <input
+            className="session-rename"
+            value={renameDraft}
+            maxLength={200}
+            aria-label={consoleCopy.renameSession}
+            autoFocus
+            onFocus={(event) => event.currentTarget.select()}
+            onChange={(event) => onRenameDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") { event.preventDefault(); onCommitRename(session); }
+              if (event.key === "Escape") { event.preventDefault(); onCancelRename(); }
+            }}
+            onBlur={() => onCommitRename(session)}
+          />
+        </li>
+      );
+    }
+    return (
+      <li key={session.id} className={`session-item${selected ? " active" : ""}${archived ? " archived" : ""}`}>
+        <button
+          type="button"
+          className="session-open"
+          aria-current={selected ? "true" : undefined}
+          onClick={() => onSelectSession(session)}
+        >
+          {tone !== "quiet" && (
+            <span className="session-status" data-tone={tone} role="img" aria-label={sessionStatusLabel(session.status, locale)} />
+          )}
+          <span className="session-title">{session.title || consoleCopy.untitledSession}</span>
+          {pinned && !archived && <IconPin size={11} className="session-pinned-mark" />}
+        </button>
+        <span className="session-actions">
+          {archived ? (
+            <Tooltip content={consoleCopy.restoreSession} side="top">
+              <button type="button" aria-label={`${consoleCopy.restoreSession}: ${session.title}`} onClick={() => onRestore(session)}>
+                <IconRestore size={13} />
+              </button>
+            </Tooltip>
+          ) : (
+            <>
+              <Tooltip content={pinned ? consoleCopy.unpinSession : consoleCopy.pinSession} side="top">
+                <button type="button" aria-label={`${pinned ? consoleCopy.unpinSession : consoleCopy.pinSession}: ${session.title}`} data-on={pinned || undefined} onClick={() => onTogglePin(session)}>
+                  <IconPin size={13} />
+                </button>
+              </Tooltip>
+              <Tooltip content={consoleCopy.renameSession} side="top">
+                <button type="button" aria-label={`${consoleCopy.renameSession}: ${session.title}`} onClick={() => onStartRename(session)}>
+                  <IconPencil size={13} />
+                </button>
+              </Tooltip>
+              <Tooltip content={consoleCopy.archiveSession} side="top">
+                <button type="button" aria-label={`${consoleCopy.archiveSession}: ${session.title}`} onClick={() => onArchive(session)}>
+                  <IconArchive size={13} />
+                </button>
+              </Tooltip>
+            </>
+          )}
+        </span>
+      </li>
+    );
+  };
 
   return (
     <aside
       className="primary-sidebar"
-      data-collapsed={collapsed || undefined}
       data-dragging={dragging || undefined}
       style={{ width }}
       aria-label="AdPilot"
     >
-      <div className="primary-sidebar-body">
-        <Tooltip content={copy.newChat} side="right">
-          <button type="button" className="primary-new" data-icon={collapsed || undefined} onClick={onNewSession}>
-            <span className="primary-new-plus" aria-hidden="true">+</span>
-            {!collapsed && <span className="primary-new-label">{copy.newChat}</span>}
+      <div className="primary-head">
+        <span className="primary-logo"><LogoMark size={22} /></span>
+        <strong className="primary-wordmark">AdPilot</strong>
+        <Tooltip content={consoleCopy.collapseSidebar} side="right">
+          <button type="button" className="primary-head-toggle" aria-label={consoleCopy.collapseSidebar} onClick={onHideSidebar}>
+            <IconMenu size={15} />
           </button>
         </Tooltip>
+      </div>
 
-        <nav className="primary-nav">
-          {items.map((item) => (
-            <Tooltip key={item.key} content={item.label} side="right">
-              <button
-                type="button"
-                className="primary-item"
-                aria-label={item.label}
-                aria-pressed={isActive(item.key)}
-                data-active={isActive(item.key) || undefined}
-                data-icon={collapsed || undefined}
-                onClick={() => onNavigate(item.key)}
-              >
-                {item.icon}
-                {!collapsed && <span>{item.label}</span>}
-              </button>
-            </Tooltip>
-          ))}
-        </nav>
+      <button type="button" className="primary-new" onClick={onNewSession}>
+        <IconPlus size={14} />
+        <span>{copy.newChat}</span>
+      </button>
 
-        <div className="primary-workspaces">
-          {!collapsed && <span className="primary-label">{copy.workspace}</span>}
-          {clients.map((client) => {
-            const active = client.id === clientId;
-            return (
-              <Tooltip key={client.id} content={client.name} side="right">
-                <button
-                  type="button"
-                  className="primary-workspace"
-                  aria-label={client.name}
-                  data-active={active || undefined}
-                  data-icon={collapsed || undefined}
-                  onClick={() => onSelectClient(client.id)}
-                >
-                  <i aria-hidden="true" data-filled={active || undefined} />
-                  {!collapsed && <span>{client.name}</span>}
-                </button>
-              </Tooltip>
-            );
-          })}
-        </div>
+      <div className="sidebar-search">
+        <IconSearch size={13} />
+        <input
+          type="search"
+          value={search}
+          placeholder={consoleCopy.searchSessions}
+          aria-label={consoleCopy.searchSessions}
+          onChange={(event) => onSearchChange(event.target.value)}
+        />
+        {search && (
+          <button type="button" className="sidebar-search-clear" aria-label={consoleCopy.clearSearch} onClick={() => onSearchChange("")}>
+            <IconDismiss size={11} />
+          </button>
+        )}
+      </div>
 
-        <div className="primary-foot">
-          <Tooltip content={themeLabel} side="right">
+      <nav className="primary-nav">
+        {navItems.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            className="primary-item"
+            aria-pressed={isActive(item.key)}
+            data-active={isActive(item.key) || undefined}
+            onClick={() => onNavigate(item.key)}
+          >
+            {item.icon}
+            <span>{item.label}</span>
+          </button>
+        ))}
+      </nav>
+
+      <div className="primary-sessions">
+        {pinnedSessions.length > 0 && (
+          <>
+            <span className="sidebar-label">{consoleCopy.pinnedGroup}</span>
+            <ul>{pinnedSessions.map((session) => renderRow(session, false))}</ul>
+          </>
+        )}
+        <span className="sidebar-label">{consoleCopy.conversation}</span>
+        <ul>
+          {sessions.map((session) => renderRow(session, false))}
+          {sessions.length === 0 && pinnedSessions.length === 0 && (
+            <li className="sidebar-empty">{search ? consoleCopy.noSessionMatches : consoleCopy.emptySessions}</li>
+          )}
+        </ul>
+        {archivedSessions.length > 0 && (
+          <>
             <button
               type="button"
-              className="primary-item"
-              aria-label={themeLabel}
-              aria-pressed={theme === "dark"}
-              data-icon={collapsed || undefined}
-              onClick={onToggleTheme}
+              className="sidebar-label archived-toggle"
+              aria-expanded={archivedOpen}
+              onClick={onToggleArchivedOpen}
             >
-              <IconMoon size={16} />
+              <IconChevronDown size={11} {...(archivedOpen ? { className: "open" } : {})} />
+              {consoleCopy.archivedGroup}
+              <span className="archived-count">{archivedSessions.length}</span>
             </button>
-          </Tooltip>
-          <Tooltip content={pluginsLabel} side="right">
+            {archivedOpen && <ul>{archivedSessions.map((session) => renderRow(session, true))}</ul>}
+          </>
+        )}
+      </div>
+
+      <div className="primary-workspaces">
+        <span className="primary-label">{copy.workspace}</span>
+        {clients.map((client) => {
+          const active = client.id === clientId;
+          return (
             <button
+              key={client.id}
               type="button"
-              className="primary-item"
-              aria-label={pluginsLabel}
-              aria-pressed={view === "plugins"}
-              data-active={view === "plugins" || undefined}
-              data-icon={collapsed || undefined}
-              onClick={onShowPlugins}
+              className="primary-workspace"
+              data-active={active || undefined}
+              onClick={() => onSelectClient(client.id)}
             >
-              <IconPuzzle size={16} />
+              <i aria-hidden="true" data-filled={active || undefined} />
+              <span>{client.name}</span>
             </button>
-          </Tooltip>
-          <Tooltip content={settingsLabel} side="right">
-            <button type="button" className="primary-item" aria-label={settingsLabel} data-icon={collapsed || undefined} onClick={onOpenSettings}>
-              <IconSettings size={16} />
-            </button>
-          </Tooltip>
-        </div>
+          );
+        })}
+      </div>
+
+      <div className="primary-foot">
+        <Tooltip content={themeLabel} side="top">
+          <button type="button" className="primary-foot-item" aria-label={themeLabel} aria-pressed={theme === "dark"} onClick={onToggleTheme}>
+            <IconMoon size={15} />
+          </button>
+        </Tooltip>
+        <Tooltip content={pluginsLabel} side="top">
+          <button type="button" className="primary-foot-item" aria-label={pluginsLabel} aria-pressed={view === "plugins"} data-active={view === "plugins" || undefined} onClick={onShowPlugins}>
+            <IconPuzzle size={15} />
+          </button>
+        </Tooltip>
+        <Tooltip content={settingsLabel} side="top">
+          <button type="button" className="primary-foot-item" aria-label={settingsLabel} onClick={onOpenSettings}>
+            <IconSettings size={15} />
+          </button>
+        </Tooltip>
       </div>
 
       <div
@@ -202,7 +318,6 @@ export function PrimarySidebar({ copy, view, theme, clients, clientId, pluginsLa
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onDoubleClick={toggle}
       />
     </aside>
   );

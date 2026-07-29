@@ -21,10 +21,10 @@ import {
   buildSessionListUrl,
   fallbackSession,
   isRevisionConflict,
+  isSessionPinned,
   normalizeSessionQuery
 } from "./sessionList.js";
 import { SettingsPanel, type SettingsData, type SettingsTab } from "./SettingsPanel.js";
-import { Sidebar } from "./components/Sidebar.js";
 import { ConversationFeed } from "./components/ConversationFeed.js";
 import { Composer } from "./components/Composer.js";
 import { MissionZero } from "./components/MissionZero.js";
@@ -37,7 +37,7 @@ import { AutomationsView } from "./views/AutomationsView.js";
 import { SkillsView } from "./views/SkillsView.js";
 import type { ComputerControlAction } from "./components/ComputerUseCard.js";
 import { Badge, Button, Tooltip } from "./ui.js";
-import { IconDismiss, IconError, IconSettings } from "./icons.js";
+import { IconDismiss, IconError, IconMenu, IconSettings } from "./icons.js";
 
 /**
  * Codex-style skeleton: a collapsible sidebar (brand, new conversation,
@@ -57,7 +57,7 @@ export function App() {
     const stored = localStorage.getItem("adpilot-theme");
     return stored === "light" || stored === "dark" ? stored : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   });
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("adpilot-sidebar") === "collapsed");
+  const [sidebarHidden, setSidebarHidden] = useState(() => localStorage.getItem("adpilot-sidebar") === "hidden");
   const [state, setState] = useState<State>(emptyState);
   const [clientId, setClientId] = useState("");
   const [conversationId, setConversationId] = useState("primary");
@@ -242,6 +242,11 @@ export function App() {
     .filter((session) => session.archivedAt && !session.deletedAt)
     .sort((left, right) => right.lastActivityAt.localeCompare(left.lastActivityAt))
     .slice(0, 8), [sessions]);
+  const pinnedSessions = useMemo(() => (sessionSearchResults ?? sessions).filter(isSessionPinned), [sessions, sessionSearchResults]);
+  const visibleSessions = useMemo(() => (sessionSearchResults ?? sessions).filter((session) => !isSessionPinned(session)), [sessions, sessionSearchResults]);
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
 
   function applySettings(data: SettingsData) {
     setSettingsData(data);
@@ -252,12 +257,23 @@ export function App() {
     localStorage.setItem("adpilot-theme", nextTheme);
   }
 
-  function toggleSidebar() {
-    setSidebarCollapsed((current) => {
-      localStorage.setItem("adpilot-sidebar", current ? "expanded" : "collapsed");
+  function toggleSidebarHidden() {
+    setSidebarHidden((current) => {
+      localStorage.setItem("adpilot-sidebar", current ? "expanded" : "hidden");
       return !current;
     });
   }
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        toggleSidebarHidden();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   /** Resyncs the sidebar list from the server — the rollback path after a
      failed optimistic mutation, including 409 revision conflicts. */
@@ -667,53 +683,65 @@ export function App() {
 
   return (
     <div className="shell" data-theme={theme} data-native={isNativeDesktop}>
-      <PrimarySidebar
-        copy={workspaceCopy(locale)}
-        view={mainView}
-        theme={theme}
-        clients={state.clients}
-        clientId={clientId}
-        pluginsLabel={pluginsCopy(locale).nav}
-        settingsLabel={copy.settings}
-        themeLabel={copy.themeToggle}
-        onNewSession={() => {
-          setMainView("chat");
-          void newSession();
-        }}
-        onNavigate={navigateRail}
-        onSelectClient={selectClient}
-        onShowPlugins={() => setMainView("plugins")}
-        onOpenSettings={() => openSettings("general")}
-        onToggleTheme={toggleTheme}
-      />
+      {!sidebarHidden && (
+        <PrimarySidebar
+          copy={workspaceCopy(locale)}
+          consoleCopy={copy}
+          locale={locale}
+          view={mainView}
+          theme={theme}
+          clients={state.clients}
+          clientId={clientId}
+          sessions={visibleSessions}
+          selectedSessionId={selectedSessionId}
+          search={sessionSearch}
+          pinnedSessions={pinnedSessions}
+          archivedSessions={archivedSessions}
+          archivedOpen={archivedOpen}
+          renamingId={renamingId}
+          renameDraft={renameDraft}
+          pluginsLabel={pluginsCopy(locale).nav}
+          settingsLabel={copy.settings}
+          themeLabel={copy.themeToggle}
+          onNewSession={() => {
+            setMainView("chat");
+            void newSession();
+          }}
+          onNavigate={navigateRail}
+          onSelectClient={selectClient}
+          onSelectSession={selectSession}
+          onTogglePin={(session) => void togglePin(session)}
+          onStartRename={(session) => {
+            setRenamingId(session.id);
+            setRenameDraft(session.title);
+          }}
+          onRenameDraft={setRenameDraft}
+          onCommitRename={(session) => {
+            const title = renameDraft.trim();
+            setRenamingId(null);
+            if (title && title !== session.title) void renameSession(session, title);
+          }}
+          onCancelRename={() => setRenamingId(null)}
+          onArchive={(session) => void archiveSession(session)}
+          onRestore={(session) => void restoreSession(session)}
+          onToggleArchivedOpen={() => setArchivedOpen((open) => !open)}
+          onSearchChange={setSessionSearch}
+          onShowPlugins={() => setMainView("plugins")}
+          onOpenSettings={() => openSettings("general")}
+          onToggleTheme={toggleTheme}
+          onHideSidebar={toggleSidebarHidden}
+        />
+      )}
 
-      {mainView === "chat" && (
-      <Sidebar
-        copy={copy}
-        locale={locale}
-        clients={state.clients}
-        clientId={clientId}
-        sessions={sessionSearchResults ?? sessions}
-        searching={sessionSearchResults !== null}
-        selectedSessionId={selectedSessionId}
-        search={sessionSearch}
-        pendingApprovals={openApprovals.length}
-        collapsed={sidebarCollapsed}
-        onToggleCollapsed={toggleSidebar}
-        onNewSession={() => void newSession()}
-        onSelectSession={selectSession}
-        onTogglePin={(session) => void togglePin(session)}
-        onRename={(session, title) => void renameSession(session, title)}
-        onArchive={(session) => void archiveSession(session)}
-        onRestore={(session) => void restoreSession(session)}
-        onSearchChange={setSessionSearch}
-        onSelectClient={selectClient}
-        onJumpToApprovals={jumpToApprovals}
-        onOpenSettings={() => openSettings("general")}
-        pluginsLabel={pluginsCopy(locale).nav}
-        pluginsActive={false}
-        onShowPlugins={() => setMainView("plugins")}
-      />
+      {sidebarHidden && (
+        <button
+          type="button"
+          className="sidebar-reopen"
+          aria-label={copy.expandSidebar}
+          onClick={toggleSidebarHidden}
+        >
+          <IconMenu size={15} />
+        </button>
       )}
 
       <main className="main-column">
