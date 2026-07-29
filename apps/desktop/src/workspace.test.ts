@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  adsAccountsUrl,
+  adsCampaignsUrl,
+  adsCreativesUrl,
+  adsDailyBriefUrl,
+  adsDecisionTransitionUrl,
+  adsDecisionsUrl,
   artifactDownloadFile,
   artifactOutputUrl,
   artifactThumbFiles,
@@ -9,9 +15,14 @@ import {
   automationRunsUrl,
   automationsUrl,
   automationUrl,
+  briefSections,
+  briefSectionSeverity,
+  buildBriefFacts,
+  BRIEF_SECTION_KEYS,
   countUnread,
   cronPresetFields,
   currentVersionFiles,
+  decisionTransitionActions,
   describeCron,
   diffLineKind,
   fsTreeUrl,
@@ -29,13 +40,20 @@ import {
   parseRootPathsInput,
   shortId,
   sortArtifactsRecent,
+  sortDecisionsRecent,
   sortRunsRecent,
   serverLastSeq,
   stripAnsi,
   terminalLastSeq,
   terminalOutputUrl,
+  type AdAccount,
+  type AdCampaign,
+  type AdCreative,
+  type AdDecision,
   type AppNotification,
   type AutomationRun,
+  type BriefItem,
+  type DailyBrief,
   type KernelArtifact,
   type KernelTask,
   type TerminalChunk
@@ -298,5 +316,154 @@ describe("automation URL builders", () => {
     expect(notificationsUrl("personal")).toBe("/api/notifications?workspaceId=personal");
     expect(notificationsUrl("personal", true)).toBe("/api/notifications?workspaceId=personal&unread=true");
     expect(notificationReadUrl("n1")).toBe("/api/notifications/n1/read");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Ads intelligence                                                    */
+/* ------------------------------------------------------------------ */
+
+function adAccount(id: string): AdAccount {
+  return {
+    id,
+    workspaceId: "personal",
+    platform: "google",
+    name: `Account ${id.slice(0, 4)}`,
+    createdAt: "2026-07-01T00:00:00.000Z",
+    updatedAt: "2026-07-01T00:00:00.000Z",
+    revision: 1
+  };
+}
+
+function adCampaign(id: string, accountId: string, status?: string): AdCampaign {
+  return {
+    id,
+    accountId,
+    name: `Campaign ${id.slice(0, 4)}`,
+    ...(status !== undefined ? { status } : {}),
+    createdAt: "2026-07-01T00:00:00.000Z",
+    updatedAt: "2026-07-01T00:00:00.000Z",
+    revision: 1
+  };
+}
+
+function adCreative(id: string, accountId: string): AdCreative {
+  return {
+    id,
+    accountId,
+    name: `Creative ${id.slice(0, 4)}`,
+    platform: "meta",
+    campaignIds: [],
+    createdAt: "2026-07-01T00:00:00.000Z",
+    updatedAt: "2026-07-01T00:00:00.000Z",
+    revision: 1
+  };
+}
+
+function adDecision(overrides: Partial<AdDecision> = {}): AdDecision {
+  counter += 1;
+  return {
+    id: `00000000-0000-4000-8000-${String(counter).padStart(12, "0")}`,
+    projectId: "00000000-0000-4000-8000-0000000000ff",
+    recommendation: `Decision ${counter}`,
+    rationale: [],
+    evidenceIds: [],
+    confidence: "medium",
+    risks: [],
+    status: "proposed",
+    createdAt: "2026-07-01T00:00:00.000Z",
+    updatedAt: "2026-07-01T00:00:00.000Z",
+    revision: 1,
+    ...overrides
+  };
+}
+
+function briefItem(severity: BriefItem["severity"], title = severity): BriefItem {
+  return { ruleId: "rule", severity, title, detail: "", entityRefs: {}, evidenceIds: [] };
+}
+
+describe("ads URL builders", () => {
+  it("builds account, campaign, creative, decision, and brief routes", () => {
+    expect(adsAccountsUrl("personal")).toBe("/api/ads/accounts?workspaceId=personal");
+    expect(adsCampaignsUrl("personal")).toBe("/api/ads/campaigns?workspaceId=personal");
+    expect(adsCampaignsUrl("personal", "acc 1")).toBe("/api/ads/campaigns?workspaceId=personal&accountId=acc+1");
+    expect(adsCreativesUrl("personal", "acc1")).toBe("/api/ads/creatives?workspaceId=personal&accountId=acc1");
+    expect(adsDecisionsUrl("personal", "p1")).toBe("/api/ads/decisions?workspaceId=personal&projectId=p1");
+    expect(adsDecisionsUrl("personal", "p1", "proposed")).toBe("/api/ads/decisions?workspaceId=personal&projectId=p1&status=proposed");
+    expect(adsDecisionTransitionUrl("d 1")).toBe("/api/ads/decisions/d%201/transition");
+    expect(adsDailyBriefUrl()).toBe("/api/ads/daily-brief");
+  });
+});
+
+describe("buildBriefFacts", () => {
+  it("declares one metrics row per registry entity with evidence refs and no fabricated numbers", () => {
+    const facts = buildBriefFacts({
+      accounts: [adAccount("a1"), adAccount("a2")],
+      campaigns: [adCampaign("c1", "a1", "learning"), adCampaign("c2", "a2")],
+      creatives: [adCreative("cr1", "a1")]
+    });
+    expect(facts.metrics.accounts).toEqual([
+      { accountId: "a1", evidenceIds: ["account:a1"] },
+      { accountId: "a2", evidenceIds: ["account:a2"] }
+    ]);
+    expect(facts.metrics.campaigns).toEqual([
+      { campaignId: "c1", learningStatus: "learning", evidenceIds: ["campaign:c1"] },
+      { campaignId: "c2", evidenceIds: ["campaign:c2"] }
+    ]);
+    expect(facts.metrics.creatives).toEqual([{ creativeId: "cr1", evidenceIds: ["creative:cr1"] }]);
+    const serialized = JSON.stringify(facts);
+    expect(serialized).not.toMatch(/spend|cpa|ctr/i);
+  });
+
+  it("assembles empty row lists for an empty registry", () => {
+    expect(buildBriefFacts({ accounts: [], campaigns: [], creatives: [] })).toEqual({
+      metrics: { accounts: [], campaigns: [], creatives: [] }
+    });
+  });
+});
+
+describe("briefSections", () => {
+  it("returns all seven sections in canonical order, normalizing gaps to empty lists", () => {
+    const brief = {
+      schemaVersion: "1.0",
+      generatedAt: "2026-07-29T00:00:00.000Z",
+      workspaceId: "personal",
+      sections: { creativeFatigue: [briefItem("warning")] },
+      summary: { totalFindings: 1, criticalCount: 0, warningCount: 1, infoCount: 0 }
+    } as unknown as DailyBrief;
+    const sections = briefSections(brief);
+    expect(sections.map((section) => section.key)).toEqual([...BRIEF_SECTION_KEYS]);
+    expect(sections[1]?.items).toHaveLength(1);
+    expect(sections.filter((section) => section.items.length > 0)).toHaveLength(1);
+  });
+});
+
+describe("briefSectionSeverity", () => {
+  it("picks the worst severity and null for empty sections", () => {
+    expect(briefSectionSeverity([briefItem("info"), briefItem("critical"), briefItem("warning")])).toBe("critical");
+    expect(briefSectionSeverity([briefItem("info"), briefItem("warning")])).toBe("warning");
+    expect(briefSectionSeverity([briefItem("info")])).toBe("info");
+    expect(briefSectionSeverity([])).toBeNull();
+  });
+});
+
+describe("decisionTransitionActions", () => {
+  it("maps each open status to its queue actions and terminal statuses to none", () => {
+    expect(decisionTransitionActions("proposed").map((action) => action.to)).toEqual(["approved", "failed"]);
+    expect(decisionTransitionActions("approved").map((action) => action.to)).toEqual(["executed"]);
+    expect(decisionTransitionActions("executed").map((action) => action.to)).toEqual(["observing"]);
+    expect(decisionTransitionActions("observing").map((action) => action.to)).toEqual(["successful", "reverted"]);
+    for (const status of ["successful", "failed", "reverted"] as const) {
+      expect(decisionTransitionActions(status)).toEqual([]);
+    }
+  });
+});
+
+describe("sortDecisionsRecent", () => {
+  it("orders by updatedAt descending and caps the list", () => {
+    const older = adDecision({ recommendation: "older", updatedAt: "2026-07-20T00:00:00.000Z" });
+    const fresher = adDecision({ recommendation: "fresher", updatedAt: "2026-07-28T00:00:00.000Z" });
+    expect(sortDecisionsRecent([older, fresher]).map((decision) => decision.recommendation)).toEqual(["fresher", "older"]);
+    expect(sortDecisionsRecent([older, fresher], 1).map((decision) => decision.recommendation)).toEqual(["fresher"]);
   });
 });

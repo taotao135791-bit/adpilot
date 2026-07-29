@@ -8,10 +8,10 @@ import {
 import { AdsIntelligenceError } from "./errors.js";
 import type { AdvertisingDecisionStore } from "./stores.js";
 
-/** Decision lifecycle: proposed → approved → executed → observing → terminal. */
+/** Decision lifecycle: proposed → approved → executed → observing → terminal; proposed may also be rejected (failed). */
 const ALLOWED_TRANSITIONS: Readonly<Record<DecisionStatus, readonly DecisionStatus[]>> = {
-  proposed: ["approved"],
-  approved: ["executed"],
+  proposed: ["approved", "failed"],
+  approved: ["executed", "failed"],
   executed: ["observing"],
   observing: ["successful", "failed", "reverted"],
   successful: [],

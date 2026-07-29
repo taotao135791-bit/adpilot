@@ -136,6 +136,26 @@ describe("DecisionService", () => {
     });
   });
 
+  it("lets a reviewer reject a proposed or approved decision as failed", async () => {
+    const { service } = await boot();
+    const proposed = await service.createDecision({
+      projectId,
+      recommendation: "Raise budget 20%",
+      confidence: "medium"
+    });
+    const rejected = await service.transitionStatus(proposed.id, "failed");
+    expect(rejected.status).toBe("failed");
+
+    const approved = await service.createDecision({
+      projectId,
+      recommendation: "Switch bid strategy",
+      confidence: "low"
+    });
+    await service.transitionStatus(approved.id, "approved");
+    const withdrawn = await service.transitionStatus(approved.id, "failed");
+    expect(withdrawn.status).toBe("failed");
+  });
+
   it("rejects creation against a missing project", async () => {
     const { service } = await boot();
     await expect(service.createDecision({

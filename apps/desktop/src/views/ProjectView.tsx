@@ -3,6 +3,9 @@ import {
   artifactStatusLabel,
   artifactStatusTone,
   artifactTypeLabel,
+  decisionConfidenceLabel,
+  decisionStatusLabel,
+  decisionStatusTone,
   formatTime,
   goalStatusLabel,
   goalStatusTone,
@@ -13,14 +16,22 @@ import {
   type AppLocale
 } from "../labels.js";
 import {
+  adsDecisionTransitionUrl,
+  adsDecisionsUrl,
+  decisionTransitionActions,
   fsFileUrl,
   fsTreeUrl,
   groupKernelTasks,
   interpolate,
   kernelProjectUrl,
   kernelTaskCompleteUrl,
+  parseRootPathsInput,
   projectDefaultRoot,
   shortId,
+  sortDecisionsRecent,
+  type AdDecision,
+  type DecisionConfidence,
+  type DecisionStatus,
   type FsFileResponse,
   type FsTreeEntry,
   type FsTreeResponse,
@@ -39,6 +50,8 @@ import {
   IconFile,
   IconFolder,
   IconPanelRight,
+  IconPlus,
+  IconRefresh,
   IconSend,
   IconSheet,
   IconSlides
@@ -181,6 +194,9 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, onBa
 
         <section className="project-col project-middle">
           <div className="project-col-scroll">
+            {detail?.type === "advertising" && (
+              <ActionQueue locale={locale} clientId={clientId} projectId={projectId} />
+            )}
             <span className="section-kicker">{copy.timelineTitle}</span>
             {taskGroups.length === 0 ? (
               <div className="empty-block">
@@ -485,4 +501,295 @@ function ArtifactIcon({ type }: { type: string }) {
   if (type === "document") return <IconDoc size={14} />;
   if (type === "spreadsheet") return <IconSheet size={14} />;
   return <IconFile size={14} />;
+}
+
+/* ------------------------------------------------------------------ */
+/* Action queue (advertising projects only)                            */
+/* ------------------------------------------------------------------ */
+
+type DecisionDraft = {
+  recommendation: string;
+  confidence: DecisionConfidence;
+  /** One rationale entry per line. */
+  rationale: string;
+  /** One risk per line. */
+  risks: string;
+  observationWindow: string;
+  rollbackPlan: string;
+};
+
+const EMPTY_DECISION_DRAFT: DecisionDraft = {
+  recommendation: "",
+  confidence: "medium",
+  rationale: "",
+  risks: "",
+  observationWindow: "",
+  rollbackPlan: ""
+};
+
+/**
+ * Decision action queue for advertising projects: the ledger cards with
+ * per-status lifecycle buttons (approve → execute → observe → verdict) and
+ * the create dialog. The server owns the state machine — illegal transitions
+ * and duplicate recommendations come back as coded errors shown verbatim.
+ */
+function ActionQueue({ locale, clientId, projectId }: { locale: AppLocale; clientId: string; projectId: string }) {
+  const copy = workspaceCopy(locale);
+  const [decisions, setDecisions] = useState<AdDecision[] | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState("");
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [draft, setDraft] = useState<DecisionDraft>(EMPTY_DECISION_DRAFT);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
+  const [duplicateId, setDuplicateId] = useState<string | null>(null);
+  const [duplicateNotice, setDuplicateNotice] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const response = await fetch(adsDecisionsUrl(clientId, projectId));
+      if (!response.ok) throw new Error(String(response.status));
+      const body = await response.json() as { decisions?: AdDecision[] };
+      setDecisions(sortDecisionsRecent(body.decisions ?? []));
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, [clientId, projectId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  /** The server is the authority; DECISION_INVALID_TRANSITION shows verbatim. */
+  async function transition(decision: AdDecision, to: DecisionStatus) {
+    if (busy) return;
+    setBusy(`${decision.id}:${to}`);
+    try {
+      const response = await fetch(adsDecisionTransitionUrl(decision.id), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workspaceId: clientId, status: to })
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => undefined) as { error?: string } | undefined;
+        throw new Error(body?.error ?? String(response.status));
+      }
+      if (duplicateId === decision.id) {
+        setDuplicateId(null);
+        setDuplicateNotice(false);
+      }
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function createDecision() {
+    if (!draft.recommendation.trim() || saving) return;
+    setSaving(true);
+    setFormError("");
+    try {
+      const response = await fetch("/api/ads/decisions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          workspaceId: clientId,
+          projectId,
+          recommendation: draft.recommendation.trim(),
+          rationale: parseRootPathsInput(draft.rationale),
+          risks: parseRootPathsInput(draft.risks),
+          confidence: draft.confidence,
+          ...(draft.observationWindow.trim() ? { observationWindow: draft.observationWindow.trim() } : {}),
+          ...(draft.rollbackPlan.trim() ? { rollbackPlan: draft.rollbackPlan.trim() } : {})
+        })
+      });
+      const body = await response.json().catch(() => undefined) as { error?: string; code?: string; decision?: AdDecision } | undefined;
+      if (!response.ok) {
+        // 409 DECISION_DUPLICATE: point at the existing open decision instead.
+        if (response.status === 409 && body?.code === "DECISION_DUPLICATE" && body.decision) {
+          setDialogOpen(false);
+          setDraft(EMPTY_DECISION_DRAFT);
+          await load();
+          setDuplicateId(body.decision.id);
+          setExpandedId(body.decision.id);
+          setDuplicateNotice(true);
+          return;
+        }
+        throw new Error(body?.error ?? String(response.status));
+      }
+      setDialogOpen(false);
+      setDraft(EMPTY_DECISION_DRAFT);
+      setDuplicateId(null);
+      setDuplicateNotice(false);
+      await load();
+    } catch (cause) {
+      setFormError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function actionLabel(id: string): string {
+    if (id === "approve") return copy.decisionApprove;
+    if (id === "reject") return copy.decisionReject;
+    if (id === "execute") return copy.decisionMarkExecuted;
+    if (id === "observe") return copy.decisionStartObserving;
+    if (id === "succeed") return copy.decisionMarkSuccessful;
+    return copy.decisionRevert;
+  }
+
+  return (
+    <section className="action-queue" aria-label={copy.decisionQueue}>
+      <div className="home-section-head">
+        <span className="section-kicker">{copy.decisionQueue}</span>
+        <div className="brief-head-actions">
+          <Button size="sm" variant="subtle" className="icon-button" icon={<IconRefresh size={14} />} aria-label={copy.refresh} onClick={() => void load()} />
+          <Button size="sm" variant="primary" icon={<IconPlus size={13} />} onClick={() => { setFormError(""); setDraft(EMPTY_DECISION_DRAFT); setDialogOpen(true); }}>
+            {copy.decisionNew}
+          </Button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="error-banner" role="alert">
+          <span>{error}</span>
+          <Button size="sm" variant="subtle" onClick={() => void load()}>{copy.retry}</Button>
+        </div>
+      )}
+      {duplicateNotice && (
+        <div className="decision-duplicate-note" role="status">
+          <span>{copy.decisionDuplicate}</span>
+          <Button size="sm" variant="subtle" onClick={() => setDuplicateNotice(false)}>{copy.close}</Button>
+        </div>
+      )}
+
+      {decisions === null ? (
+        <p className="workbench-quiet">{copy.loading}…</p>
+      ) : decisions.length === 0 ? (
+        <div className="empty-block">
+          <strong>{copy.decisionQueueEmpty}</strong>
+          <p>{copy.decisionQueueEmptyBody}</p>
+        </div>
+      ) : (
+        <ul className="decision-list">
+          {decisions.map((decision) => {
+            const expanded = expandedId === decision.id;
+            const actions = decisionTransitionActions(decision.status);
+            return (
+              <li key={decision.id} className="decision-card" data-duplicate={decision.id === duplicateId || undefined}>
+                <div className="decision-card-head">
+                  <button
+                    type="button"
+                    className="automation-expand"
+                    data-open={expanded || undefined}
+                    aria-label={copy.decisionRationale}
+                    onClick={() => setExpandedId(expanded ? null : decision.id)}
+                  >
+                    <IconChevronDown size={13} />
+                  </button>
+                  <div className="decision-card-main">
+                    <strong>{decision.recommendation}</strong>
+                    <span className="home-list-meta">
+                      {formatTime(decision.updatedAt, locale)}
+                      {decision.observationWindow ? ` · ${decision.observationWindow}` : ""}
+                    </span>
+                  </div>
+                  <Badge tone="accent" variant="soft">{decisionConfidenceLabel(decision.confidence, locale)}</Badge>
+                  <Badge tone={decisionStatusTone(decision.status)} variant="soft">{decisionStatusLabel(decision.status, locale)}</Badge>
+                </div>
+                {actions.length > 0 && (
+                  <div className="decision-card-actions">
+                    {actions.map((action) => (
+                      <Button
+                        key={action.id}
+                        size="sm"
+                        variant={action.id === "reject" || action.id === "revert" ? "outline" : "primary"}
+                        disabled={busy !== ""}
+                        onClick={() => void transition(decision, action.to)}
+                      >
+                        {actionLabel(action.id)}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+                {expanded && (
+                  <div className="decision-card-detail">
+                    {decision.rationale.length > 0 && (
+                      <div className="decision-detail-block">
+                        <span className="section-kicker">{copy.decisionRationale}</span>
+                        <ul>{decision.rationale.map((line) => <li key={line}>{line}</li>)}</ul>
+                      </div>
+                    )}
+                    {decision.risks.length > 0 && (
+                      <div className="decision-detail-block">
+                        <span className="section-kicker">{copy.decisionRisks}</span>
+                        <ul>{decision.risks.map((line) => <li key={line}>{line}</li>)}</ul>
+                      </div>
+                    )}
+                    {decision.rollbackPlan && (
+                      <div className="decision-detail-block">
+                        <span className="section-kicker">{copy.decisionRollbackPlanLabel}</span>
+                        <p>{decision.rollbackPlan}</p>
+                      </div>
+                    )}
+                    {decision.evidenceIds.length > 0 && (
+                      <div className="decision-detail-block">
+                        <span className="section-kicker">{copy.decisionEvidence}</span>
+                        <div className="brief-evidence">
+                          {decision.evidenceIds.map((evidenceId) => <code key={evidenceId} className="brief-evidence-id">{evidenceId}</code>)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {dialogOpen && (
+        <div className="plugin-confirm-overlay" role="presentation" onClick={() => setDialogOpen(false)}>
+          <div className="plugin-confirm" role="dialog" aria-modal="true" aria-label={copy.decisionCreateTitle} onClick={(event) => event.stopPropagation()}>
+            <h2>{copy.decisionCreateTitle}</h2>
+            {formError && <p className="decision-form-error" role="alert">{formError}</p>}
+            <label className="workspace-field">
+              <span>{copy.decisionRecommendationLabel}</span>
+              <textarea rows={2} autoFocus value={draft.recommendation} placeholder={copy.decisionRecommendationPlaceholder} onChange={(event) => setDraft({ ...draft, recommendation: event.target.value })} />
+            </label>
+            <label className="workspace-field">
+              <span>{copy.decisionConfidenceLabel}</span>
+              <select value={draft.confidence} onChange={(event) => setDraft({ ...draft, confidence: event.target.value as DecisionConfidence })}>
+                <option value="low">{copy.decisionConfidenceLow}</option>
+                <option value="medium">{copy.decisionConfidenceMedium}</option>
+                <option value="high">{copy.decisionConfidenceHigh}</option>
+              </select>
+            </label>
+            <label className="workspace-field">
+              <span>{copy.decisionRationaleLabel}</span>
+              <textarea rows={3} value={draft.rationale} onChange={(event) => setDraft({ ...draft, rationale: event.target.value })} />
+            </label>
+            <label className="workspace-field">
+              <span>{copy.decisionRisksLabel}</span>
+              <textarea rows={2} value={draft.risks} onChange={(event) => setDraft({ ...draft, risks: event.target.value })} />
+            </label>
+            <label className="workspace-field">
+              <span>{copy.decisionObservationWindowLabel}</span>
+              <input value={draft.observationWindow} placeholder={copy.decisionObservationWindowPlaceholder} onChange={(event) => setDraft({ ...draft, observationWindow: event.target.value })} />
+            </label>
+            <label className="workspace-field">
+              <span>{copy.decisionRollbackPlanLabel}</span>
+              <input value={draft.rollbackPlan} onChange={(event) => setDraft({ ...draft, rollbackPlan: event.target.value })} />
+            </label>
+            <div className="plugin-confirm-actions">
+              <Button size="sm" variant="subtle" onClick={() => setDialogOpen(false)}>{copy.cancel}</Button>
+              <Button size="sm" variant="primary" disabled={saving || !draft.recommendation.trim()} onClick={() => void createDecision()}>{copy.decisionCreate}</Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
 }

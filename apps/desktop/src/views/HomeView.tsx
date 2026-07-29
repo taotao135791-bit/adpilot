@@ -3,6 +3,8 @@ import {
   artifactStatusLabel,
   artifactStatusTone,
   artifactTypeLabel,
+  briefSectionLabel,
+  briefSeverityTone,
   formatTime,
   kernelTaskStatusLabel,
   kernelTaskStatusTone,
@@ -13,6 +15,13 @@ import {
 } from "../labels.js";
 import type { Approval } from "../approvalDisclosure.js";
 import {
+  adsAccountsUrl,
+  adsCampaignsUrl,
+  adsCreativesUrl,
+  adsDailyBriefUrl,
+  briefSections,
+  briefSectionSeverity,
+  buildBriefFacts,
   homeGreetingKey,
   interpolate,
   kernelArtifactsUrl,
@@ -21,12 +30,16 @@ import {
   shortId,
   sortArtifactsRecent,
   sortProjectsRecent,
+  type AdAccount,
+  type AdCampaign,
+  type AdCreative,
+  type DailyBrief,
   type KernelArtifact,
   type KernelProject,
   type KernelTask
 } from "../workspace.js";
 import { Badge, Button } from "../ui.js";
-import { IconArrowUpRight, IconSend, IconShieldCheck } from "../icons.js";
+import { IconArrowUpRight, IconChevronDown, IconRefresh, IconSend, IconShieldCheck } from "../icons.js";
 
 const MAX_ARTIFACT_PROJECTS = 8;
 const MAX_HOME_ARTIFACTS = 6;
@@ -58,6 +71,11 @@ export function HomeView({ locale, clientId, workspaceName, openApprovals, onSub
   const [artifacts, setArtifacts] = useState<KernelArtifact[]>([]);
   const [tasks, setTasks] = useState<KernelTask[]>([]);
   const [error, setError] = useState("");
+  const [adAccounts, setAdAccounts] = useState<AdAccount[]>([]);
+  const [brief, setBrief] = useState<DailyBrief | null>(null);
+  const [briefState, setBriefState] = useState<"idle" | "loading" | "error">("idle");
+  const [briefError, setBriefError] = useState("");
+  const [expandedItems, setExpandedItems] = useState<ReadonlySet<string>>(new Set());
 
   const load = useCallback(async () => {
     if (!clientId) return;
@@ -67,7 +85,7 @@ export function HomeView({ locale, clientId, workspaceName, openApprovals, onSub
       const projectsBody = await projectsResponse.json() as { projects?: KernelProject[] };
       const list = projectsBody.projects ?? [];
       setProjects(list);
-      const [artifactLists, running, queued] = await Promise.all([
+      const [artifactLists, running, queued, accountsBody] = await Promise.all([
         Promise.all(
           list.slice(0, MAX_ARTIFACT_PROJECTS).map(async (project) => {
             try {
@@ -81,10 +99,16 @@ export function HomeView({ locale, clientId, workspaceName, openApprovals, onSub
           })
         ),
         fetch(kernelTasksUrl(clientId, { status: "running" })).then((response) => response.ok ? response.json() as Promise<{ tasks?: KernelTask[] }> : { tasks: [] }),
-        fetch(kernelTasksUrl(clientId, { status: "queued" })).then((response) => response.ok ? response.json() as Promise<{ tasks?: KernelTask[] }> : { tasks: [] })
+        fetch(kernelTasksUrl(clientId, { status: "queued" })).then((response) => response.ok ? response.json() as Promise<{ tasks?: KernelTask[] }> : { tasks: [] }),
+        // The brief section only appears when ad accounts exist; a failed
+        // probe hides it without breaking the rest of the Home surface.
+        fetch(adsAccountsUrl(clientId))
+          .then(async (response) => response.ok ? ((await response.json()) as { accounts?: AdAccount[] }).accounts ?? [] : [])
+          .catch(() => [] as AdAccount[])
       ]);
       setArtifacts(sortArtifactsRecent(artifactLists.flat(), MAX_HOME_ARTIFACTS));
       setTasks([...(running.tasks ?? []), ...(queued.tasks ?? [])].slice(0, MAX_HOME_TASKS));
+      setAdAccounts(accountsBody);
       setError("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -92,6 +116,49 @@ export function HomeView({ locale, clientId, workspaceName, openApprovals, onSub
   }, [clientId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  /** Auto-assembles minimal facts from the registries, then asks the engine. */
+  const generateBrief = useCallback(async () => {
+    if (!clientId || briefState === "loading") return;
+    setBriefState("loading");
+    setBriefError("");
+    try {
+      const accountsResponse = await fetch(adsAccountsUrl(clientId));
+      if (!accountsResponse.ok) throw new Error(String(accountsResponse.status));
+      const accounts = ((await accountsResponse.json()) as { accounts?: AdAccount[] }).accounts ?? [];
+      const [campaignLists, creativeLists] = await Promise.all([
+        Promise.all(
+          accounts.map(async (account) => {
+            const response = await fetch(adsCampaignsUrl(clientId, account.id));
+            if (!response.ok) throw new Error(String(response.status));
+            return ((await response.json()) as { campaigns?: AdCampaign[] }).campaigns ?? [];
+          })
+        ),
+        Promise.all(
+          accounts.map(async (account) => {
+            const response = await fetch(adsCreativesUrl(clientId, account.id));
+            if (!response.ok) throw new Error(String(response.status));
+            return ((await response.json()) as { creatives?: AdCreative[] }).creatives ?? [];
+          })
+        )
+      ]);
+      const facts = buildBriefFacts({ accounts, campaigns: campaignLists.flat(), creatives: creativeLists.flat() });
+      const response = await fetch(adsDailyBriefUrl(), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workspaceId: clientId, facts })
+      });
+      const body = await response.json().catch(() => undefined) as (DailyBrief & { error?: string }) | undefined;
+      // Engine / rule failures surface verbatim — never a fallback brief.
+      if (!response.ok || !body?.sections) throw new Error(body?.error ?? String(response.status));
+      setBrief(body);
+      setExpandedItems(new Set());
+      setBriefState("idle");
+    } catch (cause) {
+      setBriefError(cause instanceof Error ? cause.message : String(cause));
+      setBriefState("error");
+    }
+  }, [clientId, briefState]);
 
   function submitQuick() {
     const message = goal.trim();
@@ -158,6 +225,103 @@ export function HomeView({ locale, clientId, workspaceName, openApprovals, onSub
           </div>
         )}
       </section>
+
+      {adAccounts.length > 0 && (
+        <section className="home-section" aria-label={copy.homeBrief}>
+          <div className="home-section-head">
+            <h2>{copy.homeBrief}</h2>
+            <div className="brief-head-actions">
+              {brief && (
+                <span className="home-list-meta">{interpolate(copy.homeBriefGeneratedAt, { time: formatTime(brief.generatedAt, locale) })}</span>
+              )}
+              {brief && (
+                <Button size="sm" variant="subtle" className="icon-button" icon={<IconRefresh size={14} />} aria-label={copy.homeBriefGenerate} disabled={briefState === "loading"} onClick={() => void generateBrief()} />
+              )}
+              <Button size="sm" variant="primary" disabled={briefState === "loading"} onClick={() => void generateBrief()}>
+                {copy.homeBriefGenerate}
+              </Button>
+            </div>
+          </div>
+          {brief && (
+            <div className="brief-summary">
+              <Badge tone={brief.summary.criticalCount > 0 ? "danger" : brief.summary.warningCount > 0 ? "warning" : "neutral"} variant="soft">
+                {interpolate(copy.homeBriefSummary, {
+                  total: String(brief.summary.totalFindings),
+                  critical: String(brief.summary.criticalCount),
+                  warning: String(brief.summary.warningCount)
+                })}
+              </Badge>
+            </div>
+          )}
+          {briefState === "loading" ? (
+            <div className="brief-skeleton" aria-label={copy.homeBriefGenerating}>
+              <span /><span /><span />
+            </div>
+          ) : briefState === "error" ? (
+            <div className="error-banner" role="alert">
+              <span>{briefError}</span>
+              <Button size="sm" variant="subtle" onClick={() => void generateBrief()}>{copy.retry}</Button>
+            </div>
+          ) : brief === null ? (
+            <p className="workbench-quiet">{copy.homeBriefIdle}</p>
+          ) : brief.summary.totalFindings === 0 ? (
+            <p className="workbench-quiet">{copy.homeBriefEmpty}</p>
+          ) : (
+            <div className="brief-sections">
+              {briefSections(brief).filter((section) => section.items.length > 0).map((section) => {
+                const severity = briefSectionSeverity(section.items);
+                return (
+                  <section key={section.key} className="brief-section">
+                    <div className="brief-section-head">
+                      <span className="section-kicker">{briefSectionLabel(section.key, locale)}</span>
+                      <Badge tone={severity ? briefSeverityTone(severity) : "neutral"} variant="soft">{section.items.length}</Badge>
+                    </div>
+                    <ul className="home-list">
+                      {section.items.map((item, index) => {
+                        const itemKey = `${section.key}:${index}`;
+                        const open = expandedItems.has(itemKey);
+                        return (
+                          <li key={itemKey}>
+                            <button
+                              type="button"
+                              className="home-list-row"
+                              aria-expanded={open}
+                              onClick={() => setExpandedItems((current) => {
+                                const next = new Set(current);
+                                if (next.has(itemKey)) next.delete(itemKey); else next.add(itemKey);
+                                return next;
+                              })}
+                            >
+                              <IconChevronDown size={12} className={`brief-item-chevron${open ? " brief-item-chevron-open" : ""}`} />
+                              <span className="home-list-title">{item.title}</span>
+                              <Badge tone={briefSeverityTone(item.severity)} variant="soft">{item.severity}</Badge>
+                            </button>
+                            {open && (
+                              <div className="brief-item-detail">
+                                <p>{item.detail}</p>
+                                <span className="section-kicker">{copy.briefEvidence}</span>
+                                {item.evidenceIds.length === 0 ? (
+                                  <p className="workbench-quiet">{copy.briefNoEvidence}</p>
+                                ) : (
+                                  <div className="brief-evidence">
+                                    {item.evidenceIds.map((evidenceId) => (
+                                      <code key={evidenceId} className="brief-evidence-id">{evidenceId}</code>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </section>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
 
       <section className="home-section" aria-label={copy.homeApprovals}>
         <div className="home-section-head">

@@ -5,7 +5,16 @@
  * testable and tree-shakeable.
  */
 
-import { describeCron, interpolate, type AutomationTrigger, type CronDescription } from "./workspace.js";
+import {
+  describeCron,
+  interpolate,
+  type AutomationTrigger,
+  type BriefSectionKey,
+  type BriefSeverity,
+  type CronDescription,
+  type DecisionConfidence,
+  type DecisionStatus
+} from "./workspace.js";
 
 export type AppLocale = "zh-CN" | "en";
 
@@ -1350,7 +1359,57 @@ const workspaceZh = {
   skillsEmptyBody: "在 ~/.adpilot/skills 或工作区 .adpilot/skills 下放置 SKILL.md 即可被发现。",
   skillTriggers: "触发词",
   skillSource: "来源 {source}",
-  skillsWarnings: "部分技能未通过校验"
+  skillsWarnings: "部分技能未通过校验",
+  homeBrief: "广告 Daily Brief",
+  homeBriefGenerate: "生成简报",
+  homeBriefGenerating: "正在生成简报…",
+  homeBriefIdle: "点击生成简报,自动组装账户、活动、素材与决策事实。",
+  homeBriefEmpty: "没有待处理的发现",
+  homeBriefSummary: "{total} 项发现 · 严重 {critical} · 警告 {warning}",
+  homeBriefGeneratedAt: "生成于 {time}",
+  briefEvidence: "证据",
+  briefNoEvidence: "无证据 ID",
+  briefSectionAnomalyAccounts: "异常账户",
+  briefSectionCreativeFatigue: "素材衰退",
+  briefSectionLearningPhaseRisks: "学习期风险",
+  briefSectionPendingObservations: "等待观察",
+  briefSectionPendingApprovals: "等待批准",
+  briefSectionPendingReports: "待发送报告",
+  briefSectionMeasurementIssues: "口径提醒",
+  decisionQueue: "行动队列",
+  decisionQueueEmpty: "还没有决策",
+  decisionQueueEmptyBody: "决策把建议、理由、风险与回滚方案记入账本,按状态推进批准、执行与观察。",
+  decisionNew: "新建决策",
+  decisionCreateTitle: "新建决策",
+  decisionRecommendationLabel: "建议",
+  decisionRecommendationPlaceholder: "例如:把 tCPA 提高 10%,观察 3 天",
+  decisionConfidenceLabel: "置信度",
+  decisionConfidenceLow: "低",
+  decisionConfidenceMedium: "中",
+  decisionConfidenceHigh: "高",
+  decisionRationaleLabel: "理由(每行一条)",
+  decisionRisksLabel: "风险(每行一条)",
+  decisionObservationWindowLabel: "观察窗口(可选)",
+  decisionObservationWindowPlaceholder: "例如:3 天 / 2 个转化周期",
+  decisionRollbackPlanLabel: "回滚方案(可选)",
+  decisionCreate: "创建决策",
+  decisionRationale: "理由",
+  decisionRisks: "风险",
+  decisionEvidence: "证据",
+  decisionDuplicate: "已存在相同建议,已在下方高亮",
+  decisionStatusProposed: "待批准",
+  decisionStatusApproved: "已批准",
+  decisionStatusExecuted: "已执行",
+  decisionStatusObserving: "观察中",
+  decisionStatusSuccessful: "成功",
+  decisionStatusFailed: "已失败",
+  decisionStatusReverted: "已回滚",
+  decisionApprove: "批准",
+  decisionReject: "拒绝",
+  decisionMarkExecuted: "标记已执行",
+  decisionStartObserving: "开始观察",
+  decisionMarkSuccessful: "成功",
+  decisionRevert: "失败回滚"
 } as const;
 
 const workspaceEn: Record<keyof typeof workspaceZh, string> = {
@@ -1584,7 +1643,57 @@ const workspaceEn: Record<keyof typeof workspaceZh, string> = {
   skillsEmptyBody: "Drop a SKILL.md under ~/.adpilot/skills or a workspace .adpilot/skills directory and it is discovered.",
   skillTriggers: "Triggers",
   skillSource: "Source: {source}",
-  skillsWarnings: "Some skills failed validation"
+  skillsWarnings: "Some skills failed validation",
+  homeBrief: "Ads Daily Brief",
+  homeBriefGenerate: "Generate brief",
+  homeBriefGenerating: "Generating the brief…",
+  homeBriefIdle: "Generate a brief — facts are assembled automatically from accounts, campaigns, creatives and decisions.",
+  homeBriefEmpty: "No open findings",
+  homeBriefSummary: "{total} findings · {critical} critical · {warning} warnings",
+  homeBriefGeneratedAt: "Generated {time}",
+  briefEvidence: "Evidence",
+  briefNoEvidence: "No evidence ids",
+  briefSectionAnomalyAccounts: "Anomalous accounts",
+  briefSectionCreativeFatigue: "Creative fatigue",
+  briefSectionLearningPhaseRisks: "Learning-phase risks",
+  briefSectionPendingObservations: "Awaiting observation",
+  briefSectionPendingApprovals: "Awaiting approval",
+  briefSectionPendingReports: "Reports to send",
+  briefSectionMeasurementIssues: "Measurement reminders",
+  decisionQueue: "Action queue",
+  decisionQueueEmpty: "No decisions yet",
+  decisionQueueEmptyBody: "Decisions record a recommendation with rationale, risks and a rollback plan in the ledger, then move through approval, execution and observation.",
+  decisionNew: "New decision",
+  decisionCreateTitle: "New decision",
+  decisionRecommendationLabel: "Recommendation",
+  decisionRecommendationPlaceholder: "e.g. Raise tCPA by 10%, observe for 3 days",
+  decisionConfidenceLabel: "Confidence",
+  decisionConfidenceLow: "Low",
+  decisionConfidenceMedium: "Medium",
+  decisionConfidenceHigh: "High",
+  decisionRationaleLabel: "Rationale (one per line)",
+  decisionRisksLabel: "Risks (one per line)",
+  decisionObservationWindowLabel: "Observation window (optional)",
+  decisionObservationWindowPlaceholder: "e.g. 3 days / 2 conversion cycles",
+  decisionRollbackPlanLabel: "Rollback plan (optional)",
+  decisionCreate: "Create decision",
+  decisionRationale: "Rationale",
+  decisionRisks: "Risks",
+  decisionEvidence: "Evidence",
+  decisionDuplicate: "An identical recommendation already exists — highlighted below",
+  decisionStatusProposed: "Proposed",
+  decisionStatusApproved: "Approved",
+  decisionStatusExecuted: "Executed",
+  decisionStatusObserving: "Observing",
+  decisionStatusSuccessful: "Successful",
+  decisionStatusFailed: "Failed",
+  decisionStatusReverted: "Reverted",
+  decisionApprove: "Approve",
+  decisionReject: "Reject",
+  decisionMarkExecuted: "Mark executed",
+  decisionStartObserving: "Start observing",
+  decisionMarkSuccessful: "Successful",
+  decisionRevert: "Fail & roll back"
 };
 
 export type WorkspaceCopy = { readonly [K in keyof typeof workspaceZh]: string };
@@ -1744,4 +1853,60 @@ export function automationTriggerText(trigger: AutomationTrigger, locale: AppLoc
   if (trigger.kind === "schedule") return cronDescriptionText(describeCron(trigger.cron), locale);
   const copy = workspaceCopy(locale);
   return interpolate(copy.automationEventPrefix, { event: trigger.event });
+}
+
+/* ------------------------------------------------------------------ */
+/* Ads copy helpers (Daily Brief + decision queue)                     */
+/* ------------------------------------------------------------------ */
+
+export function briefSectionLabel(key: BriefSectionKey, locale: AppLocale): string {
+  const copy = workspaceCopy(locale);
+  const labels: Record<BriefSectionKey, string> = {
+    anomalyAccounts: copy.briefSectionAnomalyAccounts,
+    creativeFatigue: copy.briefSectionCreativeFatigue,
+    learningPhaseRisks: copy.briefSectionLearningPhaseRisks,
+    pendingObservations: copy.briefSectionPendingObservations,
+    pendingApprovals: copy.briefSectionPendingApprovals,
+    pendingReports: copy.briefSectionPendingReports,
+    measurementIssues: copy.briefSectionMeasurementIssues
+  };
+  return labels[key];
+}
+
+export function briefSeverityTone(severity: BriefSeverity): "neutral" | "warning" | "danger" {
+  if (severity === "critical") return "danger";
+  if (severity === "warning") return "warning";
+  return "neutral";
+}
+
+export function decisionStatusLabel(status: DecisionStatus, locale: AppLocale): string {
+  const copy = workspaceCopy(locale);
+  const labels: Record<DecisionStatus, string> = {
+    proposed: copy.decisionStatusProposed,
+    approved: copy.decisionStatusApproved,
+    executed: copy.decisionStatusExecuted,
+    observing: copy.decisionStatusObserving,
+    successful: copy.decisionStatusSuccessful,
+    failed: copy.decisionStatusFailed,
+    reverted: copy.decisionStatusReverted
+  };
+  return labels[status] ?? humanize(status);
+}
+
+export function decisionStatusTone(status: DecisionStatus): "accent" | "success" | "warning" | "danger" | "neutral" {
+  if (status === "proposed") return "warning";
+  if (status === "approved" || status === "observing") return "accent";
+  if (status === "successful") return "success";
+  if (status === "failed") return "danger";
+  return "neutral";
+}
+
+export function decisionConfidenceLabel(confidence: DecisionConfidence, locale: AppLocale): string {
+  const copy = workspaceCopy(locale);
+  const labels: Record<DecisionConfidence, string> = {
+    low: copy.decisionConfidenceLow,
+    medium: copy.decisionConfidenceMedium,
+    high: copy.decisionConfidenceHigh
+  };
+  return labels[confidence] ?? humanize(confidence);
 }

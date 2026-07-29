@@ -505,3 +505,228 @@ export function sortRunsRecent(runs: readonly AutomationRun[], limit?: number): 
 export function countUnread(notifications: readonly AppNotification[]): number {
   return notifications.filter((notification) => !notification.read).length;
 }
+
+/* ------------------------------------------------------------------ */
+/* Ads intelligence (packages/ads-intelligence wire mirror)            */
+/* ------------------------------------------------------------------ */
+
+export type AdPlatform = "google" | "meta" | "tiktok" | "other";
+
+export type AdAccount = {
+  id: string;
+  workspaceId: string;
+  platform: AdPlatform;
+  externalId?: string;
+  name: string;
+  currency?: string;
+  timezone?: string;
+  createdAt: string;
+  updatedAt: string;
+  revision: number;
+};
+
+export type AdCampaign = {
+  id: string;
+  accountId: string;
+  externalId?: string;
+  name: string;
+  objective?: string;
+  optimizationEvent?: string;
+  budget?: number;
+  bid?: number;
+  status?: string;
+  createdAt: string;
+  updatedAt: string;
+  revision: number;
+};
+
+export type CreativeLifecycle = "new" | "active" | "fatiguing" | "retired";
+
+export type AdCreative = {
+  id: string;
+  accountId: string;
+  name: string;
+  platform: AdPlatform;
+  campaignIds: string[];
+  metrics?: { spend?: number; ctr?: number; cpi?: number; cpa?: number };
+  lifecycle?: CreativeLifecycle;
+  createdAt: string;
+  updatedAt: string;
+  revision: number;
+};
+
+export type DecisionConfidence = "low" | "medium" | "high";
+
+export type DecisionStatus =
+  | "proposed"
+  | "approved"
+  | "executed"
+  | "observing"
+  | "successful"
+  | "failed"
+  | "reverted";
+
+export type AdDecision = {
+  id: string;
+  projectId: string;
+  campaignId?: string;
+  recommendation: string;
+  rationale: string[];
+  evidenceIds: string[];
+  confidence: DecisionConfidence;
+  risks: string[];
+  observationWindow?: string;
+  rollbackPlan?: string;
+  status: DecisionStatus;
+  createdAt: string;
+  updatedAt: string;
+  revision: number;
+};
+
+export type BriefSeverity = "info" | "warning" | "critical";
+
+export type BriefItem = {
+  ruleId: string;
+  severity: BriefSeverity;
+  title: string;
+  detail: string;
+  entityRefs: {
+    accountId?: string;
+    campaignId?: string;
+    creativeId?: string;
+    decisionId?: string;
+    experimentId?: string;
+    reportId?: string;
+  };
+  evidenceIds: string[];
+};
+
+export const BRIEF_SECTION_KEYS = [
+  "anomalyAccounts",
+  "creativeFatigue",
+  "learningPhaseRisks",
+  "pendingObservations",
+  "pendingApprovals",
+  "pendingReports",
+  "measurementIssues"
+] as const;
+export type BriefSectionKey = (typeof BRIEF_SECTION_KEYS)[number];
+
+export type DailyBrief = {
+  schemaVersion: string;
+  generatedAt: string;
+  workspaceId: string;
+  projectId?: string;
+  sections: Record<BriefSectionKey, BriefItem[]>;
+  summary: { totalFindings: number; criticalCount: number; warningCount: number; infoCount: number };
+};
+
+/**
+ * Caller-assembled facts for POST /api/ads/daily-brief. The desktop has no
+ * metrics pipeline of its own, so rows carry only what the registries know —
+ * entity ids as evidence refs, plus the campaign status string the
+ * learning-phase rules read. No spend/CPA numbers are ever fabricated.
+ */
+export type BriefFacts = {
+  metrics: {
+    accounts: { accountId: string; evidenceIds: string[] }[];
+    campaigns: { campaignId: string; learningStatus?: string; evidenceIds: string[] }[];
+    creatives: { creativeId: string; evidenceIds: string[] }[];
+  };
+};
+
+export function adsAccountsUrl(workspaceId: string): string {
+  return `/api/ads/accounts${query({ workspaceId })}`;
+}
+
+export function adsCampaignsUrl(workspaceId: string, accountId?: string): string {
+  return `/api/ads/campaigns${query({ workspaceId, accountId })}`;
+}
+
+export function adsCreativesUrl(workspaceId: string, accountId?: string): string {
+  return `/api/ads/creatives${query({ workspaceId, accountId })}`;
+}
+
+export function adsDecisionsUrl(workspaceId: string, projectId: string, status?: string): string {
+  return `/api/ads/decisions${query({ workspaceId, projectId, status })}`;
+}
+
+export function adsDecisionTransitionUrl(decisionId: string): string {
+  return `/api/ads/decisions/${encodeURIComponent(decisionId)}/transition`;
+}
+
+export function adsDailyBriefUrl(): string {
+  return "/api/ads/daily-brief";
+}
+
+/* ------------------------------------------------------------------ */
+/* Ads view logic (pure, unit-tested)                                  */
+/* ------------------------------------------------------------------ */
+
+/** Minimal facts assembly from the account/campaign/creative registries. */
+export function buildBriefFacts(input: {
+  accounts: readonly AdAccount[];
+  campaigns: readonly AdCampaign[];
+  creatives: readonly AdCreative[];
+}): BriefFacts {
+  return {
+    metrics: {
+      accounts: input.accounts.map((account) => ({ accountId: account.id, evidenceIds: [`account:${account.id}`] })),
+      campaigns: input.campaigns.map((campaign) => ({
+        campaignId: campaign.id,
+        ...(campaign.status !== undefined ? { learningStatus: campaign.status } : {}),
+        evidenceIds: [`campaign:${campaign.id}`]
+      })),
+      creatives: input.creatives.map((creative) => ({ creativeId: creative.id, evidenceIds: [`creative:${creative.id}`] }))
+    }
+  };
+}
+
+export type BriefSection = { key: BriefSectionKey; items: BriefItem[] };
+
+/**
+ * The seven brief sections in their canonical display order. Missing keys in
+ * a partial payload normalize to empty lists; the view hides empty sections.
+ */
+export function briefSections(brief: DailyBrief): BriefSection[] {
+  return BRIEF_SECTION_KEYS.map((key) => ({ key, items: brief.sections?.[key] ?? [] }));
+}
+
+/** Worst severity inside a section — drives the count badge tone. */
+export function briefSectionSeverity(items: readonly BriefItem[]): BriefSeverity | null {
+  if (items.some((item) => item.severity === "critical")) return "critical";
+  if (items.some((item) => item.severity === "warning")) return "warning";
+  if (items.length > 0) return "info";
+  return null;
+}
+
+export type DecisionActionId = "approve" | "reject" | "execute" | "observe" | "succeed" | "revert";
+export type DecisionAction = { id: DecisionActionId; to: DecisionStatus };
+
+/**
+ * Buttons a decision card exposes per status. Mirrors the lifecycle the
+ * queue surface offers; the server remains the authority and answers illegal
+ * transitions with DECISION_INVALID_TRANSITION, which the view shows verbatim.
+ */
+export function decisionTransitionActions(status: DecisionStatus): DecisionAction[] {
+  switch (status) {
+    case "proposed":
+      return [{ id: "approve", to: "approved" }, { id: "reject", to: "failed" }];
+    case "approved":
+      return [{ id: "execute", to: "executed" }];
+    case "executed":
+      return [{ id: "observe", to: "observing" }];
+    case "observing":
+      return [{ id: "succeed", to: "successful" }, { id: "revert", to: "reverted" }];
+    default:
+      return [];
+  }
+}
+
+/** Most-recently-updated decisions first; the action queue caps the list. */
+export function sortDecisionsRecent(decisions: readonly AdDecision[], limit?: number): AdDecision[] {
+  const sorted = [...decisions].sort(
+    (left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.id.localeCompare(left.id)
+  );
+  return limit === undefined ? sorted : sorted.slice(0, limit);
+}
