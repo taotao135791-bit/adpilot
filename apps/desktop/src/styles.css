@@ -1893,35 +1893,6 @@ select {
    -------------------------------------------------------------------------- */
 
 /* App rail — the always-present 56px primary navigation strip. */
-.app-rail {
-  grid-area: rail;
-  z-index: var(--z-rail);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  width: 56px;
-  min-height: 0;
-  padding: 10px 0;
-  background: var(--bg-subtle);
-  border-right: 1px solid var(--line);
-}
-.shell[data-native="true"] .app-rail { padding-top: 44px; -webkit-app-region: drag; }
-.shell[data-native="true"] .app-rail button { -webkit-app-region: no-drag; }
-.shell[data-native="true"] .nav-sidebar { padding-top: 44px; -webkit-app-region: drag; }
-.shell[data-native="true"] .nav-sidebar button { -webkit-app-region: no-drag; }
-.app-rail-item {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: var(--r-md);
-  color: var(--ink-3);
-  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
-}
-.app-rail-item:hover { background: var(--surface-2); color: var(--ink); }
-.app-rail-item[data-active] { background: var(--accent-soft); color: var(--accent); }
-.app-rail-spacer { flex: 1; }
 
 /* Workbench pages (home / projects / automations / skills) widen the
    conversation-tuned 760px measure of .main-scroll. */
@@ -2704,81 +2675,7 @@ select {
 /* --------------------------------------------------------------------------
    Monochrome shell — nav sidebar, top bar, and the mockup Home.
    -------------------------------------------------------------------------- */
-.nav-sidebar {
-  grid-area: sidebar;
-  z-index: var(--z-rail);
-  display: flex;
-  flex-direction: column;
-  width: 232px;
-  min-height: 0;
-  background: var(--bg-subtle);
-  border-right: 1px solid var(--line);
-  padding: 14px 12px 12px;
-}
-.nav-sidebar-new {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 8px 10px;
-  border-radius: var(--r-md);
-  font-size: var(--text-sm);
-  color: var(--ink-2);
-  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
-}
-.nav-sidebar-new:hover { background: var(--surface-2); color: var(--ink); }
-.nav-sidebar-new span { font-size: 14px; line-height: 1; }
-.nav-sidebar-nav { display: grid; gap: 1px; margin-top: 6px; }
-.nav-sidebar-item {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 7px 10px;
-  border-radius: var(--r-md);
-  font-size: var(--text-sm);
-  color: var(--ink-2);
-  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
-}
-.nav-sidebar-item:hover { background: var(--surface-2); color: var(--ink); }
-.nav-sidebar-item[data-active] { background: var(--surface-2); color: var(--ink); font-weight: 600; box-shadow: inset 0 0 0 1px var(--line); }
-.nav-sidebar-item svg { color: var(--ink-3); }
-.nav-sidebar-item[data-active] svg { color: var(--ink); }
 
-.nav-sidebar-workspaces {
-  margin-top: auto;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
-  display: grid;
-  gap: 1px;
-}
-.nav-sidebar-label {
-  display: block;
-  padding: 0 10px 6px;
-  font-size: var(--text-xs);
-  font-weight: 600;
-  letter-spacing: var(--track-label);
-  text-transform: uppercase;
-  color: var(--ink-3);
-}
-.nav-sidebar-workspace {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 6px 10px;
-  border-radius: var(--r-md);
-  font-size: var(--text-sm);
-  color: var(--ink-2);
-  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
-}
-.nav-sidebar-workspace:hover { background: var(--surface-2); color: var(--ink); }
-.nav-sidebar-workspace[data-active] { color: var(--ink); font-weight: 550; }
-.nav-sidebar-workspace i {
-  flex: none;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  border: 1.5px solid var(--ink-3);
-}
-.nav-sidebar-workspace i[data-filled] { background: var(--ink); border-color: var(--ink); }
 
 /* Top bar. */
 .topbar {
@@ -2951,3 +2848,130 @@ select {
   white-space: nowrap;
 }
 .home-feed-time { flex: none; font-size: var(--text-xs); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+/* --------------------------------------------------------------------------
+   Primary sidebar — one draggable column: icon strip when narrow, text
+   navigation when wide. Replaces the old icon-rail + text-sidebar pair.
+   -------------------------------------------------------------------------- */
+.primary-sidebar {
+  grid-area: rail;
+  z-index: var(--z-rail);
+  position: relative;
+  display: flex;
+  min-height: 0;
+  background: var(--bg-subtle);
+  border-right: 1px solid var(--line);
+  transition: width 140ms var(--ease);
+}
+.primary-sidebar[data-dragging] { transition: none; }
+.primary-sidebar-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 10px;
+  overflow: hidden;
+}
+.shell[data-native="true"] .primary-sidebar-body { padding-top: 44px; -webkit-app-region: drag; }
+.shell[data-native="true"] .primary-sidebar-body button { -webkit-app-region: no-drag; }
+
+.primary-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  -webkit-app-region: no-drag;
+}
+.primary-resize:hover, .primary-sidebar[data-dragging] .primary-resize {
+  background: linear-gradient(to right, transparent, var(--accent-line) 55%, transparent);
+}
+body.sidebar-dragging { cursor: col-resize; user-select: none; }
+
+.primary-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  font-size: var(--text-sm);
+  color: var(--ink-2);
+  white-space: nowrap;
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.primary-new:hover { background: var(--surface-2); color: var(--ink); }
+.primary-new[data-icon] { justify-content: center; padding: 8px 0; }
+.primary-new-plus { font-size: 15px; line-height: 1; }
+
+.primary-nav { display: grid; gap: 1px; margin-top: 4px; }
+.primary-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: var(--r-md);
+  font-size: var(--text-sm);
+  color: var(--ink-2);
+  white-space: nowrap;
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.primary-item:hover { background: var(--surface-2); color: var(--ink); }
+.primary-item[data-active] { background: var(--surface-2); color: var(--ink); font-weight: 600; box-shadow: inset 0 0 0 1px var(--line); }
+.primary-item[data-icon] { justify-content: center; padding: 8px 0; }
+.primary-item svg { flex: none; color: var(--ink-3); }
+.primary-item[data-active] svg { color: var(--ink); }
+
+.primary-workspaces {
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 1px;
+}
+.primary-label {
+  display: block;
+  padding: 0 10px 6px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.primary-workspace {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px;
+  border-radius: var(--r-md);
+  font-size: var(--text-sm);
+  color: var(--ink-2);
+  white-space: nowrap;
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.primary-workspace:hover { background: var(--surface-2); color: var(--ink); }
+.primary-workspace[data-active] { color: var(--ink); font-weight: 550; }
+.primary-workspace[data-icon] { justify-content: center; padding: 7px 0; }
+.primary-workspace i {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ink-3);
+}
+.primary-workspace i[data-filled] { background: var(--ink); border-color: var(--ink); }
+
+.primary-foot {
+  display: flex;
+  gap: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.primary-sidebar[data-collapsed] .primary-foot { flex-direction: column; }
+.primary-foot .primary-item { flex: 1; }
+.primary-sidebar[data-collapsed] .primary-foot .primary-item { flex: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .primary-sidebar { transition: none; }
+}

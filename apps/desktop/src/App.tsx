@@ -29,8 +29,7 @@ import { ConversationFeed } from "./components/ConversationFeed.js";
 import { Composer } from "./components/Composer.js";
 import { MissionZero } from "./components/MissionZero.js";
 import { PluginsView } from "./components/PluginsView.js";
-import { AppRail, type RailView } from "./components/AppRail.js";
-import { NavSidebar } from "./components/NavSidebar.js";
+import { PrimarySidebar, type PrimaryView } from "./components/PrimarySidebar.js";
 import { HomeView } from "./views/HomeView.js";
 import { ProjectsView } from "./views/ProjectsView.js";
 import { ProjectView } from "./views/ProjectView.js";
@@ -76,7 +75,7 @@ export function App() {
   const [settingsData, setSettingsData] = useState<SettingsData>();
   const [settingsError, setSettingsError] = useState("");
   /** Main-area view switch: home, the conversation, the projects workspace, or the plugins catalog. */
-  const [mainView, setMainView] = useState<RailView>("home");
+  const [mainView, setMainView] = useState<PrimaryView>("home");
   /** Project open in the workbench (mainView === "project"). */
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);  /** Artifact to pre-select when the workbench opens (clicked from Home). */
   const [focusArtifactId, setFocusArtifactId] = useState<string | null>(null);
@@ -668,14 +667,21 @@ export function App() {
 
   return (
     <div className="shell" data-theme={theme} data-native={isNativeDesktop}>
-      <AppRail
+      <PrimarySidebar
         copy={workspaceCopy(locale)}
         view={mainView}
         theme={theme}
+        clients={state.clients}
+        clientId={clientId}
         pluginsLabel={pluginsCopy(locale).nav}
         settingsLabel={copy.settings}
         themeLabel={copy.themeToggle}
+        onNewSession={() => {
+          setMainView("chat");
+          void newSession();
+        }}
         onNavigate={navigateRail}
+        onSelectClient={selectClient}
         onShowPlugins={() => setMainView("plugins")}
         onOpenSettings={() => openSettings("general")}
         onToggleTheme={toggleTheme}
@@ -708,21 +714,6 @@ export function App() {
         pluginsActive={false}
         onShowPlugins={() => setMainView("plugins")}
       />
-      )}
-
-      {mainView !== "chat" && mainView !== "project" && (
-        <NavSidebar
-          copy={workspaceCopy(locale)}
-          view={mainView}
-          clients={state.clients}
-          clientId={clientId}
-          onNewSession={() => {
-            setMainView("chat");
-            void newSession();
-          }}
-          onNavigate={navigateRail}
-          onSelectClient={selectClient}
-        />
       )}
 
       <main className="main-column">
