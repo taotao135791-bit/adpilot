@@ -5,6 +5,8 @@
  * testable and tree-shakeable.
  */
 
+import { describeCron, interpolate, type AutomationTrigger, type CronDescription } from "./workspace.js";
+
 export type AppLocale = "zh-CN" | "en";
 
 /* ------------------------------------------------------------------ */
@@ -1273,11 +1275,75 @@ const workspaceZh = {
   artifactInteractive: "交互",
   artifactReport: "报告",
   automationsTitle: "自动化",
-  automationsBody: "kernel 任务图中正在运行和排队等待的任务。",
-  automationsRunning: "运行中",
-  automationsQueued: "排队中",
-  automationsEmpty: "没有活动任务",
-  automationsEmptyBody: "当 kernel 任务图产生 queued / running 任务时,会出现在这里。",
+  automationsBody: "定时或事件触发的自动化:真实调度、幂等执行、每日预算与审批门禁。",
+  automationsNew: "新建自动化",
+  automationsEmpty: "还没有自动化",
+  automationsEmptyBody: "创建一个定时简报、周期任务或通知,调度器按 cron(UTC)自动触发;含变更的动作会先停在审批门。",
+  automationNotifications: "通知",
+  automationNotificationsEmpty: "没有通知",
+  automationUnread: "{count} 条未读",
+  notificationMarkRead: "标记已读",
+  automationNextFire: "下次 {time}",
+  automationNoFire: "无调度",
+  automationRunCount: "已运行 {count} 次",
+  automationPause: "暂停",
+  automationResume: "恢复",
+  automationRunNow: "立即运行",
+  automationDelete: "删除",
+  automationDeleteTitle: "删除此自动化?",
+  automationDeleteBody: "自动化及其运行记录将被删除,操作会写入审计链。",
+  automationDeleteConfirm: "删除",
+  automationRuns: "运行记录",
+  automationRunsEmpty: "还没有运行记录",
+  automationApprove: "批准执行",
+  automationStateActive: "运行中",
+  automationStatePaused: "已暂停",
+  runRunning: "运行中",
+  runSucceeded: "成功",
+  runFailed: "失败",
+  runSkippedDuplicate: "幂等跳过",
+  runWaitingApproval: "等待审批",
+  automationCreateTitle: "新建自动化",
+  automationTitleLabel: "标题",
+  automationTitlePlaceholder: "例如:每天早上投放简报",
+  automationTriggerLabel: "触发方式",
+  triggerSchedule: "定时(cron)",
+  triggerEvent: "事件",
+  automationPresetLabel: "预设",
+  presetDailyMorning: "每天早上 9:00",
+  presetHourly: "每小时整点",
+  presetWeeklyMonday: "每周一 9:00",
+  presetCustom: "自定义",
+  cronFieldMinute: "分",
+  cronFieldHour: "时",
+  cronFieldDom: "日",
+  cronFieldMonth: "月",
+  cronFieldDow: "周",
+  automationCronHint: "5 段 cron(UTC):支持 * , - / 与数字",
+  automationEventNameLabel: "事件名",
+  automationEventConditionLabel: "条件(可选)",
+  automationActionLabel: "动作",
+  actionDailyBrief: "生成每日简报",
+  actionCreateTask: "创建 kernel 任务",
+  actionNotify: "发送通知",
+  automationTaskTitleLabel: "任务标题",
+  automationTaskDescriptionLabel: "任务描述",
+  automationMessageLabel: "通知内容",
+  automationMaxRunsLabel: "每日最大运行次数",
+  automationCreate: "创建自动化",
+  automationEventPrefix: "事件 {event}",
+  cronEveryMinute: "每分钟",
+  cronHourly: "每小时第 {minute} 分",
+  cronDaily: "每天 {time}",
+  cronWeekly: "每周{dow} {time}",
+  cronMonthly: "每月 {dom} 日 {time}",
+  dow0: "日",
+  dow1: "一",
+  dow2: "二",
+  dow3: "三",
+  dow4: "四",
+  dow5: "五",
+  dow6: "六",
   skillsTitle: "技能",
   skillsBody: "用户技能目录(~/.adpilot/skills 与工作区 .adpilot/skills),仅作为参考知识注入,不授予任何工具或权限。",
   skillsEmpty: "还没有用户技能",
@@ -1443,11 +1509,75 @@ const workspaceEn: Record<keyof typeof workspaceZh, string> = {
   artifactInteractive: "Interactive",
   artifactReport: "Report",
   automationsTitle: "Automations",
-  automationsBody: "Running and queued tasks from the kernel task graph.",
-  automationsRunning: "Running",
-  automationsQueued: "Queued",
-  automationsEmpty: "No active tasks",
-  automationsEmptyBody: "Tasks appear here when the kernel task graph produces queued / running work.",
+  automationsBody: "Scheduled and event-triggered automations: real scheduling, idempotent runs, daily budgets, and approval gates.",
+  automationsNew: "New automation",
+  automationsEmpty: "No automations yet",
+  automationsEmptyBody: "Create a scheduled brief, recurring task, or notification; the scheduler fires it on cron (UTC), and mutating actions park at the approval gate.",
+  automationNotifications: "Notifications",
+  automationNotificationsEmpty: "No notifications",
+  automationUnread: "{count} unread",
+  notificationMarkRead: "Mark read",
+  automationNextFire: "next {time}",
+  automationNoFire: "no schedule",
+  automationRunCount: "{count} runs",
+  automationPause: "Pause",
+  automationResume: "Resume",
+  automationRunNow: "Run now",
+  automationDelete: "Delete",
+  automationDeleteTitle: "Delete this automation?",
+  automationDeleteBody: "The automation and its run history are deleted; the action is written to the audit chain.",
+  automationDeleteConfirm: "Delete",
+  automationRuns: "Runs",
+  automationRunsEmpty: "No runs yet",
+  automationApprove: "Approve run",
+  automationStateActive: "Active",
+  automationStatePaused: "Paused",
+  runRunning: "Running",
+  runSucceeded: "Succeeded",
+  runFailed: "Failed",
+  runSkippedDuplicate: "Skipped (duplicate)",
+  runWaitingApproval: "Waiting for approval",
+  automationCreateTitle: "New automation",
+  automationTitleLabel: "Title",
+  automationTitlePlaceholder: "e.g. Morning ads brief",
+  automationTriggerLabel: "Trigger",
+  triggerSchedule: "Schedule (cron)",
+  triggerEvent: "Event",
+  automationPresetLabel: "Preset",
+  presetDailyMorning: "Every morning at 09:00",
+  presetHourly: "Hourly on the hour",
+  presetWeeklyMonday: "Mondays at 09:00",
+  presetCustom: "Custom",
+  cronFieldMinute: "minute",
+  cronFieldHour: "hour",
+  cronFieldDom: "day",
+  cronFieldMonth: "month",
+  cronFieldDow: "weekday",
+  automationCronHint: "Five cron fields (UTC): *, lists, ranges, and / steps",
+  automationEventNameLabel: "Event name",
+  automationEventConditionLabel: "Condition (optional)",
+  automationActionLabel: "Action",
+  actionDailyBrief: "Generate daily brief",
+  actionCreateTask: "Create kernel task",
+  actionNotify: "Send notification",
+  automationTaskTitleLabel: "Task title",
+  automationTaskDescriptionLabel: "Task description",
+  automationMessageLabel: "Message",
+  automationMaxRunsLabel: "Max runs per day",
+  automationCreate: "Create automation",
+  automationEventPrefix: "event: {event}",
+  cronEveryMinute: "every minute",
+  cronHourly: "hourly at minute {minute}",
+  cronDaily: "daily at {time}",
+  cronWeekly: "weekly on {dow} at {time}",
+  cronMonthly: "monthly on day {dom} at {time}",
+  dow0: "Sun",
+  dow1: "Mon",
+  dow2: "Tue",
+  dow3: "Wed",
+  dow4: "Thu",
+  dow5: "Fri",
+  dow6: "Sat",
   skillsTitle: "Skills",
   skillsBody: "The user skill catalog (~/.adpilot/skills and workspace .adpilot/skills). Advisory reference knowledge only — it grants no tools or permissions.",
   skillsEmpty: "No user skills yet",
@@ -1551,4 +1681,67 @@ export function artifactStatusTone(status: string): "accent" | "success" | "warn
   if (status === "rendering") return "accent";
   if (status === "failed") return "danger";
   return "neutral";
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Automation copy helpers                                             */
+/* ------------------------------------------------------------------ */
+
+export function automationStateLabel(state: string, locale: AppLocale): string {
+  const copy = workspaceCopy(locale);
+  const labels: Record<string, string> = {
+    active: copy.automationStateActive,
+    paused: copy.automationStatePaused
+  };
+  return labels[state] ?? humanize(state);
+}
+
+export function automationStateTone(state: string): "accent" | "success" | "warning" | "danger" | "neutral" {
+  if (state === "active") return "success";
+  if (state === "paused") return "neutral";
+  return "neutral";
+}
+
+export function automationRunStatusLabel(status: string, locale: AppLocale): string {
+  const copy = workspaceCopy(locale);
+  const labels: Record<string, string> = {
+    running: copy.runRunning,
+    succeeded: copy.runSucceeded,
+    failed: copy.runFailed,
+    "skipped-duplicate": copy.runSkippedDuplicate,
+    "waiting-approval": copy.runWaitingApproval
+  };
+  return labels[status] ?? humanize(status);
+}
+
+export function automationRunStatusTone(status: string): "accent" | "success" | "warning" | "danger" | "neutral" {
+  if (status === "running") return "accent";
+  if (status === "succeeded") return "success";
+  if (status === "failed") return "danger";
+  if (status === "waiting-approval") return "warning";
+  return "neutral";
+}
+
+/** Human-readable, localized rendering of a structured cron description. */
+export function cronDescriptionText(description: CronDescription, locale: AppLocale): string {
+  const copy = workspaceCopy(locale);
+  if (description.kind === "every-minute") return copy.cronEveryMinute;
+  if (description.kind === "hourly") return interpolate(copy.cronHourly, { minute: String(description.minute) });
+  if (description.kind === "daily") return interpolate(copy.cronDaily, { time: description.time });
+  if (description.kind === "weekly") {
+    const dow = copy[`dow${description.dow}` as keyof typeof copy] ?? String(description.dow);
+    return interpolate(copy.cronWeekly, { dow, time: description.time });
+  }
+  if (description.kind === "monthly") {
+    return interpolate(copy.cronMonthly, { dom: String(description.dom), time: description.time });
+  }
+  return description.text;
+}
+
+/** One-line trigger summary for the automation list rows. */
+export function automationTriggerText(trigger: AutomationTrigger, locale: AppLocale): string {
+  if (trigger.kind === "schedule") return cronDescriptionText(describeCron(trigger.cron), locale);
+  const copy = workspaceCopy(locale);
+  return interpolate(copy.automationEventPrefix, { event: trigger.event });
 }

@@ -331,3 +331,177 @@ export type ArtifactVersionFiles = { version: number; files: string[] };
 export function currentVersionFiles(artifact: KernelArtifact, versions: readonly ArtifactVersionFiles[]): string[] {
   return versions.find((entry) => entry.version === artifact.version)?.files ?? [];
 }
+
+
+/* ------------------------------------------------------------------ */
+/* Automations (packages/automations wire mirror)                      */
+/* ------------------------------------------------------------------ */
+
+export type CronSpecFields = { minute: string; hour: string; dom: string; month: string; dow: string };
+
+export type AutomationTrigger =
+  | { kind: "schedule"; cron: CronSpecFields }
+  | { kind: "event"; event: string; condition?: string };
+
+export type AutomationAction =
+  | { kind: "daily-brief"; input: Record<string, unknown> }
+  | { kind: "create-task"; task: { goalId?: string; title: string; description: string } }
+  | { kind: "notify"; message: string };
+
+export type AutomationRunStatus = "running" | "succeeded" | "failed" | "skipped-duplicate" | "waiting-approval";
+
+export type Automation = {
+  id: string;
+  workspaceId: string;
+  projectId?: string;
+  title: string;
+  description?: string;
+  trigger: AutomationTrigger;
+  action: AutomationAction;
+  guards: { maxRunsPerDay: number; maxCostUsd?: number; requiresApprovalForMutation: true };
+  state: "active" | "paused";
+  idempotencyWindowSeconds: number;
+  nextFireAt?: string;
+  lastRunAt?: string;
+  runCount: number;
+  createdAt: string;
+  updatedAt: string;
+  revision: number;
+};
+
+export type AutomationRun = {
+  id: string;
+  automationId: string;
+  idempotencyKey: string;
+  startedAt: string;
+  finishedAt?: string;
+  status: AutomationRunStatus;
+  approvalId?: string;
+  result?: unknown;
+  error?: string;
+  runLog: { ts: string; message: string }[];
+  createdAt: string;
+  updatedAt: string;
+  revision: number;
+};
+
+export type AppNotification = {
+  id: string;
+  workspaceId: string;
+  automationId?: string;
+  runId?: string;
+  message: string;
+  read: boolean;
+  createdAt: string;
+  updatedAt: string;
+  revision: number;
+};
+
+export function automationsUrl(workspaceId: string): string {
+  return `/api/automations${query({ workspaceId })}`;
+}
+
+export function automationUrl(automationId: string, workspaceId: string): string {
+  return `/api/automations/${encodeURIComponent(automationId)}${query({ workspaceId })}`;
+}
+
+export function automationActionUrl(automationId: string, action: "pause" | "resume" | "run-now"): string {
+  return `/api/automations/${encodeURIComponent(automationId)}/${action}`;
+}
+
+export function automationRunsUrl(automationId: string, workspaceId: string): string {
+  return `/api/automations/${encodeURIComponent(automationId)}/runs${query({ workspaceId })}`;
+}
+
+export function automationRunApproveUrl(runId: string): string {
+  return `/api/automation-runs/${encodeURIComponent(runId)}/approve`;
+}
+
+export function notificationsUrl(workspaceId: string, unread?: boolean): string {
+  return `/api/notifications${query({ workspaceId, unread: unread === undefined ? undefined : String(unread) })}`;
+}
+
+export function notificationReadUrl(notificationId: string): string {
+  return `/api/notifications/${encodeURIComponent(notificationId)}/read`;
+}
+
+/* ------------------------------------------------------------------ */
+/* Automation view logic (pure, unit-tested)                           */
+/* ------------------------------------------------------------------ */
+
+/** Create-dialog schedule presets; `custom` keeps whatever the user typed. */
+export const CRON_PRESETS = ["daily-morning", "hourly", "weekly-monday", "custom"] as const;
+export type CronPreset = (typeof CRON_PRESETS)[number];
+
+export function cronPresetFields(preset: Exclude<CronPreset, "custom">): CronSpecFields {
+  if (preset === "hourly") return { minute: "0", hour: "*", dom: "*", month: "*", dow: "*" };
+  if (preset === "weekly-monday") return { minute: "0", hour: "9", dom: "*", month: "*", dow: "1" };
+  return { minute: "0", hour: "9", dom: "*", month: "*", dow: "*" };
+}
+
+/**
+ * Structured, locale-free reading of a cron spec. Recognizes the common
+ * shapes exactly (single numeric fields + wildcards); anything richer falls
+ * back to `raw` so the view prints the spec verbatim instead of guessing.
+ */
+export type CronDescription =
+  | { kind: "every-minute" }
+  | { kind: "hourly"; minute: number }
+  | { kind: "daily"; time: string }
+  | { kind: "weekly"; dow: number; time: string }
+  | { kind: "monthly"; dom: number; time: string }
+  | { kind: "raw"; text: string };
+
+function singleNumber(field: string): number | null {
+  return /^\d{1,2}$/.test(field.trim()) ? Number(field.trim()) : null;
+}
+
+function clockTime(hour: number, minute: number): string {
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+export function describeCron(spec: CronSpecFields): CronDescription {
+  const minute = singleNumber(spec.minute);
+  const hour = singleNumber(spec.hour);
+  const dom = singleNumber(spec.dom);
+  const dow = singleNumber(spec.dow);
+  const anyRest = spec.dom.trim() === "*" && spec.month.trim() === "*" && spec.dow.trim() === "*";
+  if (spec.minute.trim() === "*" && spec.hour.trim() === "*" && anyRest) return { kind: "every-minute" };
+  if (minute !== null && spec.hour.trim() === "*" && anyRest) return { kind: "hourly", minute };
+  if (minute !== null && hour !== null && anyRest) return { kind: "daily", time: clockTime(hour, minute) };
+  if (minute !== null && hour !== null && spec.dom.trim() === "*" && spec.month.trim() === "*" && dow !== null) {
+    return { kind: "weekly", dow: dow % 7, time: clockTime(hour, minute) };
+  }
+  if (minute !== null && hour !== null && dom !== null && spec.month.trim() === "*" && spec.dow.trim() === "*") {
+    return { kind: "monthly", dom, time: clockTime(hour, minute) };
+  }
+  return { kind: "raw", text: `${spec.minute} ${spec.hour} ${spec.dom} ${spec.month} ${spec.dow}` };
+}
+
+/** True when every cron field is non-blank (client-side pre-validation only). */
+export function cronFieldsComplete(spec: CronSpecFields): boolean {
+  return [spec.minute, spec.hour, spec.dom, spec.month, spec.dow].every((field) => field.trim().length > 0);
+}
+
+/** One-line run summary for the runs list: the error, or a truncated JSON result. */
+export function automationRunSummary(run: AutomationRun, maxLength = 96): string {
+  const raw = run.error !== undefined
+    ? run.error
+    : run.result !== undefined
+      ? JSON.stringify(run.result)
+      : "";
+  if (!raw) return "";
+  return raw.length > maxLength ? `${raw.slice(0, maxLength - 1)}…` : raw;
+}
+
+/** Newest-started first; the runs panel caps the list. */
+export function sortRunsRecent(runs: readonly AutomationRun[], limit?: number): AutomationRun[] {
+  const sorted = [...runs].sort(
+    (left, right) => right.startedAt.localeCompare(left.startedAt) || right.id.localeCompare(left.id)
+  );
+  return limit === undefined ? sorted : sorted.slice(0, limit);
+}
+
+export function countUnread(notifications: readonly AppNotification[]): number {
+  return notifications.filter((notification) => !notification.read).length;
+}

@@ -2425,3 +2425,97 @@ select {
   white-space: nowrap;
 }
 .preview-table th { background: var(--surface-2); color: var(--ink); font-weight: 600; position: sticky; top: -12px; }
+
+
+/* ------------------------------------------------------------------ */
+/* Automations view                                                    */
+/* ------------------------------------------------------------------ */
+
+.automation-head-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+
+.automation-list { display: flex; flex-direction: column; gap: 6px; }
+
+.automation-item {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.automation-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.automation-expand {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  color: var(--ink-3);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.automation-expand:hover { background: var(--surface-2); color: var(--ink); }
+.automation-expand[data-open] { transform: rotate(180deg); }
+
+.automation-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.automation-actions { display: flex; gap: 2px; flex: none; }
+
+.automation-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-2);
+  border-radius: 0 0 var(--r-md) var(--r-md);
+}
+
+.automation-run-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--text-xs);
+}
+
+.automation-run-row[data-waiting] {
+  margin: 0 -6px;
+  padding: 4px 6px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+}
+
+.automation-run-summary {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-read { color: var(--ink-3); }
+
+.automation-cron-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+}
+
+.automation-cron-grid input { font-family: var(--font-mono); text-align: center; }

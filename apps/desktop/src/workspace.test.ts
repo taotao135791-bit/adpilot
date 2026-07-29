@@ -3,7 +3,16 @@ import {
   artifactDownloadFile,
   artifactOutputUrl,
   artifactThumbFiles,
+  automationActionUrl,
+  automationRunApproveUrl,
+  automationRunSummary,
+  automationRunsUrl,
+  automationsUrl,
+  automationUrl,
+  countUnread,
+  cronPresetFields,
   currentVersionFiles,
+  describeCron,
   diffLineKind,
   fsTreeUrl,
   groupKernelTasks,
@@ -15,13 +24,18 @@ import {
   kernelTasksUrl,
   localTerminalChunk,
   mergeTerminalChunks,
+  notificationReadUrl,
+  notificationsUrl,
   parseRootPathsInput,
   shortId,
   sortArtifactsRecent,
+  sortRunsRecent,
   serverLastSeq,
   stripAnsi,
   terminalLastSeq,
   terminalOutputUrl,
+  type AppNotification,
+  type AutomationRun,
   type KernelArtifact,
   type KernelTask,
   type TerminalChunk
@@ -197,5 +211,92 @@ describe("misc view logic", () => {
     expect(stripAnsi("[31merror[0m: failed")).toBe("error: failed");
     expect(stripAnsi("plain text")).toBe("plain text");
     expect(stripAnsi("[1;32m✓[0m done")).toBe("✓ done");
+  });
+});
+
+
+/* ------------------------------------------------------------------ */
+/* Automations                                                         */
+/* ------------------------------------------------------------------ */
+
+describe("describeCron", () => {
+  it("recognizes the common schedule shapes", () => {
+    expect(describeCron({ minute: "*", hour: "*", dom: "*", month: "*", dow: "*" })).toEqual({ kind: "every-minute" });
+    expect(describeCron({ minute: "30", hour: "*", dom: "*", month: "*", dow: "*" })).toEqual({ kind: "hourly", minute: 30 });
+    expect(describeCron({ minute: "0", hour: "9", dom: "*", month: "*", dow: "*" })).toEqual({ kind: "daily", time: "09:00" });
+    expect(describeCron({ minute: "5", hour: "23", dom: "*", month: "*", dow: "*" })).toEqual({ kind: "daily", time: "23:05" });
+    expect(describeCron({ minute: "0", hour: "9", dom: "*", month: "*", dow: "1" })).toEqual({ kind: "weekly", dow: 1, time: "09:00" });
+    expect(describeCron({ minute: "0", hour: "9", dom: "*", month: "*", dow: "7" })).toEqual({ kind: "weekly", dow: 0, time: "09:00" });
+    expect(describeCron({ minute: "0", hour: "9", dom: "15", month: "*", dow: "*" })).toEqual({ kind: "monthly", dom: 15, time: "09:00" });
+  });
+
+  it("falls back to the raw spec for richer expressions", () => {
+    expect(describeCron({ minute: "*/15", hour: "*", dom: "*", month: "*", dow: "*" })).toEqual({ kind: "raw", text: "*/15 * * * *" });
+    expect(describeCron({ minute: "0", hour: "9-17", dom: "*", month: "*", dow: "1-5" })).toEqual({ kind: "raw", text: "0 9-17 * * 1-5" });
+  });
+});
+
+describe("cronPresetFields", () => {
+  it("maps every preset to a concrete spec", () => {
+    expect(cronPresetFields("daily-morning")).toEqual({ minute: "0", hour: "9", dom: "*", month: "*", dow: "*" });
+    expect(cronPresetFields("hourly")).toEqual({ minute: "0", hour: "*", dom: "*", month: "*", dow: "*" });
+    expect(cronPresetFields("weekly-monday")).toEqual({ minute: "0", hour: "9", dom: "*", month: "*", dow: "1" });
+  });
+});
+
+describe("automation run view helpers", () => {
+  const runBase: AutomationRun = {
+    id: "00000000-0000-4000-8000-0000000000aa",
+    automationId: "00000000-0000-4000-8000-0000000000bb",
+    idempotencyKey: "k",
+    startedAt: "2026-07-28T09:00:00.000Z",
+    status: "succeeded",
+    runLog: [],
+    createdAt: "2026-07-28T09:00:00.000Z",
+    updatedAt: "2026-07-28T09:00:00.000Z",
+    revision: 1
+  };
+
+  it("summarizes a run as its error or a truncated JSON result", () => {
+    expect(automationRunSummary({ ...runBase, status: "failed", error: "boom" })).toBe("boom");
+    expect(automationRunSummary({ ...runBase, result: { findings: 3 } })).toBe('{"findings":3}');
+    expect(automationRunSummary(runBase)).toBe("");
+    const long = automationRunSummary({ ...runBase, error: "x".repeat(500) }, 10);
+    expect(long).toHaveLength(10);
+    expect(long.endsWith("…")).toBe(true);
+  });
+
+  it("sorts runs newest first and caps the list", () => {
+    const older = { ...runBase, id: "00000000-0000-4000-8000-000000000001", startedAt: "2026-07-27T09:00:00.000Z" };
+    const newer = { ...runBase, id: "00000000-0000-4000-8000-000000000002", startedAt: "2026-07-28T10:00:00.000Z" };
+    expect(sortRunsRecent([older, newer]).map((run) => run.id)).toEqual([newer.id, older.id]);
+    expect(sortRunsRecent([older, newer], 1)).toEqual([newer]);
+  });
+
+  it("counts unread notifications", () => {
+    const note = (read: boolean): AppNotification => ({
+      id: crypto.randomUUID(),
+      workspaceId: "personal",
+      message: "m",
+      read,
+      createdAt: "2026-07-28T00:00:00.000Z",
+      updatedAt: "2026-07-28T00:00:00.000Z",
+      revision: 1
+    });
+    expect(countUnread([note(true), note(false), note(false)])).toBe(2);
+    expect(countUnread([])).toBe(0);
+  });
+});
+
+describe("automation URL builders", () => {
+  it("builds automation, run, and notification routes", () => {
+    expect(automationsUrl("personal")).toBe("/api/automations?workspaceId=personal");
+    expect(automationUrl("a 1", "personal")).toBe("/api/automations/a%201?workspaceId=personal");
+    expect(automationActionUrl("a1", "run-now")).toBe("/api/automations/a1/run-now");
+    expect(automationRunsUrl("a1", "personal")).toBe("/api/automations/a1/runs?workspaceId=personal");
+    expect(automationRunApproveUrl("r1")).toBe("/api/automation-runs/r1/approve");
+    expect(notificationsUrl("personal")).toBe("/api/notifications?workspaceId=personal");
+    expect(notificationsUrl("personal", true)).toBe("/api/notifications?workspaceId=personal&unread=true");
+    expect(notificationReadUrl("n1")).toBe("/api/notifications/n1/read");
   });
 });

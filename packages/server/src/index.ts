@@ -56,8 +56,10 @@ import {
   type DesktopNativeContext
 } from "./desktop-native.js";
 import { registerKernelRoutes } from "./kernel-routes.js";
+import { registerWorkflowRoutes } from "./workflow-routes.js";
 import { registerGitRoutes } from "./git-routes.js";
 import { registerAdsRoutes } from "./ads-routes.js";
+import { registerAutomationRoutes } from "./automation-routes.js";
 import { registerTerminalRoutes } from "./terminal-routes.js";
 import { registerFsRoutes } from "./fs-routes.js";
 import { TerminalService } from "./terminal-service.js";
@@ -144,6 +146,8 @@ export async function createServer(system: AdPilotSystem, options: {
   onRestartRequested?: () => void;
   desktopNative?: DesktopNativeBridge;
   desktopNativeAuthToken?: string;
+  /** Automation scheduler tick interval in ms; defaults to 30s, <= 0 disables. */
+  automationTickMs?: number;
 } = {}) {
   const app = Fastify({ logger: false });
   const desktopFrames = new DesktopLiveFrameBroker();
@@ -644,12 +648,22 @@ export async function createServer(system: AdPilotSystem, options: {
   });
 
   registerKernelRoutes(app, system);
+  registerWorkflowRoutes(app, system);
   const terminalService = new TerminalService();
   app.addHook("onClose", async () => terminalService.shutdown());
   registerTerminalRoutes(app, terminalService);
   registerGitRoutes(app, system);
   registerFsRoutes(app, system);
   registerAdsRoutes(app, system);
+  const automationScheduler = registerAutomationRoutes(app, system);
+  const automationTickMs = options.automationTickMs ?? 30_000;
+  if (automationTickMs > 0) {
+    const automationTimer = setInterval(() => {
+      void automationScheduler.tick().catch(() => undefined);
+    }, automationTickMs);
+    automationTimer.unref();
+    app.addHook("onClose", async () => clearInterval(automationTimer));
+  }
 
   app.post("/api/approvals", async (request, reply) => {
     const body = z.object({
