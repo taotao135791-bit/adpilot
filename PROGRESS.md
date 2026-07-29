@@ -1,8 +1,19 @@
 # Rebuild progress
 
-Last updated: 2026-07-28
+Last updated: 2026-07-29
 
-## Active
+## AdPilot 0.3 — Universal Workspace (this cycle)
+
+- [x] Foundation: `packages/kernel` (Project/Goal/TaskNode/Artifact + TaskGraph) and system/REST wiring (`91cc2c4`).
+- [x] Coding Agent backend: `packages/git-tools` (git, worktrees, checkpoints) + terminal service with approval-gated exec (`8116b88`).
+- [x] Artifact runtime: `packages/artifacts` (real pptx/docx/xlsx renderers + previews + versioning).
+- [x] Desktop shell: app rail, Home, Projects, project workbench with Terminal/Git/Preview panels (`a887463`).
+- [x] Ads intelligence: `packages/ads-intelligence` (decision state machine, duplicate suppression, daily brief rules, Python UAC engine bridge) + routes.
+- [x] Workflows: record-and-replay from Computer Action records, fail-closed runner, publish-as-Skill (`bdada11`).
+- [x] Automations: cron subset scheduler, idempotency, run/cost caps, approval-gated mutations, notification center (`bdada11`).
+- [x] Ads UI: Daily Brief panel on Home, decision Action Queue in advertising projects (`aa3842f`).
+
+## Earlier cycles
 
 - [x] Read the complete rebuild brief.
 - [x] Audit tracked repository structure and core source paths.
