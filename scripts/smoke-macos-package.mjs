@@ -195,7 +195,8 @@ async function uacEngineAnalyzeCheck(script, pythonRoot) {
   try {
     const inputPath = join(tempDir, "uac-input.json");
     await writeFile(inputPath, `${JSON.stringify(UAC_SMOKE_CASE)}\n`, { encoding: "utf8", mode: 0o600 });
-    const { stdout } = await run("python3", [script, "analyze", inputPath], {
+    // -B keeps python from writing __pycache__ into the signed bundle.
+    const { stdout } = await run("python3", ["-B", script, "analyze", inputPath], {
       cwd: pythonRoot,
       timeout: 60_000,
       maxBuffer: 16 * 1024 * 1024
@@ -212,6 +213,10 @@ async function uacEngineAnalyzeCheck(script, pythonRoot) {
       && typeof output.measurement_state?.status === "string"
       && typeof output.learning_eligibility?.status === "string"
       && typeof output.optimization_feasibility?.status === "string";
+    const pycachePollution = (await walk(pythonRoot, 8)).some((path) => path.includes("__pycache__") || path.endsWith(".pyc"));
+    if (pycachePollution) {
+      return { check, artifact: script, status: "failed", reason: "analyze wrote bytecode into the signed bundle" };
+    }
     return valid
       ? { check, artifact: script, status: "passed" }
       : { check, artifact: script, status: "failed", reason: "engine output failed smoke validation" };

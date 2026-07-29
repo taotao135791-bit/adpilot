@@ -2,59 +2,42 @@
 
 Last updated: 2026-07-29
 
-## AdPilot 0.3 — Universal Workspace (this cycle)
+Maturity ladder: Implemented → Unit Tested → Integration Tested →
+Packaged Tested → Mock E2E Verified → Real Account Verified. Blocked means
+an external prerequisite is missing; it is never reported as passed.
 
-- [x] Foundation: `packages/kernel` (Project/Goal/TaskNode/Artifact + TaskGraph) and system/REST wiring (`91cc2c4`).
-- [x] Coding Agent backend: `packages/git-tools` (git, worktrees, checkpoints) + terminal service with approval-gated exec (`8116b88`).
-- [x] Artifact runtime: `packages/artifacts` (real pptx/docx/xlsx renderers + previews + versioning).
-- [x] Desktop shell: app rail, Home, Projects, project workbench with Terminal/Git/Preview panels (`a887463`).
-- [x] Ads intelligence: `packages/ads-intelligence` (decision state machine, duplicate suppression, daily brief rules, Python UAC engine bridge) + routes.
-- [x] Workflows: record-and-replay from Computer Action records, fail-closed runner, publish-as-Skill (`bdada11`).
-- [x] Automations: cron subset scheduler, idempotency, run/cost caps, approval-gated mutations, notification center (`bdada11`).
-- [x] Ads UI: Daily Brief panel on Home, decision Action Queue in advertising projects (`aa3842f`).
+## AdPilot 0.3.1 — Integration Release
+
+| Capability | Maturity | Evidence |
+| --- | --- | --- |
+| AgentExecutionContext through /api/messages → agent | Integration Tested | `project-session-binding.test.ts` (5) |
+| Project find-or-create Session binding | Integration Tested | same suite; shadow project in session-service |
+| Mission → Goal/Task heuristic | Integration Tested | same suite (short/keyword/long cases) |
+| Agent Tool Registry (57 tools) + lifecycle | Integration Tested | agent-tools 23 tests + groups tests |
+| Registry bound into the live composition root | Integration Tested | server boots with shared terminal/scheduler deps |
+| Unified approval (automation/server-minted) | Integration Tested | forgery/replay/stale suites in automation-routes |
+| Plugin mutable-tool approval gate | Integration Tested | `mutable-tool-approval.test.ts` |
+| Workflow production surface provider | Integration Tested | `surface-provider.test.ts`; fail-closed without a browser session |
+| Coding closed loop (worktree→edit→test→diff→PPTX→approval→commit) | Mock E2E Verified | `scripts/acceptance-031.ts` task A, 20/20 steps |
+| Ads analysis closed loop (brief→UAC→decision→weekly PPTX) | Mock E2E Verified | task B, 8/8 steps, mock data labeled |
+| Python UAC in the DMG | Packaged Tested | extraResources + package smoke runs analyze inside the bundle |
+| Restart recovery of project/goal/artifact | Mock E2E Verified | acceptance restart block passed |
+| Live-model planning E2E | Blocked | no chat provider credential configured |
+| Real Google Ads account run | Blocked | needs user-named test account + managed profile |
+| Developer ID notarization | Blocked | no certificate authority in repo |
+
+Full gates: `pnpm typecheck` clean; root suite **905/905**; desktop **127/127**;
+Python engine **410/410** (untouched).
+
+## AdPilot 0.3 — Universal Workspace
+
+- [x] kernel/git-tools/artifacts foundations and REST wiring
+- [x] terminal + git + checkpoints service layer
+- [x] workbench UI (rail, Home, Projects, Project view with panels)
+- [x] ads-intelligence backend + daily brief + action queue UI
+- [x] record-and-replay workflows + automations scheduler
 
 ## Earlier cycles
 
-- [x] Read the complete rebuild brief.
-- [x] Audit tracked repository structure and core source paths.
-- [x] Run frozen install, TypeScript, 515 product tests, 410 advertising-core tests, build, Electron launch, browser capture, `.app` packaging, and codesign verification.
-- [x] Inspect the real native macOS window and traffic lights.
-- [x] Create the rebuild architecture and acceptance documents.
-- [x] Keep one Electron Runtime/Server alive across macOS window close and Dock reactivation.
-- [x] Move the collapsed native sidebar control below the macOS traffic-light zone.
-- [x] Implement the durable Session Service and single-writer boundary. — integrated as backend authority (`f150a97`): composition-root lease, idempotent legacy migration, 11 REST endpoints, message flow by `sessionId`, per-session model override, status SSE.
-- [x] Desktop real session UI (`c256ebc`): sidebar list with live status dots, create/rename/pin/archive with revision chains, search, branch produces new sessions.
-- [x] Implement the authenticated native helper and Permission Center foundation. — Swift helper built/staged/signed (`com.adpilot.computer-helper`, protocol v3); `NativeHelperOperator` is the product operator; Permission Center live in Settings with real Helper state, request flow, and permission tests.
-- [x] Implement the curated plugin runtime foundation. — integrated (`5079a4c`): catalog/detail/lifecycle endpoints, signature and integrity recheck, permission-diff consent, supervised subprocess isolation; desktop catalog page (`cdf586b`).
-- [x] Repair the mutation false-success path with execution provenance, a one-attempt allowlist, and fail-closed approval completion.
-- [x] Add dual-review exact-value reread, typed equality, evidence hashing, and a verified Shared Fact after mutation — now extended with a post-refresh persistence reread and durable Computer Action records; a mutation without a persistent record aborts the approval fail-closed.
-- [x] Repair the live Google Ads validation harness without claiming a live account run.
-- [x] Session-scoped Computer Use state and Live View pixels. — Product+Browser session bindings, per-session control state, durable action records; authenticated `/api/desktop-native/live-frame` returns real bound-window previews rendered with grounding overlay; proven end to end on real hardware (`scripts/live-view-e2e.ts`).
-- [ ] Model/provider page with OS credential storage.
-
-## Direct results this cycle (2026-07-28, commits through `34cb1f8`)
-
-```text
-pnpm typecheck                   pass
-pnpm lint                        pass (354 files)
-pnpm test                        pass (70 files, 719 tests)
-swift test (native helper)       pass (23 tests)
-pnpm test:computer:permissions   pass (real machine: screen capture + accessibility,
-                                 real PNG capture, real window focus)
-real screen capture              pass (3024x1964 PNG via authenticated Helper, inspected)
-real native input                pass (lease-bound mouse move posted to a live Chrome window)
-permission center end to end     pass (all eight items with real Helper state)
-live view end to end             pass (real managed Chrome window bound by PID+CGWindowID,
-                                 real JPEG preview through the authenticated route)
-pnpm test:computer:google-ads-readonly  blocked-by-no-test-account (structured report)
-pnpm test:computer:google-ads-prepare   blocked-by-no-test-account (structured report)
-pnpm test:computer:google-ads-mutation  blocked-by-no-test-account (structured report)
-pnpm eval:computer-use:live      not-run (LIVE_MODEL_NOT_CONFIGURED)
-pnpm verify                      pass (59s on a calm machine: format, lint, typecheck,
-                                 719 tests in 18s, security 48, computer 155 + Swift 23,
-                                 permissions real-machine pass, ads-core 410, build,
-                                 package:mac:dir, package:smoke all green)
-desktop component tests          pass (10 files, 89 tests; apps/desktop vitest)
-```
-
-No test, live action, or real-account result is recorded as passing unless it ran in this rebuild.
+P0 computer-use closeout (native helper, permissions, live view, mutation
+safety) — see `docs/computer-use/CURRENT_STATE.md`.

@@ -420,7 +420,7 @@ const weekly = await call(adsTools, "artifact.create", {
 });
 step("taskB", "weekly report PPTX created and linked to the project", weekly.success, weekly.data ?? weekly.error);
 
-const adsProjectDetail = await system3.kernel.getProject(adsCtx.projectId);
+const adsProjectDetail = await system3.kernel.getProject(adsCtx.projectId!);
 step("taskB", "project carries artifacts and audit trail", (adsProjectDetail?.artifactIds.length ?? 0) >= 1, {
   artifactIds: adsProjectDetail?.artifactIds,
   mockData: true

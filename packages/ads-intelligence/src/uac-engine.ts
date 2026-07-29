@@ -214,7 +214,10 @@ export class PythonUacEngine {
             ...(parsed.question !== undefined ? ["--question", parsed.question] : [])
           ]
         : [this.scriptPath, "analyze", inputPath];
-      const { status, stdout, stderr, error } = await this.run([this.pythonPath, args]);
+      // -B: never write bytecode. The packaged engine lives inside a signed
+      // app bundle; a __pycache__ directory created at call time breaks the
+      // code signature seal.
+      const { status, stdout, stderr, error } = await this.run([this.pythonPath, ["-B", ...args]]);
       if (error !== undefined || status !== 0) {
         throw new AdsIntelligenceError(
           `UAC engine ${parsed.kind} failed: ${describeFailure(status, stderr, error)}`,

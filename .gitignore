@@ -19,3 +19,5 @@ workspace/clients/
 workspace/browser-profiles/
 workspace/browser-sessions/
 .vscode/
+__pycache__/
+*.pyc

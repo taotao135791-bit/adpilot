@@ -194,7 +194,10 @@ describe("DecisionService", () => {
     const a = await service.createDecision({ projectId, recommendation: "a", confidence: "low" });
     await service.createDecision({ projectId, recommendation: "b", confidence: "low" });
     const byProject = await service.listByProject(projectId);
-    expect(byProject.map((decision) => decision.recommendation)).toEqual(["a", "b"]);
+    // The store contract is (createdAt, id) ordering; same-millisecond
+    // creations compare by id, so assert membership, not insertion order.
+    expect(byProject.map((decision) => decision.recommendation).sort()).toEqual(["a", "b"]);
+    expect(byProject).toHaveLength(2);
     await service.transitionStatus(a.id, "approved");
     const approved = await service.listByStatus("approved");
     expect(approved.map((decision) => decision.id)).toContain(a.id);
@@ -261,6 +264,8 @@ describe("PythonUacEngine", () => {
     await writeFile(shim, [
       "#!/bin/sh",
       'if [ "$1" = "--version" ]; then echo "Python 3.0.0-fake"; exit 0; fi',
+      // The real engine spawns `python3 -B`; the shim accepts and drops it.
+      'if [ "$1" = "-B" ]; then shift; fi',
       `if [ "$1" = "-c" ]; then exit ${options.moduleProbeFails ? 1 : 0}; fi`,
       `exec "${process.execPath}" "$@"`,
       ""
