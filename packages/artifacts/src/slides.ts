@@ -5,10 +5,11 @@ import PptxGenJSModule from "pptxgenjs";
 import type { ArtifactRenderer, RenderedOutput } from "./record.js";
 
 // pptxgenjs ships UMD typings whose default export collapses to the module
-// namespace under NodeNext; at runtime the default import IS the class
-// (verified against dist/pptxgen.cjs.js), so rebind the constructor.
+// namespace under NodeNext. The runtime shape also varies by loader: plain
+// Node ESM yields the class itself, while tsx/esbuild wraps the CJS build as
+// a { __esModule, default } facade. Unwrap one level so both work.
 type PptxGenJS = InstanceType<(typeof import("pptxgenjs"))["default"]>;
-const PptxGenJS = PptxGenJSModule as unknown as new () => PptxGenJS;
+const PptxGenJS = ((PptxGenJSModule as { default?: unknown }).default ?? PptxGenJSModule) as new () => PptxGenJS;
 
 export const SlidesTheme = z.object({
   /** Hex RGB without `#`, e.g. "2563EB". */

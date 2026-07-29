@@ -129,6 +129,11 @@ export class AdPilotAgent {
     this.agentTools = agentTools;
   }
 
+  /** Introspection seam for acceptance tooling and tests. */
+  getAgentTools(): AdPilotAgentTools | undefined {
+    return this.agentTools;
+  }
+
   /**
    * Build the unified execution context for the agent tool registry from the
    * conversation context: the workspace is the client, the session falls back
