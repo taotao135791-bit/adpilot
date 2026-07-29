@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import Fastify from "fastify";
@@ -8,6 +8,18 @@ import { z } from "zod";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import { SessionError } from "@earendil-works/pi-agent-core";
 import type { AdPilotSystem } from "@adpilot/application";
+import { buildAgentToolRegistry } from "@adpilot/agent-tools";
+import {
+  DailyBriefService,
+  DecisionService,
+  FileAdAccountStore,
+  FileAdvertisingDecisionStore,
+  FileCampaignStore,
+  FileCreativeAssetStore,
+  PythonUacEngine
+} from "@adpilot/ads-intelligence";
+import { CheckpointStore, GitRepository, WorktreeManager } from "@adpilot/git-tools";
+import { FileWorkflowRunStore, FileWorkflowStore, WorkflowRunner } from "@adpilot/workflows";
 import {
   DeletedSessionError,
   PermissionEscalationRequiresApprovalError,
@@ -682,6 +694,51 @@ export async function createServer(system: AdPilotSystem, options: {
   registerFsRoutes(app, system);
   registerAdsRoutes(app, system);
   const automationScheduler = registerAutomationRoutes(app, system);
+
+  // One agent runtime drives every capability: the shared terminal sessions
+  // and automation scheduler are the same instances the REST boundary uses,
+  // so the UI watches agent-driven work live.
+  const workflowDefinitionStore = new FileWorkflowStore(system.workspace.root);
+  system.agent.setAgentTools({
+    registry: buildAgentToolRegistry(),
+    deps: {
+      kernel: system.kernel,
+      git: {
+        repository: (root) => new GitRepository(root),
+        worktrees: (root) => new WorktreeManager(root),
+        checkpoints: (root) => new CheckpointStore(join(root, ".adpilot", "checkpoints"))
+      },
+      terminal: terminalService,
+      artifacts: system.artifacts,
+      ads: {
+        decisions: new DecisionService(
+          new FileAdvertisingDecisionStore(system.workspace.root),
+          async (projectId) => (await system.kernel.getProject(projectId)) !== undefined
+        ),
+        brief: new DailyBriefService(),
+        uac: new PythonUacEngine(),
+        stores: {
+          accounts: new FileAdAccountStore(system.workspace.root),
+          campaigns: new FileCampaignStore(system.workspace.root),
+          creatives: new FileCreativeAssetStore(system.workspace.root)
+        }
+      },
+      automations: automationScheduler,
+      workflows: {
+        store: workflowDefinitionStore,
+        runner: new WorkflowRunner({
+          workflows: workflowDefinitionStore,
+          runs: new FileWorkflowRunStore(system.workspace.root),
+          executor: system.workflowExecutor
+        })
+      },
+      audit: async (clientId, action, details) => {
+        const event = await system.audit.append({ clientId, actor: "adpilot_agent", action, status: "succeeded", details });
+        return event.id;
+      },
+      now: () => new Date()
+    }
+  });
   const automationTickMs = options.automationTickMs ?? 30_000;
   if (automationTickMs > 0) {
     const automationTimer = setInterval(() => {

@@ -115,9 +115,18 @@ export class AdPilotAgent {
     private readonly onTaskState: (task: Task) => void | Promise<void> = () => undefined,
     sharedFacts?: SharedFactLedger,
     private readonly knowledge: AgentKnowledge = embeddedAgentKnowledge,
-    private readonly agentTools?: AdPilotAgentTools
+    private agentTools?: AdPilotAgentTools
   ) {
     this.sharedFacts = sharedFacts ?? new SharedFactLedger(new WorkspaceSharedFactRepository(workspace));
+  }
+
+  /**
+   * Late-bind the agent tool registry. The composition root (server) owns the
+   * shared services the deps need (terminal, automation scheduler), which are
+   * created after the agent itself.
+   */
+  setAgentTools(agentTools: AdPilotAgentTools): void {
+    this.agentTools = agentTools;
   }
 
   /**
