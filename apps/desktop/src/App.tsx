@@ -30,6 +30,7 @@ import { Composer } from "./components/Composer.js";
 import { MissionZero } from "./components/MissionZero.js";
 import { PluginsView } from "./components/PluginsView.js";
 import { AppRail, type RailView } from "./components/AppRail.js";
+import { NavSidebar } from "./components/NavSidebar.js";
 import { HomeView } from "./views/HomeView.js";
 import { ProjectsView } from "./views/ProjectsView.js";
 import { ProjectView } from "./views/ProjectView.js";
@@ -77,9 +78,9 @@ export function App() {
   /** Main-area view switch: home, the conversation, the projects workspace, or the plugins catalog. */
   const [mainView, setMainView] = useState<RailView>("home");
   /** Project open in the workbench (mainView === "project"). */
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  /** Artifact to pre-select when the workbench opens (clicked from Home). */
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);  /** Artifact to pre-select when the workbench opens (clicked from Home). */
   const [focusArtifactId, setFocusArtifactId] = useState<string | null>(null);
+  const [codeHandoff, setCodeHandoff] = useState<{ projectId: string; mission: string } | null>(null);
   /** Bumped to make ProjectsView open its create dialog (from the Home empty state). */
   const [projectsDialogNonce, setProjectsDialogNonce] = useState(0);
   /** Bumped on every plugin SSE event; PluginsView refetches on change. */
@@ -238,6 +239,10 @@ export function App() {
     .filter((session) => !session.archivedAt && !session.deletedAt)
     .sort((left, right) => right.lastActivityAt.localeCompare(left.lastActivityAt))
     .slice(0, 6), [sessions]);
+  const archivedSessions = useMemo(() => sessions
+    .filter((session) => session.archivedAt && !session.deletedAt)
+    .sort((left, right) => right.lastActivityAt.localeCompare(left.lastActivityAt))
+    .slice(0, 8), [sessions]);
 
   function applySettings(data: SettingsData) {
     setSettingsData(data);
@@ -313,14 +318,61 @@ export function App() {
     void submitGoal(message);
   }
 
+  /** Home's Code hand-off: a development project is created from the text and
+     opened with the text prefilled in its mission composer. */
+  async function submitCodeProject(message: string) {
+    if (!clientId) return;
+    try {
+      const response = await fetch(`/api/kernel/projects`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          workspaceId: clientId,
+          name: message.replace(/\s+/g, " ").trim().slice(0, 40) || "Code task",
+          type: "development"
+        })
+      });
+      if (!response.ok) throw new Error(String(response.status));
+      const project = await response.json() as { id: string };
+      setCodeHandoff({ projectId: project.id, mission: message });
+      setActiveProjectId(project.id);
+      setFocusArtifactId(null);
+      setMainView("project");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
   function openApprovalsInChat() {
     setMainView("chat");
     window.setTimeout(() => jumpToApprovals(), 350);
   }
 
-  function createProjectFromHome() {
-    setMainView("projects");
-    setProjectsDialogNonce((nonce) => nonce + 1);
+  function toggleTheme() {
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    setTheme(nextTheme);
+    localStorage.setItem("adpilot-theme", nextTheme);
+    void (async () => {
+      try {
+        const response = await fetch("/api/settings");
+        if (!response.ok) return;
+        const current = await response.json() as SettingsData;
+        await fetch("/api/settings", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            locale: current.locale ?? locale,
+            appearance: nextTheme,
+            models: {
+              fast: current.models.fast,
+              ...(current.models.strongConfigured && current.models.strong ? { strong: current.models.strong } : {})
+            }
+          })
+        });
+      } catch {
+        // The local toggle already took effect; persistence retries next time.
+      }
+    })();
   }
 
   async function newSession() {
@@ -619,11 +671,14 @@ export function App() {
       <AppRail
         copy={workspaceCopy(locale)}
         view={mainView}
+        theme={theme}
         pluginsLabel={pluginsCopy(locale).nav}
         settingsLabel={copy.settings}
+        themeLabel={copy.themeToggle}
         onNavigate={navigateRail}
         onShowPlugins={() => setMainView("plugins")}
         onOpenSettings={() => openSettings("general")}
+        onToggleTheme={toggleTheme}
       />
 
       {mainView === "chat" && (
@@ -655,6 +710,21 @@ export function App() {
       />
       )}
 
+      {mainView !== "chat" && mainView !== "project" && (
+        <NavSidebar
+          copy={workspaceCopy(locale)}
+          view={mainView}
+          clients={state.clients}
+          clientId={clientId}
+          onNewSession={() => {
+            setMainView("chat");
+            void newSession();
+          }}
+          onNavigate={navigateRail}
+          onSelectClient={selectClient}
+        />
+      )}
+
       <main className="main-column">
         {mainView === "project" && activeProjectId ? (
           <ProjectView
@@ -663,6 +733,7 @@ export function App() {
             clientId={clientId}
             projectId={activeProjectId}
             focusArtifactId={focusArtifactId}
+            initialMission={codeHandoff?.projectId === activeProjectId ? codeHandoff.mission : undefined}
             onBack={() => setMainView("projects")}
             onSubmitGoal={submitAndChat}
           />
@@ -675,16 +746,16 @@ export function App() {
                 workspaceName={state.clients.find((client) => client.id === clientId)?.name ?? clientId}
                 openApprovals={openApprovals}
                 recentSessions={recentSessions}
+                archivedSessions={archivedSessions}
                 onSubmitGoal={submitAndChat}
-                onOpenProject={(projectId, artifactId) => openProject(projectId, artifactId)}
+                onSubmitCode={(message) => void submitCodeProject(message)}
                 onOpenProjects={() => setMainView("projects")}
-                onCreateProject={createProjectFromHome}
-                onOpenAutomations={() => setMainView("automations")}
                 onOpenApprovals={openApprovalsInChat}
                 onOpenSession={(sessionId) => {
                   const session = sessions.find((candidate) => candidate.id === sessionId);
                   if (session) selectSession(session);
                 }}
+                onOpenSettings={() => openSettings("general")}
               />
             )}
             {mainView === "projects" && (

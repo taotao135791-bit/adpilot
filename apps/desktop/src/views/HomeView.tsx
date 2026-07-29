@@ -1,414 +1,220 @@
-import { useCallback, useEffect, useState } from "react";
-import {
-  artifactStatusLabel,
-  artifactStatusTone,
-  artifactTypeLabel,
-  briefSectionLabel,
-  briefSeverityTone,
-  formatTime,
-  kernelTaskStatusLabel,
-  kernelTaskStatusTone,
-  operationLabel,
-  projectTypeLabel,
-  workspaceCopy,
-  type AppLocale
-} from "../labels.js";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { operationLabel, workspaceCopy, type AppLocale } from "../labels.js";
 import type { Approval } from "../approvalDisclosure.js";
 import type { ProductSession } from "../types.js";
 import {
-  adsAccountsUrl,
-  adsCampaignsUrl,
-  adsCreativesUrl,
-  adsDailyBriefUrl,
-  briefSections,
-  briefSectionSeverity,
-  buildBriefFacts,
-  homeGreetingKey,
-  interpolate,
-  kernelArtifactsUrl,
   kernelProjectsUrl,
-  kernelTasksUrl,
-  shortId,
-  sortArtifactsRecent,
-  sortProjectsRecent,
-  type AdAccount,
-  type AdCampaign,
-  type AdCreative,
-  type DailyBrief,
-  type KernelArtifact,
-  type KernelProject,
-  type KernelTask
+  type KernelProject
 } from "../workspace.js";
 import { Badge, Button } from "../ui.js";
-import { IconArrowUpRight, IconChat, IconChevronDown, IconRefresh, IconSend, IconShieldCheck } from "../icons.js";
+import { IconArrowUpRight, IconPlus, IconSend } from "../icons.js";
+import { TopBar } from "../components/TopBar.js";
 
-const MAX_ARTIFACT_PROJECTS = 8;
-const MAX_HOME_ARTIFACTS = 6;
-const MAX_HOME_PROJECTS = 6;
-const MAX_HOME_TASKS = 8;
+type FeedRow = {
+  id: string;
+  kind: "session" | "approval";
+  tone: "live" | "attention" | "success" | "quiet" | "danger";
+  title: string;
+  path: string;
+  time: string;
+  onOpen: () => void;
+};
+
+function relativeTime(iso: string, locale: AppLocale): string {
+  const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
+  if (seconds < 60) return locale === "zh-CN" ? "刚刚" : "now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return locale === "zh-CN" ? "昨天" : "yesterday";
+  return `${days}d`;
+}
 
 /**
- * Home view: the landing surface of the Universal Workspace. Aggregates real
- * data from the kernel (projects, their artifacts, running/queued tasks) and
- * the approvals already loaded by the App shell, plus a quick-goal input that
- * hands off to the chat view's real submission path. Every card navigates to
- * the view that owns the entity.
+ * Home: breadcrumb top bar, a display heading with the workspace context,
+ * the ask/code composer, and a unified Recent/Archive feed of approvals and
+ * sessions. No fabricated numbers — rows only show what exists.
  */
-export function HomeView({ locale, clientId, workspaceName, openApprovals, recentSessions, onSubmitGoal, onOpenProject, onOpenProjects, onCreateProject, onOpenAutomations, onOpenApprovals, onOpenSession }: {
+export function HomeView({ locale, clientId, workspaceName, openApprovals, recentSessions, archivedSessions, onSubmitGoal, onSubmitCode, onOpenProjects, onOpenApprovals, onOpenSession, onOpenSettings }: {
   locale: AppLocale;
   clientId: string;
   workspaceName: string;
   openApprovals: Approval[];
   recentSessions: ProductSession[];
+  archivedSessions: ProductSession[];
   onSubmitGoal: (message: string) => void;
-  onOpenProject: (projectId: string, artifactId?: string) => void;
+  onSubmitCode: (message: string) => void;
   onOpenProjects: () => void;
-  onCreateProject: () => void;
-  onOpenAutomations: () => void;
   onOpenApprovals: () => void;
   onOpenSession: (sessionId: string) => void;
+  onOpenSettings: () => void;
 }) {
   const copy = workspaceCopy(locale);
   const [goal, setGoal] = useState("");
-  const [projects, setProjects] = useState<KernelProject[] | null>(null);
-  const [artifacts, setArtifacts] = useState<KernelArtifact[]>([]);
-  const [tasks, setTasks] = useState<KernelTask[]>([]);
-  const [error, setError] = useState("");
-  const [adAccounts, setAdAccounts] = useState<AdAccount[]>([]);
-  const [brief, setBrief] = useState<DailyBrief | null>(null);
-  const [briefState, setBriefState] = useState<"idle" | "loading" | "error">("idle");
-  const [briefError, setBriefError] = useState("");
-  const [expandedItems, setExpandedItems] = useState<ReadonlySet<string>>(new Set());
+  const [submitting, setSubmitting] = useState(false);
+  const [tab, setTab] = useState<"recent" | "archive">("recent");
+  const [activeProject, setActiveProject] = useState<KernelProject | undefined>();
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const load = useCallback(async () => {
-    if (!clientId) return;
-    try {
-      const projectsResponse = await fetch(kernelProjectsUrl(clientId));
-      if (!projectsResponse.ok) throw new Error(String(projectsResponse.status));
-      const projectsBody = await projectsResponse.json() as { projects?: KernelProject[] };
-      const list = projectsBody.projects ?? [];
-      setProjects(list);
-      const [artifactLists, running, queued, accountsBody] = await Promise.all([
-        Promise.all(
-          list.slice(0, MAX_ARTIFACT_PROJECTS).map(async (project) => {
-            try {
-              const response = await fetch(kernelArtifactsUrl(clientId, project.id));
-              if (!response.ok) return [] as KernelArtifact[];
-              const body = await response.json() as { artifacts?: KernelArtifact[] };
-              return body.artifacts ?? [];
-            } catch {
-              return [] as KernelArtifact[];
-            }
-          })
-        ),
-        fetch(kernelTasksUrl(clientId, { status: "running" })).then((response) => response.ok ? response.json() as Promise<{ tasks?: KernelTask[] }> : { tasks: [] }),
-        fetch(kernelTasksUrl(clientId, { status: "queued" })).then((response) => response.ok ? response.json() as Promise<{ tasks?: KernelTask[] }> : { tasks: [] }),
-        // The brief section only appears when ad accounts exist; a failed
-        // probe hides it without breaking the rest of the Home surface.
-        fetch(adsAccountsUrl(clientId))
-          .then(async (response) => response.ok ? ((await response.json()) as { accounts?: AdAccount[] }).accounts ?? [] : [])
-          .catch(() => [] as AdAccount[])
-      ]);
-      setArtifacts(sortArtifactsRecent(artifactLists.flat(), MAX_HOME_ARTIFACTS));
-      setTasks([...(running.tasks ?? []), ...(queued.tasks ?? [])].slice(0, MAX_HOME_TASKS));
-      setAdAccounts(accountsBody);
-      setError("");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    }
+  useEffect(() => {
+    let cancelled = false;
+    void fetch(kernelProjectsUrl(clientId))
+      .then((response) => response.ok ? response.json() as Promise<{ projects?: KernelProject[] }> : { projects: [] })
+      .then((body) => {
+        if (!cancelled) setActiveProject((body.projects ?? []).find((project) => project.status !== "archived"));
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
   }, [clientId]);
 
-  useEffect(() => { void load(); }, [load]);
-
-  /** Auto-assembles minimal facts from the registries, then asks the engine. */
-  const generateBrief = useCallback(async () => {
-    if (!clientId || briefState === "loading") return;
-    setBriefState("loading");
-    setBriefError("");
+  const submit = useCallback(async () => {
+    const text = goal.trim();
+    if (!text || submitting) return;
+    setSubmitting(true);
     try {
-      const accountsResponse = await fetch(adsAccountsUrl(clientId));
-      if (!accountsResponse.ok) throw new Error(String(accountsResponse.status));
-      const accounts = ((await accountsResponse.json()) as { accounts?: AdAccount[] }).accounts ?? [];
-      const [campaignLists, creativeLists] = await Promise.all([
-        Promise.all(
-          accounts.map(async (account) => {
-            const response = await fetch(adsCampaignsUrl(clientId, account.id));
-            if (!response.ok) throw new Error(String(response.status));
-            return ((await response.json()) as { campaigns?: AdCampaign[] }).campaigns ?? [];
-          })
-        ),
-        Promise.all(
-          accounts.map(async (account) => {
-            const response = await fetch(adsCreativesUrl(clientId, account.id));
-            if (!response.ok) throw new Error(String(response.status));
-            return ((await response.json()) as { creatives?: AdCreative[] }).creatives ?? [];
-          })
-        )
-      ]);
-      const facts = buildBriefFacts({ accounts, campaigns: campaignLists.flat(), creatives: creativeLists.flat() });
-      const response = await fetch(adsDailyBriefUrl(), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ workspaceId: clientId, facts })
-      });
-      const body = await response.json().catch(() => undefined) as (DailyBrief & { error?: string }) | undefined;
-      // Engine / rule failures surface verbatim — never a fallback brief.
-      if (!response.ok || !body?.sections) throw new Error(body?.error ?? String(response.status));
-      setBrief(body);
-      setExpandedItems(new Set());
-      setBriefState("idle");
-    } catch (cause) {
-      setBriefError(cause instanceof Error ? cause.message : String(cause));
-      setBriefState("error");
+      onSubmitGoal(text);
+      setGoal("");
+    } finally {
+      setSubmitting(false);
     }
-  }, [clientId, briefState]);
+  }, [goal, submitting, onSubmitGoal]);
 
-  function submitQuick() {
-    const message = goal.trim();
-    if (!message) return;
-    setGoal("");
-    onSubmitGoal(message);
-  }
-
-  const recentProjects = sortProjectsRecent(projects ?? [], MAX_HOME_PROJECTS);
+  const rows = useMemo<FeedRow[]>(() => {
+    if (tab === "archive") {
+      return archivedSessions.slice(0, 8).map((session) => ({
+        id: session.id,
+        kind: "session",
+        tone: "quiet",
+        title: session.title,
+        path: workspaceName,
+        time: relativeTime(session.lastActivityAt, locale),
+        onOpen: () => onOpenSession(session.id)
+      }));
+    }
+    const approvalRows: FeedRow[] = openApprovals.slice(0, 5).map((approval) => ({
+      id: approval.id,
+      kind: "approval",
+      tone: "attention",
+      title: `${operationLabel(approval.operation.operation, locale)} · ${approval.operation.campaign || approval.operation.account}`,
+      path: workspaceName,
+      time: approval.createdAt ? relativeTime(approval.createdAt, locale) : "",
+      onOpen: onOpenApprovals
+    }));
+    const sessionRows: FeedRow[] = recentSessions.slice(0, 8).map((session) => ({
+      id: session.id,
+      kind: "session",
+      tone: session.status === "failed" ? "danger" : session.status === "running" ? "live" : session.status === "completed" ? "success" : "quiet",
+      title: session.title,
+      path: workspaceName,
+      time: relativeTime(session.lastActivityAt, locale),
+      onOpen: () => onOpenSession(session.id)
+    }));
+    return [...approvalRows, ...sessionRows];
+  }, [tab, archivedSessions, openApprovals, recentSessions, workspaceName, locale, onOpenApprovals, onOpenSession]);
 
   return (
-    <div className="workbench home-view">
-      <header className="home-hero">
-        <span className="section-kicker">{copy[homeGreetingKey(new Date())]} · {workspaceName || clientId}</span>
-        <h1>AdPilot</h1>
-        <div className="home-quick">
-          <input
+    <div className="home">
+      <TopBar
+        crumbs={["adpilot", copy.workspace, workspaceName]}
+        settingsLabel={copy.settings}
+        onOpenSettings={onOpenSettings}
+      />
+      <div className="home-body">
+        <h1 className="home-heading">{copy.homeHeading}</h1>
+        <p className="home-context">
+          {copy.workspace.toLowerCase()} · {workspaceName}
+          {activeProject ? ` / ${activeProject.name}` : ""}
+        </p>
+
+        <div className="home-composer" data-submitting={submitting || undefined}>
+          <textarea
+            ref={inputRef}
             value={goal}
-            placeholder={copy.homeQuickPlaceholder}
-            aria-label={copy.homeQuickPlaceholder}
+            rows={2}
+            placeholder={copy.homeComposerPlaceholder}
+            aria-label={copy.homeComposerPlaceholder}
             onChange={(event) => setGoal(event.target.value)}
-            onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); submitQuick(); } }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void submit();
+              }
+            }}
           />
-          <Button size="md" variant="primary" icon={<IconSend size={14} />} disabled={!goal.trim()} onClick={submitQuick}>
-            {copy.homeQuickSubmit}
-          </Button>
+          <div className="home-composer-row">
+            <Button size="sm" variant="subtle" className="icon-button" icon={<IconPlus size={14} />} aria-label={copy.homeAttach} disabled />
+            <div className="home-mode" role="group" aria-label="mode">
+              <button type="button" className="home-mode-item" data-active="true" onClick={() => void submit()}>Ask</button>
+              <button
+                type="button"
+                className="home-mode-item"
+                onClick={() => {
+                  const text = goal.trim();
+                  if (!text || submitting) return;
+                  onSubmitCode(text);
+                  setGoal("");
+                }}
+              >{copy.homeCodeMode}</button>
+            </div>
+            <kbd className="home-kbd" title={copy.homeSlashHint}>⌘K</kbd>
+            <span className="home-send-hint">{copy.homeSendHint}</span>
+            <button
+              type="button"
+              className="home-send"
+              aria-label={copy.homeQuickSubmit}
+              disabled={!goal.trim() || submitting}
+              onClick={() => void submit()}
+            >
+              <IconSend size={14} />
+            </button>
+          </div>
         </div>
-      </header>
 
-      {error && (
-        <div className="error-banner" role="alert">
-          <span>{error}</span>
-          <Button size="sm" variant="subtle" onClick={() => void load()}>{copy.retry}</Button>
+        <div className="home-tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "recent"}
+            className="home-tab"
+            data-active={tab === "recent" || undefined}
+            onClick={() => setTab("recent")}
+          >{copy.homeRecent}</button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "archive"}
+            className="home-tab"
+            data-active={tab === "archive" || undefined}
+            onClick={() => setTab("archive")}
+          >{copy.homeArchive}</button>
         </div>
-      )}
 
-      <section className="home-section" aria-label={copy.homeProjects}>
-        <div className="home-section-head">
-          <h2>{copy.homeProjects}</h2>
-          <Button size="sm" variant="subtle" icon={<IconArrowUpRight size={12} />} onClick={onOpenProjects}>{copy.viewAll}</Button>
-        </div>
-        {projects === null ? (
-          <p className="workbench-quiet">{copy.loading}…</p>
-        ) : recentProjects.length === 0 ? (
+        {rows.length === 0 ? (
           <div className="empty-block">
-            <strong>{copy.homeProjectsEmpty}</strong>
-            <p>{copy.homeProjectsEmptyBody}</p>
-            <Button size="sm" variant="primary" onClick={onCreateProject}>{copy.homeProjectsCreate}</Button>
+            <strong>{tab === "recent" ? copy.homeFeedEmpty : copy.homeArchiveEmpty}</strong>
+            <p>{copy.homeFeedEmptyBody}</p>
+            <Button size="sm" variant="subtle" icon={<IconArrowUpRight size={12} />} onClick={onOpenProjects}>{copy.viewAll}</Button>
           </div>
         ) : (
-          <div className="card-grid">
-            {recentProjects.map((project) => (
-              <button key={project.id} type="button" className="project-card" onClick={() => onOpenProject(project.id)}>
-                <div className="project-card-head">
-                  <strong>{project.name}</strong>
-                  <Badge tone="neutral" variant="outline">{projectTypeLabel(project.type, locale)}</Badge>
-                </div>
-                <div className="project-card-meta">
-                  <span>{interpolate(copy.projectGoalCount, { count: String(project.goalIds.length) })}</span>
-                  <span>{interpolate(copy.projectArtifactCount, { count: String(project.artifactIds.length) })}</span>
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {adAccounts.length > 0 && (
-        <section className="home-section" aria-label={copy.homeBrief}>
-          <div className="home-section-head">
-            <h2>{copy.homeBrief}</h2>
-            <div className="brief-head-actions">
-              {brief && (
-                <span className="home-list-meta">{interpolate(copy.homeBriefGeneratedAt, { time: formatTime(brief.generatedAt, locale) })}</span>
-              )}
-              {brief && (
-                <Button size="sm" variant="subtle" className="icon-button" icon={<IconRefresh size={14} />} aria-label={copy.homeBriefGenerate} disabled={briefState === "loading"} onClick={() => void generateBrief()} />
-              )}
-              <Button size="sm" variant="primary" disabled={briefState === "loading"} onClick={() => void generateBrief()}>
-                {copy.homeBriefGenerate}
-              </Button>
-            </div>
-          </div>
-          {brief && (
-            <div className="brief-summary">
-              <Badge tone={brief.summary.criticalCount > 0 ? "danger" : brief.summary.warningCount > 0 ? "warning" : "neutral"} variant="soft">
-                {interpolate(copy.homeBriefSummary, {
-                  total: String(brief.summary.totalFindings),
-                  critical: String(brief.summary.criticalCount),
-                  warning: String(brief.summary.warningCount)
-                })}
-              </Badge>
-            </div>
-          )}
-          {briefState === "loading" ? (
-            <div className="brief-skeleton" aria-label={copy.homeBriefGenerating}>
-              <span /><span /><span />
-            </div>
-          ) : briefState === "error" ? (
-            <div className="error-banner" role="alert">
-              <span>{briefError}</span>
-              <Button size="sm" variant="subtle" onClick={() => void generateBrief()}>{copy.retry}</Button>
-            </div>
-          ) : brief === null ? (
-            <p className="workbench-quiet">{copy.homeBriefIdle}</p>
-          ) : brief.summary.totalFindings === 0 ? (
-            <p className="workbench-quiet">{copy.homeBriefEmpty}</p>
-          ) : (
-            <div className="brief-sections">
-              {briefSections(brief).filter((section) => section.items.length > 0).map((section) => {
-                const severity = briefSectionSeverity(section.items);
-                return (
-                  <section key={section.key} className="brief-section">
-                    <div className="brief-section-head">
-                      <span className="section-kicker">{briefSectionLabel(section.key, locale)}</span>
-                      <Badge tone={severity ? briefSeverityTone(severity) : "neutral"} variant="soft">{section.items.length}</Badge>
-                    </div>
-                    <ul className="home-list">
-                      {section.items.map((item, index) => {
-                        const itemKey = `${section.key}:${index}`;
-                        const open = expandedItems.has(itemKey);
-                        return (
-                          <li key={itemKey}>
-                            <button
-                              type="button"
-                              className="home-list-row"
-                              aria-expanded={open}
-                              onClick={() => setExpandedItems((current) => {
-                                const next = new Set(current);
-                                if (next.has(itemKey)) next.delete(itemKey); else next.add(itemKey);
-                                return next;
-                              })}
-                            >
-                              <IconChevronDown size={12} className={`brief-item-chevron${open ? " brief-item-chevron-open" : ""}`} />
-                              <span className="home-list-title">{item.title}</span>
-                              <Badge tone={briefSeverityTone(item.severity)} variant="soft">{item.severity}</Badge>
-                            </button>
-                            {open && (
-                              <div className="brief-item-detail">
-                                <p>{item.detail}</p>
-                                <span className="section-kicker">{copy.briefEvidence}</span>
-                                {item.evidenceIds.length === 0 ? (
-                                  <p className="workbench-quiet">{copy.briefNoEvidence}</p>
-                                ) : (
-                                  <div className="brief-evidence">
-                                    {item.evidenceIds.map((evidenceId) => (
-                                      <code key={evidenceId} className="brief-evidence-id">{evidenceId}</code>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </section>
-                );
-              })}
-            </div>
-          )}
-        </section>
-      )}
-
-      <section className="home-section" aria-label={copy.homeSessions}>
-        <div className="home-section-head"><h2>{copy.homeSessions}</h2></div>
-        {recentSessions.length === 0 ? (
-          <p className="workbench-quiet">{copy.homeSessionsEmpty}</p>
-        ) : (
-          <ul className="home-list">
-            {recentSessions.map((session) => (
-              <li key={session.id}>
-                <button type="button" className="home-list-row" onClick={() => onOpenSession(session.id)}>
-                  <IconChat size={14} />
-                  <span className="home-list-title">{session.title}</span>
-                  <span className="home-list-meta">{formatTime(session.lastActivityAt, locale)}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="home-section" aria-label={copy.homeApprovals}>
-        <div className="home-section-head">
-          <h2>{copy.homeApprovals}</h2>
-          {openApprovals.length > 0 && <Badge tone="warning" variant="soft">{openApprovals.length}</Badge>}
-        </div>
-        {openApprovals.length === 0 ? (
-          <p className="workbench-quiet">{copy.homeApprovalsEmpty}</p>
-        ) : (
-          <ul className="home-list">
-            {openApprovals.slice(0, 5).map((approval) => (
-              <li key={approval.id}>
-                <button type="button" className="home-list-row" onClick={onOpenApprovals}>
-                  <IconShieldCheck size={14} />
-                  <span className="home-list-title">
-                    {operationLabel(approval.operation.operation, locale)} · {approval.operation.campaign || approval.operation.account}
+          <ul className="home-feed">
+            {rows.map((row) => (
+              <li key={`${row.kind}-${row.id}`}>
+                <button type="button" className="home-feed-row" onClick={row.onOpen}>
+                  <i className="home-feed-dot" data-tone={row.tone} aria-hidden="true" />
+                  <span className="home-feed-main">
+                    <span className="home-feed-title">{row.title}</span>
+                    <span className="home-feed-path">{row.path}</span>
                   </span>
-                  <Badge tone="warning" variant="soft">{shortId(approval.id)}</Badge>
+                  {row.kind === "approval" && <Badge tone="warning" variant="soft">{copy.homeApprovals}</Badge>}
+                  <span className="home-feed-time">{row.time}</span>
                 </button>
               </li>
             ))}
           </ul>
         )}
-      </section>
-
-      <section className="home-section" aria-label={copy.homeArtifacts}>
-        <div className="home-section-head"><h2>{copy.homeArtifacts}</h2></div>
-        {artifacts.length === 0 ? (
-          <p className="workbench-quiet">{copy.homeArtifactsEmpty}</p>
-        ) : (
-          <ul className="home-list">
-            {artifacts.map((artifact) => (
-              <li key={artifact.id}>
-                <button type="button" className="home-list-row" onClick={() => onOpenProject(artifact.projectId, artifact.id)}>
-                  <span className="home-list-title">{artifact.title}</span>
-                  <Badge tone="neutral" variant="outline">{artifactTypeLabel(artifact.type, locale)}</Badge>
-                  <Badge tone={artifactStatusTone(artifact.status)} variant="soft">{artifactStatusLabel(artifact.status, locale)}</Badge>
-                  <span className="home-list-meta">{interpolate(copy.artifactVersion, { version: String(artifact.version) })} · {formatTime(artifact.updatedAt, locale)}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="home-section" aria-label={copy.homeTasks}>
-        <div className="home-section-head">
-          <h2>{copy.homeTasks}</h2>
-          <Button size="sm" variant="subtle" icon={<IconArrowUpRight size={12} />} onClick={onOpenAutomations}>{copy.viewAll}</Button>
-        </div>
-        {tasks.length === 0 ? (
-          <p className="workbench-quiet">{copy.homeTasksEmpty}</p>
-        ) : (
-          <ul className="home-list">
-            {tasks.map((task) => (
-              <li key={task.id}>
-                <button type="button" className="home-list-row" onClick={onOpenAutomations}>
-                  <span className="home-list-title">{task.title}</span>
-                  <Badge tone={kernelTaskStatusTone(task.status)} variant="soft">{kernelTaskStatusLabel(task.status, locale)}</Badge>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      </div>
     </div>
   );
 }

@@ -37,6 +37,56 @@ export const IconChat = createIcon(
   </>
 );
 
+export const IconDiamond = createIcon(
+  <>
+    <path d="M12 3.5 20.5 12 12 20.5 3.5 12z" />
+  </>
+);
+
+export const IconDiamondFilled = createIcon(
+  <>
+    <path d="M12 3.5 20.5 12 12 20.5 3.5 12z" fill="currentColor" stroke="none" />
+  </>
+);
+
+export const IconStarFilled = createIcon(
+  <>
+    <path d="M12 3l2.6 5.6 6.1.6-4.6 4.1 1.3 6-5.4-3.1-5.4 3.1 1.3-6L3.3 9.2l6.1-.6z" fill="currentColor" stroke="none" />
+  </>
+);
+
+export const IconAsterisk = createIcon(
+  <>
+    <path d="M12 4v16M5 7.5l14 9M19 7.5l-14 9" />
+  </>
+);
+
+export const IconMoon = createIcon(
+  <>
+    <path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z" />
+  </>
+);
+
+export const IconDocLines = createIcon(
+  <>
+    <path d="M7 3.5h7.5L19 8v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19V5a1.5 1.5 0 0 1 1.5-1.5z" />
+    <path d="M14 3.5V8h5" />
+    <path d="M8.5 12h7M8.5 15.5h5" />
+  </>
+);
+
+export const IconDotFilled = createIcon(
+  <>
+    <circle cx="12" cy="12" r="6" fill="currentColor" stroke="none" />
+  </>
+);
+
+export const IconDotOutline = createIcon(
+  <>
+    <circle cx="12" cy="12" r="5.5" />
+  </>
+);
+
 export const IconTarget = createIcon(
   <>
     <circle cx="12" cy="12" r="7.5" />

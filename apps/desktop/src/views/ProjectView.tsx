@@ -87,12 +87,14 @@ type RightTab = "terminal" | "git" | "preview";
  * project/goal/task binding. Right — collapsible dynamic panel
  * (terminal / git / artifact preview).
  */
-export function ProjectView({ locale, clientId, projectId, focusArtifactId, onBack }: {
+export function ProjectView({ locale, clientId, projectId, focusArtifactId, initialMission, onBack }: {
   locale: AppLocale;
   clientId: string;
   projectId: string;
   /** Artifact to pre-select in the preview panel (e.g. clicked from Home). */
   focusArtifactId?: string | null;
+  /** Prefill the mission composer (e.g. Home's Code hand-off). */
+  initialMission?: string | undefined;
   onBack: () => void;
   /** @deprecated Missions no longer hand off to the chat view; kept for App's prop contract. */
   onSubmitGoal?: (message: string) => void;
@@ -105,7 +107,7 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, onBa
   const [rightTab, setRightTab] = useState<RightTab>("terminal");
   const [rightOpen, setRightOpen] = useState(true);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(focusArtifactId ?? null);
-  const [mission, setMission] = useState("");
+  const [mission, setMission] = useState(initialMission ?? "");
   /** The durable session this project's chat is bound to. */
   const [session, setSession] = useState<ProductSession | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
