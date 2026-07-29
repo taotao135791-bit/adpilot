@@ -234,6 +234,10 @@ export function App() {
   const openApprovals = useMemo(() => state.approvals.filter((item) => isApprovalOpen(item.status)), [state.approvals]);
   const autonomy = normalizeAutonomy(state.autonomy);
   const selectedSession = useMemo(() => sessions.find((session) => session.id === selectedSessionId), [sessions, selectedSessionId]);
+  const recentSessions = useMemo(() => sessions
+    .filter((session) => !session.archivedAt && !session.deletedAt)
+    .sort((left, right) => right.lastActivityAt.localeCompare(left.lastActivityAt))
+    .slice(0, 6), [sessions]);
 
   function applySettings(data: SettingsData) {
     setSettingsData(data);
@@ -670,12 +674,17 @@ export function App() {
                 clientId={clientId}
                 workspaceName={state.clients.find((client) => client.id === clientId)?.name ?? clientId}
                 openApprovals={openApprovals}
+                recentSessions={recentSessions}
                 onSubmitGoal={submitAndChat}
                 onOpenProject={(projectId, artifactId) => openProject(projectId, artifactId)}
                 onOpenProjects={() => setMainView("projects")}
                 onCreateProject={createProjectFromHome}
                 onOpenAutomations={() => setMainView("automations")}
                 onOpenApprovals={openApprovalsInChat}
+                onOpenSession={(sessionId) => {
+                  const session = sessions.find((candidate) => candidate.id === sessionId);
+                  if (session) selectSession(session);
+                }}
               />
             )}
             {mainView === "projects" && (

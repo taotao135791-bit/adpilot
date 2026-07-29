@@ -532,6 +532,11 @@ export async function createServer(system: AdPilotSystem, options: {
         const response = await system.agent.respond(clientId, prompt, { conversationId, interfaceLocale: body.locale, userMessageId: userMessage.id, ...(session ? { sessionId: session.id } : {}), ...(modelOverride ? { modelOverride } : {}), ...(project ? { executionContext: { projectId: project.id, ...(body.goalId ? { goalId: body.goalId } : {}), ...(body.taskId ? { taskId: body.taskId } : {}), rootPaths: project.rootPaths, enabledCapabilityPacks: project.enabledCapabilityPacks } } : {}), recentConversation: existing.slice(-12).map((item) => sanitizeLegacyConversationError(item, body.locale)).map(({ role, content }) => ({ role, content })) });
         const assistantMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId, ...(session ? { sessionId: session.id } : {}), role: "assistant", content: response.reply, ...(response.task ? { taskId: response.task.id } : {}), at: new Date().toISOString() });
         await system.workspace.appendJsonl(clientId, "conversation.jsonl", assistantMessage);
+        if (session && isUntitledSession(session.title)) {
+          // Name the session from its first real exchange instead of leaving a
+          // bare "New session" or raw UUID in the list forever.
+          session = await system.sessions.rename(session.id, sessionTitleFromMessage(prompt)).catch(() => session);
+        }
         await setSessionStatus("completed");
         system.events.publish({ type: "task", clientId, status: response.task?.phase ?? "completed", ...(response.task ? { taskId: response.task.id } : {}), message: response.reply });
         reply.code(201); return { message: assistantMessage, task: response.task, ...(session ? { session } : {}), ...(project ? { projectId: project.id } : {}) };
@@ -1218,6 +1223,17 @@ export async function createServer(system: AdPilotSystem, options: {
     app.get("/*", async (_request, reply) => reply.sendFile("index.html"));
   }
   return app;
+}
+
+const UNTITLED_SESSION_PATTERN = /^(?:new session|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}.*)$/i;
+
+function isUntitledSession(title: string): boolean {
+  return UNTITLED_SESSION_PATTERN.test(title.trim());
+}
+
+function sessionTitleFromMessage(message: string): string {
+  const collapsed = message.replace(/\s+/g, " ").trim();
+  return collapsed.length > 32 ? `${collapsed.slice(0, 32)}…` : collapsed || "Untitled session";
 }
 
 function requireDesktopNative(native: DesktopNativeBridge | undefined): DesktopNativeBridge {

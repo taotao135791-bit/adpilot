@@ -14,6 +14,7 @@ import {
   type AppLocale
 } from "../labels.js";
 import type { Approval } from "../approvalDisclosure.js";
+import type { ProductSession } from "../types.js";
 import {
   adsAccountsUrl,
   adsCampaignsUrl,
@@ -39,7 +40,7 @@ import {
   type KernelTask
 } from "../workspace.js";
 import { Badge, Button } from "../ui.js";
-import { IconArrowUpRight, IconChevronDown, IconRefresh, IconSend, IconShieldCheck } from "../icons.js";
+import { IconArrowUpRight, IconChat, IconChevronDown, IconRefresh, IconSend, IconShieldCheck } from "../icons.js";
 
 const MAX_ARTIFACT_PROJECTS = 8;
 const MAX_HOME_ARTIFACTS = 6;
@@ -53,17 +54,19 @@ const MAX_HOME_TASKS = 8;
  * hands off to the chat view's real submission path. Every card navigates to
  * the view that owns the entity.
  */
-export function HomeView({ locale, clientId, workspaceName, openApprovals, onSubmitGoal, onOpenProject, onOpenProjects, onCreateProject, onOpenAutomations, onOpenApprovals }: {
+export function HomeView({ locale, clientId, workspaceName, openApprovals, recentSessions, onSubmitGoal, onOpenProject, onOpenProjects, onCreateProject, onOpenAutomations, onOpenApprovals, onOpenSession }: {
   locale: AppLocale;
   clientId: string;
   workspaceName: string;
   openApprovals: Approval[];
+  recentSessions: ProductSession[];
   onSubmitGoal: (message: string) => void;
   onOpenProject: (projectId: string, artifactId?: string) => void;
   onOpenProjects: () => void;
   onCreateProject: () => void;
   onOpenAutomations: () => void;
   onOpenApprovals: () => void;
+  onOpenSession: (sessionId: string) => void;
 }) {
   const copy = workspaceCopy(locale);
   const [goal, setGoal] = useState("");
@@ -322,6 +325,25 @@ export function HomeView({ locale, clientId, workspaceName, openApprovals, onSub
           )}
         </section>
       )}
+
+      <section className="home-section" aria-label={copy.homeSessions}>
+        <div className="home-section-head"><h2>{copy.homeSessions}</h2></div>
+        {recentSessions.length === 0 ? (
+          <p className="workbench-quiet">{copy.homeSessionsEmpty}</p>
+        ) : (
+          <ul className="home-list">
+            {recentSessions.map((session) => (
+              <li key={session.id}>
+                <button type="button" className="home-list-row" onClick={() => onOpenSession(session.id)}>
+                  <IconChat size={14} />
+                  <span className="home-list-title">{session.title}</span>
+                  <span className="home-list-meta">{formatTime(session.lastActivityAt, locale)}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       <section className="home-section" aria-label={copy.homeApprovals}>
         <div className="home-section-head">
