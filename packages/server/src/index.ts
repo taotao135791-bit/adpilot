@@ -63,6 +63,8 @@ import { registerAutomationRoutes } from "./automation-routes.js";
 import { registerTerminalRoutes } from "./terminal-routes.js";
 import { registerFsRoutes } from "./fs-routes.js";
 import { TerminalService } from "./terminal-service.js";
+import { ensureProjectSession } from "./session-binding.js";
+import type { Project as KernelProject } from "@adpilot/kernel";
 
 export * from "./desktop-native.js";
 
@@ -436,16 +438,40 @@ export async function createServer(system: AdPilotSystem, options: {
   });
 
   app.post("/api/messages", async (request, reply) => {
-    const body = z.object({ clientId: z.string().optional(), conversationId: z.string().trim().min(1).max(120).default("primary"), sessionId: z.string().uuid().optional(), message: z.string().trim().min(1).max(20_000), locale: z.enum(["zh-CN", "en"]).default("zh-CN") }).parse(request.body);
+    const body = z.object({ clientId: z.string().optional(), conversationId: z.string().trim().min(1).max(120).default("primary"), sessionId: z.string().uuid().optional(), projectId: z.string().uuid().optional(), goalId: z.string().uuid().optional(), taskId: z.string().uuid().optional(), message: z.string().trim().min(1).max(20_000), locale: z.enum(["zh-CN", "en"]).default("zh-CN") }).parse(request.body);
     const clients = await system.workspace.listClients();
     let clientId = body.clientId ?? clients[0]?.id;
     if (!clientId) return reply.code(409).send({ error: "workspace is not available" });
+    // A project-bound message rides the project's durable Session: the kernel
+    // project is validated against the client first, then the bound session is
+    // resolved (or lazily created) and the execution context is threaded into
+    // the agent turn.
+    let project: KernelProject | undefined;
+    if (body.projectId) {
+      project = await system.kernel.getProject(body.projectId);
+      if (!project) return reply.code(404).send({ error: `project not found: ${body.projectId}`, code: "PROJECT_NOT_FOUND" });
+      if (body.clientId && project.workspaceId !== body.clientId) {
+        return reply.code(400).send({ error: `project ${body.projectId} belongs to client ${project.workspaceId}`, code: "PROJECT_CLIENT_MISMATCH" });
+      }
+      clientId = project.workspaceId;
+    }
     // An explicit product Session wins over the legacy conversationId: the
     // session owns the client and its runtimeConversationId becomes the
     // durable Pi/conversation key. A legacy conversation keeps working and is
     // imported into a Session on first sight (see below).
     let session: ProductSessionEntity | undefined;
-    if (body.sessionId) {
+    if (project) {
+      if (body.sessionId) {
+        session = await system.sessions.get(body.sessionId);
+        if (!session) return reply.code(404).send({ error: `session not found: ${body.sessionId}`, code: "SESSION_NOT_FOUND" });
+        if (session.projectId !== project.id) {
+          return reply.code(409).send({ error: `session ${body.sessionId} is not bound to project ${project.id}`, code: "SESSION_PROJECT_MISMATCH" });
+        }
+        clientId = session.clientId;
+      } else {
+        session = (await ensureProjectSession(system, { workspaceId: project.workspaceId, projectId: project.id, title: project.name })).session;
+      }
+    } else if (body.sessionId) {
       session = await system.sessions.get(body.sessionId);
       if (!session) return reply.code(404).send({ error: `session not found: ${body.sessionId}`, code: "SESSION_NOT_FOUND" });
       if (body.clientId && session.clientId !== body.clientId) {
@@ -491,12 +517,12 @@ export async function createServer(system: AdPilotSystem, options: {
       system.events.publish({ type: "task", clientId, status: "running", message: body.message });
       await setSessionStatus("running");
       try {
-        const response = await system.agent.respond(clientId, prompt, { conversationId, interfaceLocale: body.locale, userMessageId: userMessage.id, ...(session ? { sessionId: session.id } : {}), ...(modelOverride ? { modelOverride } : {}), recentConversation: existing.slice(-12).map((item) => sanitizeLegacyConversationError(item, body.locale)).map(({ role, content }) => ({ role, content })) });
+        const response = await system.agent.respond(clientId, prompt, { conversationId, interfaceLocale: body.locale, userMessageId: userMessage.id, ...(session ? { sessionId: session.id } : {}), ...(modelOverride ? { modelOverride } : {}), ...(project ? { executionContext: { projectId: project.id, ...(body.goalId ? { goalId: body.goalId } : {}), ...(body.taskId ? { taskId: body.taskId } : {}), rootPaths: project.rootPaths, enabledCapabilityPacks: project.enabledCapabilityPacks } } : {}), recentConversation: existing.slice(-12).map((item) => sanitizeLegacyConversationError(item, body.locale)).map(({ role, content }) => ({ role, content })) });
         const assistantMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId, ...(session ? { sessionId: session.id } : {}), role: "assistant", content: response.reply, ...(response.task ? { taskId: response.task.id } : {}), at: new Date().toISOString() });
         await system.workspace.appendJsonl(clientId, "conversation.jsonl", assistantMessage);
         await setSessionStatus("completed");
         system.events.publish({ type: "task", clientId, status: response.task?.phase ?? "completed", ...(response.task ? { taskId: response.task.id } : {}), message: response.reply });
-        reply.code(201); return { message: assistantMessage, task: response.task };
+        reply.code(201); return { message: assistantMessage, task: response.task, ...(session ? { session } : {}), ...(project ? { projectId: project.id } : {}) };
       } catch (error) {
         await setSessionStatus("failed").catch(() => undefined);
         const incidentId = crypto.randomUUID();

@@ -22,6 +22,7 @@ import { SkillRegistry } from "@adpilot/skills";
 import { AccountOperator, SpecialistCoordinator, specialistSchemas, type SpecialistAgent } from "@adpilot/specialist-agents";
 import { AdPilotTools } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
+import { AgentToolRegistry, succeed, type AgentToolDeps } from "@adpilot/agent-tools";
 import { AdPilotAgent, WorkspaceSharedFactRepository, conversationSpecialistPermission } from "./index.js";
 
 describe("conversation specialist permissions", () => {
@@ -492,3 +493,84 @@ function factIdsFromModelContext(context: unknown): Record<string, string> {  co
   }
   throw new Error("model context did not include current verified facts");
 }
+
+describe("AdPilotAgent agent-tools registry wiring", () => {
+  it("appends the dot-named registry tools (and their prompt section) to the act loop when executionContext is set", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-agent-tools-wiring-"));
+    const workspace = new WorkspaceStore(root);
+    await workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
+    const faux = fauxProvider({ provider: "wiring-test", models: [{ id: "fast" }, { id: "strong", reasoning: true }] });
+    const models = createModels(); models.setProvider(faux.provider);
+    const router = new ModelRouter({ fast: { provider: "wiring-test", model: "fast" }, strong: { provider: "wiring-test", model: "strong" }, gui: { provider: "wiring-test", model: "fast" } });
+    const tools = new AdPilotTools(workspace, new AuditLog(workspace), new ApprovalService(workspace, "0123456789abcdef0123456789abcdef"), new ExperimentStore(workspace));
+    const runtime = new PiAgentRuntime(models, router, workspace, new SkillRegistry(), tools);
+
+    const registry = new AgentToolRegistry();
+    registry.register({
+      name: "project.ping",
+      description: "Ping the current project context. Test-only tool.",
+      capabilityPack: "project",
+      permission: "read",
+      parameters: z.object({}),
+      execute: async (_params, ctx) => succeed("project.ping", ctx, { pong: true, workspaceId: ctx.workspaceId })
+    });
+    registry.register({
+      name: "git.dummy",
+      description: "Git pack probe. Test-only tool.",
+      capabilityPack: "git",
+      permission: "read",
+      parameters: z.object({}),
+      execute: async (_params, ctx) => succeed("git.dummy", ctx, { ok: true })
+    });
+    const agent = new AdPilotAgent(
+      runtime,
+      new SpecialistCoordinator([]),
+      workspace,
+      tools,
+      undefined,
+      undefined,
+      undefined,
+      { registry, deps: {} as unknown as AgentToolDeps }
+    );
+
+    const contexts: Array<Record<string, unknown>> = [];
+    faux.setResponses([
+      async (context) => { contexts.push(context as unknown as Record<string, unknown>); return fauxAssistantMessage('{"mode":"act","reply":"好的。","goal":"查看项目"}'); },
+      async (context) => { contexts.push(context as unknown as Record<string, unknown>); return fauxAssistantMessage("项目上下文已读取。"); }
+    ]);
+    const outcome = await agent.respond("client-a", "看看当前项目", {
+      interfaceLocale: "zh-CN",
+      executionContext: { projectId: crypto.randomUUID(), rootPaths: [root], enabledCapabilityPacks: ["code"] }
+    });
+    expect(outcome.reply).toBe("项目上下文已读取。");
+    const actionTools = ((contexts[1]?.tools ?? []) as Array<{ name: string }>).map((tool) => tool.name);
+    // The dot-named registry tools sit next to the general read/write/bash surface.
+    expect(actionTools).toEqual(expect.arrayContaining(["read", "grep", "find", "ls", "write", "edit", "bash", "project.ping"]));
+    // The "git" pack was not enabled for this turn, so its tool stays invisible.
+    expect(actionTools).not.toContain("git.dummy");
+    expect(String((contexts[1] as { systemPrompt?: unknown }).systemPrompt ?? "")).toContain("Workspace tools (dot-named)");
+  });
+
+  it("keeps the general-only tool surface when the agent has no registry wired", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-agent-tools-absent-"));
+    const workspace = new WorkspaceStore(root);
+    await workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
+    const faux = fauxProvider({ provider: "wiring-absent-test", models: [{ id: "fast" }, { id: "strong", reasoning: true }] });
+    const models = createModels(); models.setProvider(faux.provider);
+    const router = new ModelRouter({ fast: { provider: "wiring-absent-test", model: "fast" }, strong: { provider: "wiring-absent-test", model: "strong" }, gui: { provider: "wiring-absent-test", model: "fast" } });
+    const tools = new AdPilotTools(workspace, new AuditLog(workspace), new ApprovalService(workspace, "0123456789abcdef0123456789abcdef"), new ExperimentStore(workspace));
+    const runtime = new PiAgentRuntime(models, router, workspace, new SkillRegistry(), tools);
+    const agent = new AdPilotAgent(runtime, new SpecialistCoordinator([]), workspace, tools);
+
+    const contexts: Array<Record<string, unknown>> = [];
+    faux.setResponses([
+      async (context) => { contexts.push(context as unknown as Record<string, unknown>); return fauxAssistantMessage('{"mode":"act","reply":"好的。","goal":"看看目录"}'); },
+      async (context) => { contexts.push(context as unknown as Record<string, unknown>); return fauxAssistantMessage("看完了。"); }
+    ]);
+    await agent.respond("client-a", "看看目录", { interfaceLocale: "zh-CN", executionContext: { rootPaths: [root] } });
+    const actionTools = ((contexts[1]?.tools ?? []) as Array<{ name: string }>).map((tool) => tool.name);
+    expect(actionTools).toEqual(expect.arrayContaining(["read", "bash"]));
+    expect(actionTools.every((name) => !name.includes("."))).toBe(true);
+    expect(String((contexts[1] as { systemPrompt?: unknown }).systemPrompt ?? "")).not.toContain("Workspace tools (dot-named)");
+  });
+});

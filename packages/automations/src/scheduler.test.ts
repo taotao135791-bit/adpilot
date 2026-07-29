@@ -43,7 +43,7 @@ function makeAutomation(overrides: Record<string, unknown> = {}): AutomationValu
   });
 }
 
-async function makeScheduler(startIso: string) {
+async function makeScheduler(startIso: string, options: { verifyApproval?: (approvalId: string) => Promise<void> } = {}) {
   const root = await mkdtemp(join(tmpdir(), "adpilot-automations-"));
   roots.push(root);
   const { clock, set, advance } = makeClock(startIso);
@@ -52,14 +52,16 @@ async function makeScheduler(startIso: string) {
   const notifications = new FileNotificationStore(root);
   const dailyBrief = vi.fn(async (_input: Record<string, unknown>, _context: AutomationActionContext) => ({ findings: 3 }));
   const createTask = vi.fn(async (task: { title: string }, _context: AutomationActionContext) => ({ taskId: `task-${task.title}` }));
+  const verifyApproval = vi.fn(options.verifyApproval ?? (async () => undefined));
   const scheduler = new AutomationScheduler({
     automations,
     runs,
     notifications,
     clock,
-    executors: { dailyBrief, createTask }
+    executors: { dailyBrief, createTask },
+    verifyApproval
   });
-  return { scheduler, automations, runs, notifications, dailyBrief, createTask, set, advance };
+  return { scheduler, automations, runs, notifications, dailyBrief, createTask, verifyApproval, set, advance };
 }
 
 describe("AutomationScheduler", () => {
@@ -152,7 +154,7 @@ describe("AutomationScheduler", () => {
   });
 
   it("parks mutating actions in waiting-approval and executes only after approveRun", async () => {
-    const { scheduler, automations, createTask } = await makeScheduler("2026-07-28T09:00:30.000Z");
+    const { scheduler, automations, createTask, verifyApproval } = await makeScheduler("2026-07-28T09:00:30.000Z");
     const automation = makeAutomation({
       trigger: { kind: "schedule", cron: { minute: "0", hour: "9", dom: "*", month: "*", dow: "*" } },
       action: { kind: "create-task", task: { title: "Review CPA", description: "check daily spend" } },
@@ -162,6 +164,7 @@ describe("AutomationScheduler", () => {
 
     const [parked] = await scheduler.tick();
     expect(parked?.status).toBe("waiting-approval");
+    expect(parked?.actionFingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(createTask).not.toHaveBeenCalled();
     // The schedule still advanced: the slot is consumed by the parked run.
     expect((await automations.get(automation.id))?.nextFireAt).toBe("2026-07-29T09:00:00.000Z");
@@ -171,12 +174,65 @@ describe("AutomationScheduler", () => {
     expect(approved.approvalId).toBe("approval-123");
     expect(approved.result).toEqual({ taskId: "task-Review CPA" });
     expect(createTask).toHaveBeenCalledTimes(1);
+    expect(verifyApproval).toHaveBeenCalledWith("approval-123", expect.objectContaining({
+      automation: expect.objectContaining({ id: automation.id }),
+      run: expect.objectContaining({ id: parked!.id })
+    }));
     expect((await automations.get(automation.id))?.runCount).toBe(1);
 
     await expect(scheduler.approveRun(parked!.id, "approval-456")).rejects.toMatchObject({
       code: "RUN_NOT_WAITING_APPROVAL"
     });
     expect(createTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a fabricated approvalId without executing the parked run", async () => {
+    const { scheduler, automations, runs, createTask } = await makeScheduler("2026-07-28T09:00:30.000Z", {
+      verifyApproval: async (approvalId) => {
+        throw new AutomationsError(`approvalId is not a consumed central approval: ${approvalId}`, "APPROVAL_INVALID");
+      }
+    });
+    const automation = makeAutomation({
+      action: { kind: "create-task", task: { title: "Review CPA", description: "check daily spend" } },
+      nextFireAt: "2026-07-28T09:00:00.000Z"
+    });
+    await automations.save(automation);
+
+    const [parked] = await scheduler.tick();
+    expect(parked?.status).toBe("waiting-approval");
+
+    await expect(scheduler.approveRun(parked!.id, crypto.randomUUID())).rejects.toMatchObject({
+      code: "APPROVAL_INVALID"
+    });
+    expect(createTask).not.toHaveBeenCalled();
+    expect((await runs.get(parked!.id))?.status).toBe("waiting-approval");
+    expect((await runs.get(parked!.id))?.approvalId).toBeUndefined();
+  });
+
+  it("rejects approval with APPROVAL_STALE when the action changed after parking", async () => {
+    const { scheduler, automations, runs, createTask } = await makeScheduler("2026-07-28T09:00:30.000Z");
+    const automation = makeAutomation({
+      action: { kind: "create-task", task: { title: "Review CPA", description: "check daily spend" } },
+      nextFireAt: "2026-07-28T09:00:00.000Z"
+    });
+    await automations.save(automation);
+
+    const [parked] = await scheduler.tick();
+    expect(parked?.status).toBe("waiting-approval");
+
+    // The automation definition drifts while the run waits for approval.
+    const stale = (await automations.get(automation.id))!;
+    await automations.save(Automation.parse({
+      ...stale,
+      action: { kind: "create-task", task: { title: "Review CPA — edited", description: "check daily spend" } },
+      revision: stale.revision + 1
+    }));
+
+    await expect(scheduler.approveRun(parked!.id, "approval-123")).rejects.toMatchObject({
+      code: "APPROVAL_STALE"
+    });
+    expect(createTask).not.toHaveBeenCalled();
+    expect((await runs.get(parked!.id))?.status).toBe("waiting-approval");
   });
 
   it("rejects approving unknown or missing runs with coded errors", async () => {
@@ -202,7 +258,8 @@ describe("AutomationScheduler", () => {
       runs,
       notifications,
       clock: { now: () => new Date("2026-07-28T00:00:00.000Z") },
-      executors: { dailyBrief: chatty, createTask: async () => ({}) }
+      executors: { dailyBrief: chatty, createTask: async () => ({}) },
+      verifyApproval: async () => undefined
     });
     const automation = makeAutomation({ action: { kind: "daily-brief", input: {} } });
     await automations.save(automation);
@@ -244,7 +301,8 @@ describe("AutomationScheduler", () => {
       executors: {
         dailyBrief: async () => { throw new Error("brief engine down"); },
         createTask: async () => ({})
-      }
+      },
+      verifyApproval: async () => undefined
     });
     const automation = makeAutomation({ action: { kind: "daily-brief", input: {} } });
     await automations.save(automation);

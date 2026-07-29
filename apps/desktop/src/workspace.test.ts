@@ -18,6 +18,9 @@ import {
   briefSections,
   briefSectionSeverity,
   buildBriefFacts,
+  buildMissionRequest,
+  buildProjectMessageRequest,
+  buildProjectSessionRequest,
   BRIEF_SECTION_KEYS,
   countUnread,
   cronPresetFields,
@@ -30,9 +33,12 @@ import {
   homeGreetingKey,
   interpolate,
   kernelArtifactsUrl,
+  kernelProjectMissionUrl,
+  kernelProjectSessionUrl,
   kernelProjectUrl,
   kernelProjectsUrl,
   kernelTasksUrl,
+  localProjectUserMessage,
   localTerminalChunk,
   mergeTerminalChunks,
   notificationReadUrl,
@@ -465,5 +471,64 @@ describe("sortDecisionsRecent", () => {
     const fresher = adDecision({ recommendation: "fresher", updatedAt: "2026-07-28T00:00:00.000Z" });
     expect(sortDecisionsRecent([older, fresher]).map((decision) => decision.recommendation)).toEqual(["fresher", "older"]);
     expect(sortDecisionsRecent([older, fresher], 1).map((decision) => decision.recommendation)).toEqual(["fresher"]);
+  });
+});
+
+describe("project session binding helpers", () => {
+  it("builds the project session and mission urls with encoding", () => {
+    expect(kernelProjectSessionUrl("proj-1")).toBe("/api/kernel/projects/proj-1/session");
+    expect(kernelProjectMissionUrl("proj-1")).toBe("/api/kernel/projects/proj-1/mission");
+    expect(kernelProjectSessionUrl("a/b")).toBe("/api/kernel/projects/a%2Fb/session");
+  });
+
+  it("builds the session request, carrying the force flag only when set", () => {
+    expect(buildProjectSessionRequest("personal")).toEqual({ workspaceId: "personal" });
+    expect(buildProjectSessionRequest("personal", false)).toEqual({ workspaceId: "personal" });
+    expect(buildProjectSessionRequest("personal", true)).toEqual({ workspaceId: "personal", force: true });
+  });
+
+  it("builds the mission triage request", () => {
+    expect(buildMissionRequest("personal", "修复登陆页")).toEqual({ workspaceId: "personal", message: "修复登陆页" });
+  });
+
+  it("builds the project message request, omitting absent goal/task ids", () => {
+    expect(buildProjectMessageRequest({
+      clientId: "personal",
+      sessionId: "s-1",
+      projectId: "p-1",
+      message: "你好",
+      locale: "zh-CN"
+    })).toEqual({ clientId: "personal", sessionId: "s-1", projectId: "p-1", message: "你好", locale: "zh-CN" });
+    expect(buildProjectMessageRequest({
+      clientId: "personal",
+      sessionId: "s-1",
+      projectId: "p-1",
+      goalId: "g-1",
+      taskId: "t-1",
+      message: "审计账户",
+      locale: "en"
+    })).toEqual({ clientId: "personal", sessionId: "s-1", projectId: "p-1", goalId: "g-1", taskId: "t-1", message: "审计账户", locale: "en" });
+    // A goal without a task (or vice versa) is passed through independently.
+    expect(buildProjectMessageRequest({
+      clientId: "personal",
+      sessionId: "s-1",
+      projectId: "p-1",
+      goalId: "g-1",
+      message: "m",
+      locale: "en"
+    })).toEqual({ clientId: "personal", sessionId: "s-1", projectId: "p-1", goalId: "g-1", message: "m", locale: "en" });
+  });
+
+  it("builds an optimistic local user message on the local-* convention", () => {
+    const message = localProjectUserMessage("personal", "conv-1", "推进一下");
+    expect(message).toMatchObject({
+      clientId: "personal",
+      conversationId: "conv-1",
+      role: "user",
+      content: "推进一下",
+      status: "complete"
+    });
+    expect(message.id.startsWith("local-")).toBe(true);
+    expect(Number.isNaN(Date.parse(message.at))).toBe(false);
   });
 });

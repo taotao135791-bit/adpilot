@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAdPilotSystem } from "@adpilot/application";
+import { Automation, FileAutomationStore } from "@adpilot/automations";
 import { createServer } from "./index.js";
 
 let roots: string[] = [];
@@ -143,8 +144,8 @@ describe("automation REST routes", () => {
     expect(audits.json().automations).toHaveLength(1);
   });
 
-  it("gates mutating actions behind approval and releases them via /approve", async () => {
-    const { server } = await boot();
+  it("gates mutating actions behind the central ApprovalService chain", async () => {
+    const { server, system } = await boot();
     const created = await createAutomation(server, {
       title: "每日建任务",
       action: { kind: "create-task", task: { title: "复盘昨日 CPA", description: "读取成本并建跟进任务" } }
@@ -159,28 +160,116 @@ describe("automation REST routes", () => {
     });
     const { run } = ran.json();
     expect(run.status).toBe("waiting-approval");
+    expect(run.actionFingerprint).toMatch(/^[a-f0-9]{64}$/);
 
     const tasksBefore = await server.inject({ method: "GET", url: "/api/kernel/tasks?workspaceId=personal" });
     expect(tasksBefore.json().tasks).toHaveLength(0);
 
+    // The client never supplies an approvalId: the server mints, reviews,
+    // approves, and consumes the central approval, then releases the run.
     const approved = await server.inject({
       method: "POST",
       url: `/api/automation-runs/${run.id}/approve`,
-      payload: { workspaceId: "personal", approvalId: "approval-ui-1" }
+      payload: { workspaceId: "personal" }
     });
     expect(approved.statusCode).toBe(200);
-    expect(approved.json().run).toMatchObject({ status: "succeeded", approvalId: "approval-ui-1" });
+    const approvedRun = approved.json().run;
+    expect(approvedRun.status).toBe("succeeded");
+    expect(approvedRun.approvalId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+
+    // The central approval went through its full lifecycle: consumed into
+    // executing, then finished with the run's outcome.
+    const approval = await system.approvals.get("personal", approvedRun.approvalId);
+    expect(approval).toMatchObject({ taskId: automation.id, status: "executed" });
+    expect(approval.executionPlan?.surfaceFingerprint).toBe(run.actionFingerprint);
 
     const tasksAfter = await server.inject({ method: "GET", url: "/api/kernel/tasks?workspaceId=personal" });
     expect(tasksAfter.json().tasks.map((task: { title: string }) => task.title)).toEqual(["复盘昨日 CPA"]);
 
+    const audits = await system.audit.list("personal");
+    const approveAudit = audits.find((event) => event.action === "automation_run_approve");
+    expect(approveAudit?.details).toMatchObject({
+      runId: run.id,
+      automationId: automation.id,
+      approvalId: approvedRun.approvalId,
+      runStatus: "succeeded"
+    });
+
+    // Replay: the run is no longer waiting and its one-time token was consumed.
     const reapproved = await server.inject({
       method: "POST",
       url: `/api/automation-runs/${run.id}/approve`,
-      payload: { workspaceId: "personal", approvalId: "approval-ui-2" }
+      payload: { workspaceId: "personal" }
     });
-    expect(reapproved.statusCode).toBe(400);
+    expect(reapproved.statusCode).toBe(409);
     expect(reapproved.json()).toMatchObject({ code: "RUN_NOT_WAITING_APPROVAL" });
+    expect((await server.inject({ method: "GET", url: "/api/kernel/tasks?workspaceId=personal" })).json().tasks).toHaveLength(1);
+  });
+
+  it("rejects a client-forged approvalId: the server mints the approval itself", async () => {
+    const { server } = await boot();
+    const created = await createAutomation(server, {
+      action: { kind: "create-task", task: { title: "伪造审批", description: "forged" } }
+    });
+    const { automation } = created.json();
+    const { run } = (await server.inject({
+      method: "POST",
+      url: `/api/automations/${automation.id}/run-now`,
+      payload: { workspaceId: "personal" }
+    })).json();
+    expect(run.status).toBe("waiting-approval");
+
+    const forged = await server.inject({
+      method: "POST",
+      url: `/api/automation-runs/${run.id}/approve`,
+      payload: { workspaceId: "personal", approvalId: "forged-approval-id" }
+    });
+    expect(forged.statusCode).toBe(400);
+
+    const after = await server.inject({ method: "GET", url: `/api/automation-runs/${run.id}?workspaceId=personal` });
+    expect(after.json().run).toMatchObject({ status: "waiting-approval" });
+    expect(after.json().run.approvalId).toBeUndefined();
+    const tasks = await server.inject({ method: "GET", url: "/api/kernel/tasks?workspaceId=personal" });
+    expect(tasks.json().tasks).toHaveLength(0);
+  });
+
+  it("rejects approval with APPROVAL_STALE when the action changed after parking", async () => {
+    const { server, system } = await boot();
+    const created = await createAutomation(server, {
+      action: { kind: "create-task", task: { title: "原始任务", description: "original" } }
+    });
+    const { automation } = created.json();
+    const { run } = (await server.inject({
+      method: "POST",
+      url: `/api/automations/${automation.id}/run-now`,
+      payload: { workspaceId: "personal" }
+    })).json();
+    expect(run.status).toBe("waiting-approval");
+
+    // The automation definition drifts while the run waits for approval.
+    const store = new FileAutomationStore(system.workspace.root);
+    const stored = (await store.get(automation.id))!;
+    await store.save(Automation.parse({
+      ...stored,
+      action: { kind: "create-task", task: { title: "被篡改的任务", description: "tampered" } },
+      updatedAt: new Date().toISOString(),
+      revision: stored.revision + 1
+    }));
+
+    const approved = await server.inject({
+      method: "POST",
+      url: `/api/automation-runs/${run.id}/approve`,
+      payload: { workspaceId: "personal" }
+    });
+    expect(approved.statusCode).toBe(409);
+    expect(approved.json()).toMatchObject({ code: "APPROVAL_STALE" });
+
+    // No approval was even minted, and the run stays parked without executing.
+    expect(await system.approvals.list("personal")).toHaveLength(0);
+    const after = await server.inject({ method: "GET", url: `/api/automation-runs/${run.id}?workspaceId=personal` });
+    expect(after.json().run.status).toBe("waiting-approval");
+    const tasks = await server.inject({ method: "GET", url: "/api/kernel/tasks?workspaceId=personal" });
+    expect(tasks.json().tasks).toHaveLength(0);
   });
 
   it("executes daily-brief actions against live workspace data and audits them", async () => {

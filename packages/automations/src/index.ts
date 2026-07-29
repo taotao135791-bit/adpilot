@@ -12,7 +12,8 @@ export {
   AutomationTrigger,
   IDEMPOTENCY_BLOCKING_STATUSES,
   RUN_LOG_LIMIT,
-  actionIsMutating
+  actionIsMutating,
+  automationActionFingerprint
 } from "./entities.js";
 export type {
   AppNotification as AppNotificationValue,
@@ -28,6 +29,8 @@ export { AutomationScheduler } from "./scheduler.js";
 export type {
   AutomationActionContext,
   AutomationActionExecutors,
+  AutomationApprovalContext,
+  AutomationApprovalVerifier,
   AutomationClock,
   AutomationSchedulerDeps,
   CreateTaskAction

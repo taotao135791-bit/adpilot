@@ -1,6 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { z } from "zod";
+import type { AgentExecutionContext, AgentToolDeps, AgentToolRegistry } from "@adpilot/agent-tools";
 import { ApprovalOperation } from "@adpilot/approvals";
 import {
   formatKnowledgeCatalogForPrompt,
@@ -48,6 +49,24 @@ export interface AgentConversationContext extends Record<string, unknown> {
   sessionId?: string;
   /** Session-level model binding; overrides the global router for every run of this turn. */
   modelOverride?: SessionModelOverride;
+  /**
+   * Universal-workspace scope for the 0.3.1 agent tool registry. When the
+   * agent was constructed with `agentTools`, every run of this turn also
+   * carries the dot-named registry tools filtered by this scope.
+   */
+  executionContext?: {
+    projectId?: string;
+    goalId?: string;
+    taskId?: string;
+    rootPaths?: string[];
+    enabledCapabilityPacks?: string[];
+  };
+}
+
+/** Optional 0.3.1 agent tool registry wiring for AdPilotAgent. */
+export interface AdPilotAgentTools {
+  registry: AgentToolRegistry;
+  deps: AgentToolDeps;
 }
 const ConversationDecision = z.object({
   mode: z.enum(["answer", "act", "investigate"]),
@@ -95,9 +114,39 @@ export class AdPilotAgent {
     private readonly tools: AdPilotTools,
     private readonly onTaskState: (task: Task) => void | Promise<void> = () => undefined,
     sharedFacts?: SharedFactLedger,
-    private readonly knowledge: AgentKnowledge = embeddedAgentKnowledge
+    private readonly knowledge: AgentKnowledge = embeddedAgentKnowledge,
+    private readonly agentTools?: AdPilotAgentTools
   ) {
     this.sharedFacts = sharedFacts ?? new SharedFactLedger(new WorkspaceSharedFactRepository(workspace));
+  }
+
+  /**
+   * Build the unified execution context for the agent tool registry from the
+   * conversation context: the workspace is the client, the session falls back
+   * to the conversation, roots and capability packs come from the optional
+   * executionContext (default pack: code), and the default permission ceiling
+   * is write without destructive/computer-use.
+   */
+  private agentExecutionContext(clientId: string, context: AgentConversationContext, conversationId: string): AgentExecutionContext {
+    const scope = context.executionContext;
+    return {
+      workspaceId: clientId,
+      ...(scope?.projectId !== undefined ? { projectId: scope.projectId } : {}),
+      ...(scope?.goalId !== undefined ? { goalId: scope.goalId } : {}),
+      ...(scope?.taskId !== undefined ? { taskId: scope.taskId } : {}),
+      sessionId: context.sessionId ?? conversationId,
+      rootPaths: scope?.rootPaths ?? [],
+      enabledCapabilityPacks: scope?.enabledCapabilityPacks ?? ["code"],
+      permissions: { read: true, write: true, destructive: false, computerUse: false, network: false },
+      locale: context.interfaceLocale ?? "en",
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  /** Registry tools for this turn, empty when the agent has no registry wired. */
+  private registryTools(executionContext: AgentExecutionContext): AgentTool[] {
+    if (!this.agentTools) return [];
+    return this.agentTools.registry.toPiTools(executionContext, this.agentTools.deps);
   }
 
   async respond(clientId: string, message: string, context: AgentConversationContext = {}): Promise<{ reply: string; task: Task | null; result?: MainAgentOutput }> {
@@ -175,6 +224,7 @@ export class AdPilotAgent {
       permission: "OBSERVE" as const,
       adPilotSessionId: context.sessionId ?? conversationId
     };
+    const registryTools = this.agentTools ? this.registryTools(this.agentExecutionContext(clientId, context, conversationId)) : [];
     let summary: string;
     try {
       const run = await this.runtime.run({
@@ -184,11 +234,12 @@ export class AdPilotAgent {
           "Available tools: read, grep, find and ls observe the workspace and explicitly allowed directories; write and edit create and modify files inside the workspace; bash runs sandboxed shell commands, including `open` on macOS to launch applications and URLs (for example `open https://www.baidu.com` or `open -a Safari`).",
           "Bash commands are deterministically classified. Read-level commands run directly. Write-level commands (file changes, installs, `open`) run without an approval reference when the operator granted full access; in guarded mode the gate denial explains exactly what is missing — report it to the user instead of retrying the same call. Deny-classified commands (network tools, screen capture, credential and browser-profile stores, process control, protected paths, rm -rf) are hard-blocked in every mode; never try to work around them.",
           "Two red lines: you never change an advertising account from this path — account mutations go through an investigation and the full approval chain. And outside the managed advertising browser you cannot see the user's screen; if a request needs that, say so honestly instead of claiming an observation.",
-          "Do the work, then report: use tools until the request is actually done, and finish with a concise user-facing summary of what you did (files touched, commands run, apps or pages opened). Use the conversation interfaceLocale: Simplified Chinese for zh-CN and English for en."
+          "Do the work, then report: use tools until the request is actually done, and finish with a concise user-facing summary of what you did (files touched, commands run, apps or pages opened). Use the conversation interfaceLocale: Simplified Chinese for zh-CN and English for en.",
+          ...(this.agentTools ? [agentToolsPromptSection()] : [])
         ].join("\n"),
         prompt: JSON.stringify({ goal, client: clientContext, conversation: sanitizeConversationContext(context) }),
         signals: { task: "conversation" },
-        tools: this.tools.generalAgentTools(runContext),
+        tools: [...this.tools.generalAgentTools(runContext), ...registryTools],
         ...(context.modelOverride ? { modelOverride: context.modelOverride } : {})
       });
       summary = run.text.trim();
@@ -300,6 +351,7 @@ export class AdPilotAgent {
     };
     let modelResult: MainAgentOutput;
     const knowledgeContext = await this.knowledge.context(await this.knowledge.match(goal));
+    const registryTools = this.agentTools ? this.registryTools(this.agentExecutionContext(clientId, context, conversationId)) : [];
     try {
       const runContext = {
         clientId,
@@ -324,10 +376,11 @@ export class AdPilotAgent {
           "For an executable operation, use prepare_approval exactly once per single-variable change. Never invent an approval id and never execute from this run.",
           "prepare_approval also requires guardrailEvidence. Prefer exact verified current-task Shared Fact ids for measurement_status, campaign_mature, and learning_phase when those visible facts exist. Otherwise provide verified screenshot fact ids for conversions, observation days, learning/bid-strategy status, and visible measurement status; optional conversion delay, daily conversions, currency consistency, missing-value rate, and reconciliation difference make the deterministic review stronger. The product derives and persists the three final guardrail facts without model judgment. Never use hypotheses or invent ids; if the minimum raw facts are missing, explain the blocker instead of preparing an approval.",
           "The prepare_approval executionPlan is intent, not guessed native state. Supply schemaVersion 1, platform, exact visible accountName/accountId/campaignName/campaignId/pageType, operation/currentValue/proposedValue, a precise instruction/target/expectedResult, riskLevel, and experiment. Omit allowedRegion: the product derives it from two live visual target observations. The product also binds browser Profile, native application/window, live surface hash, live dual-reviewed account hash, timestamps, and plan id from the managed browser.",
+          ...(this.agentTools ? [agentToolsPromptSection()] : []),
           ...(knowledgeContext ? [knowledgeContext] : [])
         ].join("\n"),
         prompt: JSON.stringify({ goal, projectContext, currentTask: task }),
-        signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool, ...this.tools.generalAgentTools(runContext)],
+        signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool, ...this.tools.generalAgentTools(runContext), ...registryTools],
         ...(context.modelOverride ? { modelOverride: context.modelOverride } : {})
       }, MainAgentOutput);
     } catch (error) {
@@ -382,8 +435,18 @@ export class AdPilotAgent {
   }
 }
 
-function parseConversationDecision(text: string, userMessage: string, locale: unknown): z.infer<typeof ConversationDecision> {
-  const payload = parsePossibleJson(text);
+/**
+ * One system-prompt paragraph describing the dot-named registry tool groups,
+ * appended only when the agent was constructed with `agentTools`.
+ */
+function agentToolsPromptSection(): string {
+  return [
+    "Workspace tools (dot-named) call the Universal Workspace directly: project.* reads and updates the current project, goal.* and task.* manage goals and the task graph, terminal.* runs shell commands inside the project roots, git.* inspects and mutates repositories, artifact.* renders real deliverables, ads.* reads the advertising registry and records decisions, automation.* manages scheduled actors, workflow.* runs recorded workflows.",
+    "Every dot-named call is audited and its structured result (success/data or a coded, recoverable error) is written back to the project/task record. Create a git checkpoint before mutating a repository, attach produced artifacts to the task, and when a call returns a non-recoverable permission error, ask the user instead of retrying."
+  ].join("\n");
+}
+
+function parseConversationDecision(text: string, userMessage: string, locale: unknown): z.infer<typeof ConversationDecision> {const payload = parsePossibleJson(text);
   if (payload && typeof payload === "object" && !Array.isArray(payload)) {
     const record = payload as Record<string, unknown>;
     const mode = normalizeDecisionMode(firstString(record.mode, record.action, record.intent, record.type));

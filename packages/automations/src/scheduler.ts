@@ -6,6 +6,7 @@ import {
   AutomationRun,
   RUN_LOG_LIMIT,
   actionIsMutating,
+  automationActionFingerprint,
   IDEMPOTENCY_BLOCKING_STATUSES,
   type Automation as AutomationValue,
   type AutomationAction,
@@ -50,8 +51,23 @@ export interface AutomationSchedulerDeps {
   runs: AutomationRunStore;
   notifications: NotificationStore;
   executors: AutomationActionExecutors;
+  /**
+   * Fail-closed check that an approval id names a real, consumed central
+   * ApprovalService approval for this exact run context. `approveRun` never
+   * executes without it passing, so a fabricated or replayed approvalId can
+   * never release a gated mutation.
+   */
+  verifyApproval: AutomationApprovalVerifier;
   clock?: AutomationClock;
 }
+
+/** Context handed to the central-approval verifier for one release attempt. */
+export interface AutomationApprovalContext {
+  automation: AutomationValue;
+  run: AutomationRunValue;
+}
+
+export type AutomationApprovalVerifier = (approvalId: string, context: AutomationApprovalContext) => Promise<void>;
 
 /** Run results larger than this are replaced by a truncation marker. */
 const RESULT_LIMIT_CHARS = 32_000;
@@ -114,7 +130,14 @@ export class AutomationScheduler {
     return run;
   }
 
-  /** Release a waiting-approval run: record the approval and execute the action. */
+  /**
+   * Release a waiting-approval run. `approvalId` must name a central
+   * ApprovalService approval that the caller has already driven through
+   * create → risk review → user approval → consume; the injected verifier
+   * re-checks that here so a fabricated or replayed id always fails. The run
+   * also re-pins its parked action fingerprint against the live automation
+   * definition (APPROVAL_STALE) before anything executes.
+   */
   async approveRun(runId: string, approvalId: string): Promise<AutomationRunValue> {
     if (!approvalId.trim()) {
       throw new AutomationsError("approvalId is required to approve a run", "APPROVAL_ID_REQUIRED");
@@ -128,6 +151,16 @@ export class AutomationScheduler {
       );
     }
     const automation = await this.requireAutomation(current.automationId);
+    if (
+      !current.actionFingerprint
+      || current.actionFingerprint !== automationActionFingerprint(automation.action)
+    ) {
+      throw new AutomationsError(
+        `automation action changed since run ${runId} was parked; run a fresh approval cycle`,
+        "APPROVAL_STALE"
+      );
+    }
+    await this.deps.verifyApproval(approvalId, { automation, run: current });
     if (this.inflight.has(automation.id)) {
       throw new AutomationsError(`automation is already executing: ${automation.id}`, "AUTOMATION_BUSY");
     }
@@ -209,6 +242,7 @@ export class AutomationScheduler {
       if (actionIsMutating(automation.action) && automation.guards.requiresApprovalForMutation) {
         const run = this.newRun(automation, idempotencyKey, now, {
           status: "waiting-approval",
+          actionFingerprint: automationActionFingerprint(automation.action),
           runLog: [{ ts: now.toISOString(), message: "mutating action parked: waiting for approval" }]
         });
         await this.deps.runs.save(run);
@@ -328,6 +362,7 @@ export class AutomationScheduler {
       status: AutomationRunValue["status"];
       finishedAt?: string;
       error?: string;
+      actionFingerprint?: string;
       runLog?: AutomationRunLogEntry[];
     }
   ): AutomationRunValue {
@@ -340,6 +375,7 @@ export class AutomationScheduler {
       ...(fields.finishedAt !== undefined ? { finishedAt: fields.finishedAt } : {}),
       status: fields.status,
       ...(fields.error !== undefined ? { error: fields.error } : {}),
+      ...(fields.actionFingerprint !== undefined ? { actionFingerprint: fields.actionFingerprint } : {}),
       runLog: fields.runLog ?? [],
       createdAt: now,
       updatedAt: now,

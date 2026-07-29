@@ -1,7 +1,13 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { AdPilotSystem } from "@adpilot/application";
+import {
+  type ApprovalExecutionPlan,
+  type ApprovalOperation,
+  type VisualExecutionPlan
+} from "@adpilot/approvals";
+import { stableJson } from "@adpilot/shared";
 import {
   Automation,
   AutomationAction,
@@ -11,6 +17,7 @@ import {
   FileAutomationRunStore,
   FileAutomationStore,
   FileNotificationStore,
+  automationActionFingerprint,
   nextFireAt,
   parseCron,
   type Automation as AutomationValue,
@@ -53,8 +60,16 @@ const WorkspaceOnlyBody = z.object({ workspaceId: WorkspaceId }).strict();
 
 const ApproveRunBody = z.object({
   workspaceId: WorkspaceId,
-  approvalId: z.string().trim().min(1).max(256)
+  actor: z.string().trim().min(1).max(128).default("workspace-owner")
 }).strict();
+
+/**
+ * Approval-gate failures are state conflicts: the run is not waiting, the
+ * parked action went stale, or the central approval did not validate. Mapped
+ * here (not by the global handler) so the rest of the automation contract is
+ * untouched.
+ */
+const APPROVAL_CONFLICT_CODES = new Set(["RUN_NOT_WAITING_APPROVAL", "APPROVAL_STALE", "APPROVAL_INVALID"]);
 
 const DailyBriefActionInput = z.object({
   projectId: z.string().uuid().optional(),
@@ -102,6 +117,19 @@ export function registerAutomationRoutes(app: FastifyInstance, system: AdPilotSy
     automations: automationStore,
     runs: runStore,
     notifications: notificationStore,
+    verifyApproval: async (approvalId, context) => {
+      // approveRun's second argument is a central ApprovalService approval id:
+      // it must exist in this workspace and already be consumed into
+      // "executing" by the route's create → review → approve → consume chain.
+      // Anything else (fabricated, pending, executed, cancelled) fails closed.
+      const approval = await system.approvals.get(context.automation.workspaceId, approvalId).catch(() => undefined);
+      if (!approval || approval.status !== "executing") {
+        throw new AutomationsError(
+          `approvalId does not name a consumed central approval for this workspace: ${approvalId}`,
+          "APPROVAL_INVALID"
+        );
+      }
+    },
     executors: {
       dailyBrief: async (input, context) => {
         const parsed = DailyBriefActionInput.parse(input);
@@ -340,20 +368,74 @@ export function registerAutomationRoutes(app: FastifyInstance, system: AdPilotSy
     return { run: await requireRunInWorkspace(params.id, query.workspaceId) };
   });
 
-  app.post("/api/automation-runs/:id/approve", async (request) => {
-    const params = IdParams.parse(request.params);
-    const body = ApproveRunBody.parse(request.body);
-    await requireWorkspace(body.workspaceId);
-    await requireRunInWorkspace(params.id, body.workspaceId);
-    const run = await scheduler.approveRun(params.id, body.approvalId);
-    await system.audit.append({
-      clientId: body.workspaceId,
-      actor: "workspace-owner",
-      action: "automation_run_approve",
-      status: "succeeded",
-      details: { runId: run.id, automationId: run.automationId, approvalId: body.approvalId, runStatus: run.status }
-    });
-    return { run };
+  /**
+   * Release a waiting-approval run through the central ApprovalService. The
+   * server (never the client) mints the approval: create → risk review →
+   * user approval → one-time-token consume, all bound by fingerprint to the
+   * exact parked action. Only then does the scheduler execute, and the
+   * approval is finished executed/failed with the run. Replay is impossible:
+   * the token is single-use, a consumed approval fails verification, and a
+   * non-waiting run is a 409.
+   */
+  app.post("/api/automation-runs/:id/approve", async (request, reply) => {
+    try {
+      const params = IdParams.parse(request.params);
+      const body = ApproveRunBody.parse(request.body);
+      await requireWorkspace(body.workspaceId);
+      const run = await requireRunInWorkspace(params.id, body.workspaceId);
+      const automation = await requireAutomationInWorkspace(run.automationId, body.workspaceId);
+      if (run.status !== "waiting-approval") {
+        throw new AutomationsError(
+          `automation run ${run.id} is not waiting for approval (status: ${run.status})`,
+          "RUN_NOT_WAITING_APPROVAL"
+        );
+      }
+      if (!run.actionFingerprint || run.actionFingerprint !== automationActionFingerprint(automation.action)) {
+        throw new AutomationsError(
+          `automation action changed since run ${run.id} was parked; run a fresh approval cycle`,
+          "APPROVAL_STALE"
+        );
+      }
+      const { operation, plan, visualPlan, guardrail } = buildAutomationApproval(automation, run);
+      const approval = await system.approvals.create(body.workspaceId, automation.id, operation, plan, guardrail);
+      try {
+        await system.approvals.recordRiskReview(body.workspaceId, approval.id, true, "automation mutation approved by the workspace owner");
+        const { token } = await system.approvals.approveByUser(body.workspaceId, approval.id, body.actor);
+        await system.approvals.consume(body.workspaceId, approval.id, token, operation, visualPlan);
+      } catch (error) {
+        throw new AutomationsError(
+          `central approval chain failed: ${error instanceof Error ? error.message : String(error)}`,
+          "APPROVAL_INVALID"
+        );
+      }
+      let released: AutomationRunValue;
+      try {
+        released = await scheduler.approveRun(run.id, approval.id);
+      } catch (error) {
+        await system.approvals.finish(body.workspaceId, approval.id, false).catch(() => undefined);
+        throw error;
+      }
+      await system.approvals.finish(body.workspaceId, approval.id, released.status === "succeeded");
+      await system.audit.append({
+        clientId: body.workspaceId,
+        actor: body.actor,
+        action: "automation_run_approve",
+        status: "succeeded",
+        details: {
+          runId: released.id,
+          automationId: released.automationId,
+          approvalId: approval.id,
+          actionFingerprint: run.actionFingerprint,
+          runStatus: released.status
+        }
+      });
+      return { run: released };
+    } catch (error) {
+      if (error instanceof AutomationsError && APPROVAL_CONFLICT_CODES.has(error.code)) {
+        return reply.code(409).send({ error: error.message, code: error.code });
+      }
+      throw error;
+    }
   });
 
   app.delete("/api/automations/:id", async (request) => {
@@ -407,4 +489,119 @@ export function registerAutomationRoutes(app: FastifyInstance, system: AdPilotSy
   });
 
   return scheduler;
+}
+
+const AUTOMATION_APPLICATION_ID = "adpilot.automation";
+
+/**
+ * Build the central-approval contract for one parked automation run.
+ *
+ * The ApprovalService only attests guarded numeric changes, so a structural
+ * automation action is framed as a budget-neutral (0%) "mutation"; the exact
+ * action payload is bound by the run's action fingerprint, which doubles as
+ * the plan's surfaceFingerprint and is re-verified exactly at consume time.
+ * The plan is synthetic (no native window exists for automations) but fully
+ * valid: every ApprovalService invariant (context match, fingerprints,
+ * single-use token, expiry) applies unchanged.
+ */
+function buildAutomationApproval(
+  automation: AutomationValue,
+  run: AutomationRunValue
+): {
+  operation: ApprovalOperation;
+  plan: ApprovalExecutionPlan;
+  visualPlan: VisualExecutionPlan;
+  guardrail: ReturnType<typeof automationGuardrail>;
+} {
+  const action = automation.action;
+  const actionFingerprint = automationActionFingerprint(action);
+  const target = describeAutomationAction(action);
+  const now = new Date();
+  const operation: ApprovalOperation = {
+    platform: "other",
+    account: automation.workspaceId,
+    campaign: automation.id,
+    operation: `automation ${action.kind} (budget-neutral)`,
+    currentValue: 1,
+    proposedValue: 1,
+    changePercentage: 0,
+    reason: `Automation "${automation.title}" requests approval to execute ${action.kind}: ${target}`,
+    evidence: [`automation:${automation.id}`, `run:${run.id}`, `action-fingerprint:${actionFingerprint}`],
+    expectedImpact: target,
+    observationWindow: "immediate",
+    rollbackCondition: "undo the automation action and pause the automation",
+    riskLevel: "mutate"
+  };
+  const visualPlan: VisualExecutionPlan = {
+    schemaVersion: 1,
+    planId: randomUUID(),
+    taskId: automation.id,
+    clientId: automation.workspaceId,
+    platform: "other",
+    browserProfile: "automation",
+    applicationId: AUTOMATION_APPLICATION_ID,
+    applicationName: "AdPilot Automation",
+    windowId: `automation-${automation.id}`,
+    domain: null,
+    allowedApplications: [AUTOMATION_APPLICATION_ID],
+    allowedDomains: [],
+    accountName: automation.workspaceId,
+    accountId: automation.workspaceId,
+    campaignName: automation.title,
+    campaignId: automation.id,
+    pageType: "automation",
+    operation: operation.operation,
+    currentValue: 1,
+    proposedValue: 1,
+    instruction: `Execute the approval-gated automation action for "${automation.title}" exactly once: ${target}`,
+    target,
+    expectedResult: `the ${action.kind} action executed exactly once for automation ${automation.id}`,
+    allowedRegion: { x: 0, y: 0, width: 1, height: 1, coordinateSpace: "screen_points" },
+    riskLevel: "mutate",
+    surfaceFingerprint: actionFingerprint,
+    accountFingerprint: createHash("sha256")
+      .update(stableJson({ automationId: automation.id, clientId: automation.workspaceId }))
+      .digest("hex"),
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 5 * 60_000).toISOString()
+  };
+  const plan: ApprovalExecutionPlan = {
+    ...visualPlan,
+    experiment: {
+      hypothesis: `approving ${action.kind} for "${automation.title}" produces the intended effect`,
+      variable: action.kind,
+      baseline: {},
+      expected: target,
+      successCriteria: "the automation run reports succeeded",
+      failureCriteria: "the automation run reports failed",
+      maturityWindowDays: 1,
+      rollbackCondition: "undo the automation action and pause the automation",
+      reviewAt: new Date(now.getTime() + 86_400_000).toISOString()
+    }
+  };
+  return { operation, plan, visualPlan, guardrail: automationGuardrail(actionFingerprint) };
+}
+
+/** Budget-neutral deterministic guardrail attestation (0% change, always allowed). */
+function automationGuardrail(actionFingerprint: string) {
+  return {
+    input: {
+      kind: "budget" as const,
+      currentValue: 1,
+      proposedValue: 1,
+      maxChangePercent: 20,
+      activeExperimentVariables: [],
+      measurementStatus: "reliable" as const,
+      mature: true,
+      learning: false
+    },
+    evidenceFactIds: [`action-fingerprint:${actionFingerprint}`],
+    singleVariable: true
+  };
+}
+
+function describeAutomationAction(action: AutomationValue["action"]): string {
+  if (action.kind === "create-task") return `create task "${action.task.title}"`;
+  if (action.kind === "daily-brief") return "generate the daily brief";
+  return `notify: ${action.message}`;
 }

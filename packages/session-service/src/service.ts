@@ -53,6 +53,15 @@ export class SessionMustBeSoftDeletedError extends Error {
   }
 }
 
+/** Thrown when createProject is given an explicit id that is already taken. */
+export class ProjectExistsError extends Error {
+  readonly code = "PROJECT_EXISTS" as const;
+  constructor(readonly projectId: string) {
+    super(`project already exists: ${projectId}`);
+    this.name = "ProjectExistsError";
+  }
+}
+
 export class LegacyConversationLogCorruptError extends Error {
   constructor(
     readonly clientId: string,
@@ -112,6 +121,8 @@ export interface SessionFilter {
 }
 
 export interface CreateProjectInput {
+  /** Explicit id (uuid). Used to shadow a kernel project 1:1; conflicts throw ProjectExistsError. */
+  id?: string;
   clientId: string;
   name: string;
   description?: string;
@@ -718,10 +729,14 @@ export class SessionService {
   async createProject(input: CreateProjectInput): Promise<ProjectType> {
     await this.repository.assertWriterLease();
     const now = this.timestamp();
+    const id = input.id ? z.string().uuid().parse(input.id) : crypto.randomUUID();
+    if (input.id && (await this.repository.getProject(id))) {
+      throw new ProjectExistsError(id);
+    }
     return this.repository.createProject(
       Project.parse({
         schemaVersion: SESSION_SCHEMA_VERSION,
-        id: crypto.randomUUID(),
+        id,
         clientId: ClientId.parse(input.clientId),
         name: Title.parse(input.name),
         ...(input.description

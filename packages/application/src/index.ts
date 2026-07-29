@@ -40,7 +40,8 @@ import {
   type VisualAction,
   type VisualRuntimeEvent,
   type VisualGroundingProvider,
-  type VisualVerifier
+  type VisualVerifier,
+  type ComputerActionRecordStore
 } from "@adpilot/computer-use";
 import {
   NATIVE_HELPER_BUNDLE_ID,
@@ -49,6 +50,12 @@ import {
   resolveNativeHelperExecutable
 } from "@adpilot/native-computer-host";
 import { ExperimentStore } from "@adpilot/experiments";
+import {
+  UnavailableStepExecutor,
+  VisualRuntimeStepExecutor,
+  browserSessionSurfaceProvider,
+  type StepExecutor
+} from "@adpilot/workflows";
 import { ArtifactService, FileArtifactStore } from "@adpilot/artifacts";
 import { KernelService } from "@adpilot/kernel";
 import { createPiModels, modelRouterFromEnv, resolvePiModel } from "@adpilot/model-router";
@@ -185,6 +192,15 @@ export interface AdPilotSystem {
   /** Unified artifact runtime: renderers, versioning, previews. */
   artifacts: ArtifactService;
   computer: VisualComputerRuntime | undefined;
+  /**
+   * Production workflow step executor. With a VisualComputerRuntime it is the
+   * real VisualRuntimeStepExecutor whose surface provider resolves the exact
+   * connected Browser Session of the run's workspace; without one it is the
+   * fail-closed UnavailableStepExecutor.
+   */
+  workflowExecutor: StepExecutor;
+  /** Durable Computer Action records backing workflow recording and replay evidence. */
+  workflowActionRecords: ComputerActionRecordStore;
   /** The single authenticated Helper actor shared by execution and Electron UI. */
   nativeComputerHost: NativeComputerService | undefined;
   /** Fail-closed launch/discovery reason. Never causes a NutJS fallback. */
@@ -456,6 +472,12 @@ export async function createAdPilotSystem(options: CreateAdPilotSystemOptions = 
       computer.notifyUserInput(binding);
     });
   }
+  // Workflow execution seam (consumed by the server's workflow routes): the
+  // real runtime plus the browser-session surface provider when Computer Use
+  // is configured, fail-closed otherwise. Replay never guesses a window.
+  const workflowExecutor: StepExecutor = computer
+    ? new VisualRuntimeStepExecutor(computer, browserSessionSurfaceProvider(browserSessions))
+    : new UnavailableStepExecutor("Computer Use is unavailable on this system");
   const visualTableReader = primaryVision && strongVision
     && (privacyMode !== "local-only" || (primaryVisionPrivacy?.location === "local" && strongVisionPrivacy?.location === "local"))
     ? new VisualTableReader({
@@ -524,6 +546,8 @@ export async function createAdPilotSystem(options: CreateAdPilotSystemOptions = 
     workspace, settings, credentials, models, audit, approvals, experiments, tools, skills, runtime, planMode, autonomy, specialists, agent,
     sessions: sessionAuthority.service, sessionAuthority,
     alerts: alertMonitor, computer,
+    workflowExecutor,
+    workflowActionRecords: computerActionRecords,
     kernel, artifacts,
     nativeComputerHost: native.host,
     nativeHelperError: native.error,

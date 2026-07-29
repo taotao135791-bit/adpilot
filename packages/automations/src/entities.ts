@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
+import { stableJson } from "@adpilot/shared";
 import { CronSpec } from "./cron.js";
 
 /**
@@ -57,6 +59,16 @@ export type AutomationAction = z.infer<typeof AutomationAction>;
  */
 export function actionIsMutating(action: AutomationAction): boolean {
   return action.kind === "create-task";
+}
+
+/**
+ * Stable sha-256 over the exact action parameters (canonical key order). A
+ * waiting-approval run pins this fingerprint at park time; approval compares
+ * it against the live automation definition so an action edited after parking
+ * can never execute under the old approval (APPROVAL_STALE).
+ */
+export function automationActionFingerprint(action: AutomationAction): string {
+  return createHash("sha256").update(stableJson(AutomationAction.parse(action))).digest("hex");
 }
 
 /* ------------------------------------------------------------------------ */
@@ -136,8 +148,14 @@ export const AutomationRun = z.object({
   startedAt: IsoTimestamp,
   finishedAt: IsoTimestamp.optional(),
   status: AutomationRunStatus,
-  /** Approval reference recorded when a waiting-approval run is released. */
+  /** Central ApprovalService approval id recorded when a waiting-approval run is released. */
   approvalId: z.string().min(1).max(256).optional(),
+  /**
+   * sha-256 of the action parameters pinned when the run parked in
+   * waiting-approval. Approval fails closed (APPROVAL_STALE) when the live
+   * automation definition no longer produces this exact fingerprint.
+   */
+  actionFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   result: z.unknown().optional(),
   error: z.string().max(4_000).optional(),
   runLog: z.array(AutomationRunLogEntry).max(RUN_LOG_LIMIT).default([])

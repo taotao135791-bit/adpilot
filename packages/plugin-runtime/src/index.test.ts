@@ -773,10 +773,12 @@ describe("curated plugin runtime", () => {
     const registry = new CuratedRegistry();
     await registry.registerBundle(bundle.directory);
     const storeRoot = path.join(temporaryRoot, "durable-store");
+    const approvalGate = { verify: async () => undefined };
     const runtime = new CuratedPluginRuntime({
       registry,
       store: new FilePluginStore(storeRoot),
-      trustStore
+      trustStore,
+      mutableToolApprovalGate: approvalGate
     });
     await runtime.install(id);
 
@@ -814,7 +816,8 @@ describe("curated plugin runtime", () => {
       {
         timeoutMs: 5_000,
         idempotencyKey: "durable-operation",
-        signal: abortController.signal
+        signal: abortController.signal,
+        approval: { test: "mutable-gate" }
       }
     );
     await dispatched;
@@ -835,7 +838,8 @@ describe("curated plugin runtime", () => {
     const restarted = new CuratedPluginRuntime({
       registry,
       store: new FilePluginStore(storeRoot),
-      trustStore
+      trustStore,
+      mutableToolApprovalGate: approvalGate
     });
     let restartedMutationCount = 0;
     const restartedBroker = new CapabilityBroker().register(
@@ -885,7 +889,7 @@ describe("curated plugin runtime", () => {
         `${id}/run`,
         {},
         restartedBroker,
-        { idempotencyKey: "durable-operation" }
+        { idempotencyKey: "durable-operation", approval: { test: "mutable-gate" } }
       )
     ).rejects.toMatchObject({
       code: "IDEMPOTENCY_KEY_REPLAY",
@@ -898,7 +902,7 @@ describe("curated plugin runtime", () => {
         `${id}/run`,
         {},
         restartedBroker,
-        { idempotencyKey: "post-reconciliation-operation" }
+        { idempotencyKey: "post-reconciliation-operation", approval: { test: "mutable-gate" } }
       )
     ).resolves.toEqual({ remoteMutationId: "mutation-2" });
     expect(restartedMutationCount).toBe(1);

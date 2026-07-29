@@ -6,6 +6,7 @@
  * vitest config (node environment), matching the plugins.ts / sessionList.ts
  * convention.
  */
+import type { ConversationMessage } from "./types.js";
 
 /* ------------------------------------------------------------------ */
 /* Wire types (mirror packages/kernel, packages/artifacts, terminal)   */
@@ -729,4 +730,85 @@ export function sortDecisionsRecent(decisions: readonly AdDecision[], limit?: nu
     (left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.id.localeCompare(left.id)
   );
   return limit === undefined ? sorted : sorted.slice(0, limit);
+}
+
+/* ------------------------------------------------------------------ */
+/* Project session binding (Project → Session → Message chain)         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The Project workbench chat is backed by a durable product Session bound to
+ * the kernel project. The server owns session selection (most recent active,
+ * lazy creation, kernel linkSession); these builders only shape the request
+ * payloads so the view layer carries no string concatenation.
+ */
+
+export function kernelProjectSessionUrl(projectId: string): string {
+  return `/api/kernel/projects/${encodeURIComponent(projectId)}/session`;
+}
+
+export function kernelProjectMissionUrl(projectId: string): string {
+  return `/api/kernel/projects/${encodeURIComponent(projectId)}/mission`;
+}
+
+export type ProjectSessionRequest = { workspaceId: string; force?: boolean };
+
+/** Body for POST /api/kernel/projects/:id/session; `force` asks for a fresh session. */
+export function buildProjectSessionRequest(workspaceId: string, force = false): ProjectSessionRequest {
+  return force ? { workspaceId, force: true } : { workspaceId };
+}
+
+export type ProjectMissionRequest = { workspaceId: string; message: string };
+
+/** Body for POST /api/kernel/projects/:id/mission (complexity triage). */
+export function buildMissionRequest(workspaceId: string, message: string): ProjectMissionRequest {
+  return { workspaceId, message };
+}
+
+export type ProjectMessageRequest = {
+  clientId: string;
+  sessionId: string;
+  projectId: string;
+  goalId?: string;
+  taskId?: string;
+  message: string;
+  locale: string;
+};
+
+/**
+ * Body for POST /api/messages on the project path. goal/task ids come from the
+ * mission triage and are omitted entirely when the mission stayed small talk —
+ * the server treats absent ids as "plain conversation turn".
+ */
+export function buildProjectMessageRequest(input: {
+  clientId: string;
+  sessionId: string;
+  projectId: string;
+  goalId?: string | undefined;
+  taskId?: string | undefined;
+  message: string;
+  locale: string;
+}): ProjectMessageRequest {
+  return {
+    clientId: input.clientId,
+    sessionId: input.sessionId,
+    projectId: input.projectId,
+    ...(input.goalId ? { goalId: input.goalId } : {}),
+    ...(input.taskId ? { taskId: input.taskId } : {}),
+    message: input.message,
+    locale: input.locale
+  };
+}
+
+/** Optimistic user bubble, mirroring the App chat path's `local-*` id convention. */
+export function localProjectUserMessage(clientId: string, conversationId: string, content: string): ConversationMessage {
+  return {
+    id: `local-${Date.now()}`,
+    clientId,
+    conversationId,
+    role: "user",
+    content,
+    status: "complete",
+    at: new Date().toISOString()
+  };
 }

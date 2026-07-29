@@ -7,24 +7,32 @@ import {
   decisionStatusLabel,
   decisionStatusTone,
   formatTime,
+  getCopy,
   goalStatusLabel,
   goalStatusTone,
   kernelTaskStatusLabel,
   kernelTaskStatusTone,
   projectTypeLabel,
+  sessionStatusLabel,
   workspaceCopy,
   type AppLocale
 } from "../labels.js";
 import {
   adsDecisionTransitionUrl,
   adsDecisionsUrl,
+  buildMissionRequest,
+  buildProjectMessageRequest,
+  buildProjectSessionRequest,
   decisionTransitionActions,
   fsFileUrl,
   fsTreeUrl,
   groupKernelTasks,
   interpolate,
+  kernelProjectMissionUrl,
+  kernelProjectSessionUrl,
   kernelProjectUrl,
   kernelTaskCompleteUrl,
+  localProjectUserMessage,
   parseRootPathsInput,
   projectDefaultRoot,
   shortId,
@@ -39,16 +47,20 @@ import {
   type KernelGoal,
   type ProjectDetail
 } from "../workspace.js";
+import type { ConversationMessage, ProductSession } from "../types.js";
 import { Badge, Button, Tooltip } from "../ui.js";
 import {
   IconArrowLeft,
+  IconBot,
   IconCheck,
   IconChevronDown,
   IconChevronRight,
   IconDismiss,
   IconDoc,
+  IconError,
   IconFile,
   IconFolder,
+  IconInfo,
   IconPanelRight,
   IconPlus,
   IconRefresh,
@@ -66,22 +78,27 @@ type RightTab = "terminal" | "git" | "preview";
 /**
  * Project workbench: the three-column Universal Workspace surface. Left —
  * goals (progress + create), files (bounded tree over /api/fs with an inline
- * text preview), artifacts. Middle — the kernel task timeline grouped by
- * status with the real complete action, plus a mission input that hands off
- * to the chat view. Right — collapsible dynamic panel (terminal / git /
- * artifact preview). All data comes from the project detail payload and is
- * refetched after every mutation.
+ * text preview), artifacts. Middle — the project chat: a durable product
+ * Session bound to the kernel project (resolved via POST
+ * /api/kernel/projects/:id/session), its message feed served by the same
+ * conversation.jsonl projection as the main chat, a collapsible kernel task
+ * timeline on top, and a mission composer at the bottom that triages through
+ * /mission (goal creation) before posting to /api/messages with the
+ * project/goal/task binding. Right — collapsible dynamic panel
+ * (terminal / git / artifact preview).
  */
-export function ProjectView({ locale, clientId, projectId, focusArtifactId, onBack, onSubmitGoal }: {
+export function ProjectView({ locale, clientId, projectId, focusArtifactId, onBack }: {
   locale: AppLocale;
   clientId: string;
   projectId: string;
   /** Artifact to pre-select in the preview panel (e.g. clicked from Home). */
   focusArtifactId?: string | null;
   onBack: () => void;
-  onSubmitGoal: (message: string) => void;
+  /** @deprecated Missions no longer hand off to the chat view; kept for App's prop contract. */
+  onSubmitGoal?: (message: string) => void;
 }) {
   const copy = workspaceCopy(locale);
+  const consoleCopy = getCopy(locale);
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [error, setError] = useState("");
   const [leftTab, setLeftTab] = useState<LeftTab>("goals");
@@ -89,6 +106,11 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, onBa
   const [rightOpen, setRightOpen] = useState(true);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(focusArtifactId ?? null);
   const [mission, setMission] = useState("");
+  /** The durable session this project's chat is bound to. */
+  const [session, setSession] = useState<ProductSession | null>(null);
+  const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [timelineOpen, setTimelineOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -110,6 +132,36 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, onBa
     }
   }, [focusArtifactId]);
 
+  /** Messages of the bound session, from the same /api/state projection the main chat reads. */
+  const loadMessages = useCallback(async (target: ProductSession) => {
+    const response = await fetch(`/api/state?clientId=${encodeURIComponent(clientId)}&conversationId=${encodeURIComponent(target.runtimeConversationId)}`);
+    if (!response.ok) throw new Error(String(response.status));
+    const data = await response.json() as { messages?: ConversationMessage[] };
+    setMessages(data.messages ?? []);
+  }, [clientId]);
+
+  /** Resolve (or, with force, freshly create) the project's session and load its feed. */
+  const bindSession = useCallback(async (force: boolean) => {
+    try {
+      const response = await fetch(kernelProjectSessionUrl(projectId), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(buildProjectSessionRequest(clientId, force))
+      });
+      const body = await response.json().catch(() => undefined) as { session?: ProductSession; error?: string } | undefined;
+      if (!response.ok || !body?.session) throw new Error(body?.error ?? String(response.status));
+      setSession(body.session);
+      await loadMessages(body.session);
+      setError("");
+      return body.session;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      return null;
+    }
+  }, [clientId, projectId, loadMessages]);
+
+  useEffect(() => { void bindSession(false); }, [bindSession]);
+
   const goalById = useMemo(() => new Map((detail?.goals ?? []).map((goal) => [goal.id, goal])), [detail?.goals]);
   const taskGroups = useMemo(() => groupKernelTasks(detail?.tasks ?? []), [detail?.tasks]);
 
@@ -129,11 +181,51 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, onBa
     }
   }
 
-  function submitMission() {
+  /**
+   * Mission submit: triage complexity first (complex missions materialize a
+   * kernel goal + planning task), then post the message with the full
+   * project/goal/task binding. The reply is awaited synchronously; a thinking
+   * indicator covers the wait. Goal creation refetches the project detail so
+   * the Goals tab and the timeline reflect it.
+   */
+  async function submitMission() {
     const message = mission.trim();
-    if (!message) return;
+    if (!message || submitting || !session) return;
+    setSubmitting(true);
     setMission("");
-    onSubmitGoal(message);
+    setMessages((current) => [...current, localProjectUserMessage(clientId, session.runtimeConversationId, message)]);
+    try {
+      const missionResponse = await fetch(kernelProjectMissionUrl(projectId), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(buildMissionRequest(clientId, message))
+      });
+      const missionBody = await missionResponse.json().catch(() => undefined) as { goalId?: string; taskId?: string; error?: string } | undefined;
+      if (!missionResponse.ok) throw new Error(missionBody?.error ?? String(missionResponse.status));
+      const response = await fetch("/api/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(buildProjectMessageRequest({
+          clientId,
+          sessionId: session.id,
+          projectId,
+          goalId: missionBody?.goalId,
+          taskId: missionBody?.taskId,
+          message,
+          locale
+        }))
+      });
+      const body = await response.json().catch(() => undefined) as { error?: string } | undefined;
+      if (!response.ok) throw new Error(body?.error ?? String(response.status));
+      if (missionBody?.goalId) await load();
+      await loadMessages(session);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      await loadMessages(session).catch(() => undefined);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -193,58 +285,91 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, onBa
         </aside>
 
         <section className="project-col project-middle">
-          <div className="project-col-scroll">
+          <div className="project-chat-head">
+            <div className="project-chat-head-main">
+              <span className="section-kicker">{copy.projectChatTitle}</span>
+              <strong className="project-chat-session-title">{session?.title ?? "…"}</strong>
+            </div>
+            {session && (
+              <Badge tone={sessionChatTone(session.status)} variant="soft">{sessionStatusLabel(session.status, locale)}</Badge>
+            )}
+            <Button size="sm" variant="outline" icon={<IconPlus size={12} />} disabled={submitting} onClick={() => void bindSession(true)}>
+              {copy.projectChatNewSession}
+            </Button>
+          </div>
+
+          <div className="project-timeline">
+            <button type="button" className="project-timeline-toggle" aria-expanded={timelineOpen} onClick={() => setTimelineOpen((open) => !open)}>
+              {timelineOpen ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
+              <span>{copy.timelineTitle} · {(detail?.tasks ?? []).length}</span>
+            </button>
+            {timelineOpen && (
+              <div className="project-timeline-body">
+                {taskGroups.length === 0 ? (
+                  <div className="empty-block">
+                    <strong>{copy.timelineEmpty}</strong>
+                    <p>{copy.timelineEmptyBody}</p>
+                  </div>
+                ) : (
+                  taskGroups.map((group) => (
+                    <section key={group.status} className="task-group">
+                      <span className="section-kicker">{kernelTaskStatusLabel(group.status, locale)} · {group.tasks.length}</span>
+                      <ul>
+                        {group.tasks.map((task) => (
+                          <li key={task.id} className="task-row">
+                            <div className="task-row-main">
+                              <span className="task-row-title">{task.title}</span>
+                              <span className="task-row-meta">
+                                {task.goalId && goalById.get(task.goalId) ? goalById.get(task.goalId)?.title : shortId(task.id)}
+                                {" · "}{formatTime(task.updatedAt, locale)}
+                              </span>
+                            </div>
+                            <Badge tone={kernelTaskStatusTone(task.status)} variant="soft">{kernelTaskStatusLabel(task.status, locale)}</Badge>
+                            {group.status !== "completed" && group.status !== "failed" && (
+                              <Button size="sm" variant="outline" icon={<IconCheck size={12} />} onClick={() => void completeTask(task.id)}>
+                                {copy.taskComplete}
+                              </Button>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="project-col-scroll project-chat-scroll">
             {detail?.type === "advertising" && (
               <ActionQueue locale={locale} clientId={clientId} projectId={projectId} />
             )}
-            <span className="section-kicker">{copy.timelineTitle}</span>
-            {taskGroups.length === 0 ? (
+            {messages.length === 0 && !submitting ? (
               <div className="empty-block">
-                <strong>{copy.timelineEmpty}</strong>
-                <p>{copy.timelineEmptyBody}</p>
+                <strong>{copy.projectChatEmpty}</strong>
+                <p>{copy.projectChatEmptyBody}</p>
               </div>
             ) : (
-              taskGroups.map((group) => (
-                <section key={group.status} className="task-group">
-                  <span className="section-kicker">{kernelTaskStatusLabel(group.status, locale)} · {group.tasks.length}</span>
-                  <ul>
-                    {group.tasks.map((task) => (
-                      <li key={task.id} className="task-row">
-                        <div className="task-row-main">
-                          <span className="task-row-title">{task.title}</span>
-                          <span className="task-row-meta">
-                            {task.goalId && goalById.get(task.goalId) ? goalById.get(task.goalId)?.title : shortId(task.id)}
-                            {" · "}{formatTime(task.updatedAt, locale)}
-                          </span>
-                        </div>
-                        <Badge tone={kernelTaskStatusTone(task.status)} variant="soft">{kernelTaskStatusLabel(task.status, locale)}</Badge>
-                        {group.status !== "completed" && group.status !== "failed" && (
-                          <Button size="sm" variant="outline" icon={<IconCheck size={12} />} onClick={() => void completeTask(task.id)}>
-                            {copy.taskComplete}
-                          </Button>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              ))
+              messages.map((message) => <ProjectChatMessage key={message.id} message={message} locale={locale} />)
             )}
+            {submitting && <div className="thinking"><span className="thinking-pulse" aria-hidden="true" /><span>{consoleCopy.investigating}</span></div>}
           </div>
+
           <div className="project-chat-cta">
-            <span className="section-kicker">{copy.chatCtaTitle}</span>
             <div className="project-chat-row">
               <input
                 value={mission}
                 placeholder={copy.chatCtaPlaceholder}
                 aria-label={copy.chatCtaPlaceholder}
+                disabled={submitting || !session}
                 onChange={(event) => setMission(event.target.value)}
-                onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); submitMission(); } }}
+                onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void submitMission(); } }}
               />
-              <Button size="sm" variant="primary" icon={<IconSend size={13} />} disabled={!mission.trim()} onClick={submitMission}>
+              <Button size="sm" variant="primary" icon={<IconSend size={13} />} disabled={!mission.trim() || submitting || !session} onClick={() => void submitMission()}>
                 {copy.homeQuickSubmit}
               </Button>
             </div>
-            <p className="workbench-quiet">{copy.chatCtaHint}</p>
+            <p className="workbench-quiet">{copy.projectChatHint}</p>
           </div>
         </section>
 
@@ -283,6 +408,65 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, onBa
           </aside>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Middle column — project chat                                        */
+/* ------------------------------------------------------------------ */
+
+/** Status badge tone for the bound session, mirroring the kernel task tones. */
+function sessionChatTone(status: ProductSession["status"]): "accent" | "success" | "warning" | "danger" | "neutral" {
+  if (status === "running" || status === "queued") return "accent";
+  if (status === "waiting_for_approval" || status === "paused") return "warning";
+  if (status === "completed") return "success";
+  if (status === "failed") return "danger";
+  return "neutral";
+}
+
+/**
+ * One message row in the project chat. A simplified ConversationFeed item —
+ * same `message` classes and markdown-ish body rendering, without the
+ * approval/computer-use cards and fork action (those stay on the main chat).
+ */
+function ProjectChatMessage({ message, locale }: { message: ConversationMessage; locale: AppLocale }) {
+  const copy = getCopy(locale);
+  const role = message.role;
+  const isSystemNotice = role === "system" && message.status === "complete";
+  const name = role === "user" ? copy.you : role === "system" ? copy.system : copy.agent;
+  return (
+    <article className={`message ${role} ${message.status}${isSystemNotice ? " notice" : ""}`}>
+      <div className="message-avatar" aria-hidden="true">
+        {role === "system"
+          ? (message.status === "error" ? <IconError size={14} /> : <IconInfo size={14} />)
+          : role === "assistant"
+            ? <IconBot size={14} />
+            : <span>{locale === "zh-CN" ? "你" : "Y"}</span>}
+      </div>
+      <div className="message-main">
+        <header className="message-meta">
+          <strong>{name}</strong>
+          <time>{formatTime(message.at, locale)}</time>
+        </header>
+        <ProjectChatBody content={message.content} />
+      </div>
+    </article>
+  );
+}
+
+function ProjectChatBody({ content }: { content: string }) {
+  const blocks = content.trim().split(/\n{2,}/);
+  return (
+    <div className="message-body">
+      {blocks.map((block, index) => {
+        const lines = block.split("\n");
+        if (block.startsWith("```") && block.endsWith("```")) return <pre key={index}>{block.replace(/^```[^\n]*\n?/, "").replace(/\n?```$/, "")}</pre>;
+        if (lines.every((line) => /^[-*]\s+/.test(line))) return <ul key={index}>{lines.map((line, lineIndex) => <li key={`${index}-${lineIndex}`}>{line.replace(/^[-*]\s+/, "")}</li>)}</ul>;
+        if (lines.every((line) => /^\d+[.)]\s+/.test(line))) return <ol key={index}>{lines.map((line, lineIndex) => <li key={`${index}-${lineIndex}`}>{line.replace(/^\d+[.)]\s+/, "")}</li>)}</ol>;
+        if (/^#{1,3}\s+/.test(block)) return <h4 key={index}>{block.replace(/^#{1,3}\s+/, "")}</h4>;
+        return <p key={index}>{block}</p>;
+      })}
     </div>
   );
 }

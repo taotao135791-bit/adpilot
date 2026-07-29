@@ -1,5 +1,6 @@
 import {
   VisualRuntimeBlocker,
+  type BrowserSession,
   type SurfaceContext,
   type VisualAction,
   type VisualComputerRuntime,
@@ -74,6 +75,53 @@ export interface VisualStepExecutionContext {
 export type VisualStepSurfaceProvider = (
   request: StepExecutionRequest
 ) => Promise<VisualStepExecutionContext | undefined>;
+
+/** Anything that can list durable Browser Sessions (BrowserSessionManager does). */
+export interface BrowserSessionSurfaceSource {
+  list(): Promise<BrowserSession[]>;
+}
+
+/**
+ * Production surface provider: resolve the run's live execution surface from
+ * the exact connected Browser Session owned by the run's workspace. Every
+ * field comes from the durable session binding — native PID, window id,
+ * application identity, the non-reversible Profile proof, and the latest
+ * observed page identity — never invented. No connected session for the
+ * workspace means `undefined`, and the step fails closed.
+ */
+export function browserSessionSurfaceProvider(
+  sessions: BrowserSessionSurfaceSource
+): VisualStepSurfaceProvider {
+  return async (request) => {
+    const candidate = (await sessions.list()).find(
+      (entry) => entry.clientId === request.run.workspaceId && entry.sessionStatus === "connected"
+    );
+    // A connected session always carries the native binding (schema-level
+    // invariant); anything without it cannot be an exact surface — fail closed.
+    if (!candidate) return undefined;
+    const { processId, windowId } = candidate;
+    if (processId === undefined || windowId === undefined) return undefined;
+    const session = candidate;
+    const page = session.pageIdentity?.status === "available" ? session.pageIdentity : undefined;
+    const domain = page ? new URL(page.origin).hostname : undefined;
+    return {
+      surface: {
+        app: session.browserApp,
+        applicationId: session.browserApplicationId,
+        processId,
+        windowId,
+        ...(domain ? { domain } : {}),
+        ...(page ? { url: page.url, origin: page.origin, pageTitle: page.title } : {}),
+        browserProfile: session.browserProfile,
+        nativeProfileFingerprint: session.nativeProfileFingerprint,
+        allowedApps: [session.browserApp, session.browserApplicationId],
+        allowedDomains: domain ? [domain] : []
+      },
+      clientId: session.clientId,
+      platform: session.platform
+    };
+  };
+}
 
 const PAUSE_BLOCKER_CODES = new Set([
   "SURFACE_CHANGED",

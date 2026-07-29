@@ -162,9 +162,12 @@ export function AutomationsView({ locale, clientId }: { locale: AppLocale; clien
     if (busy) return;
     setBusy(`approve:${run.id}`);
     try {
+      // The server mints the central approval itself; clients only declare
+      // the workspace and actor. Submitting an approvalId here was the exact
+      // forgery pattern the unified approval chain now rejects.
       const result = await post(automationRunApproveUrl(run.id), {
         workspaceId: clientId,
-        approvalId: `desktop-${crypto.randomUUID()}`
+        actor: "workspace-owner"
       });
       if (!result.ok) throw new Error(result.error);
       await load();

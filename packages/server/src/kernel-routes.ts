@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import type { AdPilotSystem } from "@adpilot/application";
 import { KernelError } from "@adpilot/kernel";
+import { ProjectExistsError } from "@adpilot/session-service";
 import {
   DocumentRenderer,
   DocumentSpec,
@@ -11,6 +12,7 @@ import {
   SpreadsheetRenderer,
   WorkbookSpec
 } from "@adpilot/artifacts";
+import { ensureProjectSession, isComplexMission, MISSION_GOAL_TITLE_LENGTH } from "./session-binding.js";
 
 const WorkspaceQuery = z.object({
   workspaceId: z.string().min(1).max(256),
@@ -60,6 +62,18 @@ const ArtifactCreateBody = z.object({
 }).strict();
 
 const IdParams = z.object({ id: z.string().min(1).max(128) });
+
+const ProjectSessionBody = z.object({
+  workspaceId: z.string().min(1).max(256),
+  title: z.string().trim().min(1).max(200).optional(),
+  /** Create a fresh session even when an active one exists ("new session"). */
+  force: z.boolean().default(false)
+}).strict();
+
+const ProjectMissionBody = z.object({
+  workspaceId: z.string().min(1).max(256),
+  message: z.string().trim().min(1).max(20_000)
+}).strict();
 
 const CONTENT_TYPES: Record<string, string> = {
   ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -115,6 +129,20 @@ export function registerKernelRoutes(app: FastifyInstance, system: AdPilotSystem
       enabledCapabilityPacks: body.enabledCapabilityPacks,
       ...(body.description !== undefined ? { description: body.description } : {})
     });
+    // Shadow the kernel project into the session-service under the same id so
+    // project-bound sessions pass the same-client project check. Idempotent:
+    // an existing shadow (replay, retry, or a race) is left untouched.
+    if (!(await system.sessions.getProject(project.id))) {
+      try {
+        await system.sessions.createProject({
+          id: project.id,
+          clientId: body.workspaceId,
+          name: project.name
+        });
+      } catch (error) {
+        if (!(error instanceof ProjectExistsError)) throw error;
+      }
+    }
     await system.audit.append({
       clientId: body.workspaceId,
       actor: "workspace-owner",
@@ -151,6 +179,68 @@ export function registerKernelRoutes(app: FastifyInstance, system: AdPilotSystem
     await requireWorkspace(body.workspaceId);
     await requireProjectInWorkspace(params.id, body.workspaceId);
     return system.kernel.archiveProject(params.id);
+  });
+
+  /**
+   * Resolve the project's durable chat session: the most recent active one,
+   * or a freshly created one linked into the kernel project. `force: true`
+   * always creates — the workbench "new session" action.
+   */
+  app.post("/api/kernel/projects/:id/session", async (request, reply) => {
+    const params = IdParams.parse(request.params);
+    const body = ProjectSessionBody.parse(request.body);
+    await requireWorkspace(body.workspaceId);
+    const project = await requireProjectInWorkspace(params.id, body.workspaceId);
+    const result = await ensureProjectSession(system, {
+      workspaceId: body.workspaceId,
+      projectId: project.id,
+      title: body.title ?? project.name,
+      force: body.force
+    });
+    if (result.created) {
+      await system.audit.append({
+        clientId: body.workspaceId,
+        actor: "workspace-owner",
+        action: "kernel_project_session_create",
+        status: "succeeded",
+        details: { projectId: project.id, sessionId: result.session.id }
+      });
+    }
+    reply.code(result.created ? 201 : 200);
+    return result;
+  });
+
+  /**
+   * Mission triage before the workbench posts to /api/messages: complex
+   * missions (long, or naming success criteria) become a kernel goal plus an
+   * initial planning task; short small-talk returns an empty payload and
+   * stays a plain conversation turn.
+   */
+  app.post("/api/kernel/projects/:id/mission", async (request, reply) => {
+    const params = IdParams.parse(request.params);
+    const body = ProjectMissionBody.parse(request.body);
+    await requireWorkspace(body.workspaceId);
+    const project = await requireProjectInWorkspace(params.id, body.workspaceId);
+    if (!isComplexMission(body.message)) return {};
+    const goal = await system.kernel.createGoal({
+      projectId: project.id,
+      title: body.message.slice(0, MISSION_GOAL_TITLE_LENGTH),
+      objective: body.message
+    });
+    const task = await system.kernel.createTask({
+      goalId: goal.id,
+      title: "规划执行路径",
+      description: body.message
+    });
+    await system.audit.append({
+      clientId: body.workspaceId,
+      actor: "workspace-owner",
+      action: "kernel_mission_goal_create",
+      status: "succeeded",
+      details: { projectId: project.id, goalId: goal.id, taskId: task.id }
+    });
+    reply.code(201);
+    return { goalId: goal.id, taskId: task.id };
   });
 
   app.get("/api/kernel/goals", async (request) => {

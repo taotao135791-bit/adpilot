@@ -48,11 +48,13 @@ class FakeExecutor implements StepExecutor {
   }
 }
 
-async function boot(executor: FakeExecutor) {
+async function boot(executor?: FakeExecutor) {
   const root = await mkdtemp(join(tmpdir(), "adpilot-workflow-routes-"));
   roots.push(root);
   const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
-  (system as AdPilotSystem & { workflowExecutor?: StepExecutor }).workflowExecutor = executor;
+  if (executor) {
+    (system as AdPilotSystem & { workflowExecutor?: StepExecutor }).workflowExecutor = executor;
+  }
   await seedRecords(root);
   const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
   return { server, system };
@@ -246,6 +248,49 @@ describe("workflow REST routes", () => {
       expect(actions).toContain(expected);
     }
   });
+
+  it("fails runs closed (recoverable pause, no crash) when the system has no live execution surface", async () => {
+    // No executor override: the production seam resolves the system's own
+    // fail-closed UnavailableStepExecutor (Computer Use is not configured).
+    const { server } = await boot();
+    const draft = await createDraft(server, "无执行面回放");
+    await server.inject({ method: "POST", url: `/api/workflows/${draft.id}/publish`, payload: { workspaceId: "personal" } });
+
+    const created = await server.inject({
+      method: "POST",
+      url: `/api/workflows/${draft.id}/runs`,
+      payload: { workspaceId: "personal", parameters: {}, approvalId: randomUUID() }
+    });
+    expect(created.statusCode).toBe(201);
+    const runId = created.json().id;
+
+    const paused = await waitForRun(server, runId, ["paused", "failed", "completed"]);
+    expect(paused.status).toBe("paused");
+    expect(paused.failureReason).toContain("Computer Use is unavailable");
+    expect(paused.steps[0]).toMatchObject({ status: "failed" });
+
+    // Recoverable: resume re-evaluates and pauses again; the server stays up.
+    const resumed = await server.inject({
+      method: "POST",
+      url: `/api/workflow-runs/${runId}/resume`,
+      payload: { workspaceId: "personal" }
+    });
+    expect(resumed.statusCode).toBe(200);
+    // Wait for the post-resume terminal state specifically (revision strictly
+    // past the pre-resume pause), so the run record has fully settled.
+    const deadline = Date.now() + 10_000;
+    let again = paused;
+    while (Date.now() < deadline) {
+      const response = await server.inject({ method: "GET", url: `/api/workflow-runs/${runId}?workspaceId=personal` });
+      again = response.json();
+      if ((again.status === "paused" || again.status === "failed") && again.revision > paused.revision) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(again.status).toBe("paused");
+    expect(again.revision).toBeGreaterThan(paused.revision);
+    expect(again.failureReason).toContain("Computer Use is unavailable");
+  });
+
 
   it("pauses a failing run, resumes it, and supports cancel", async () => {
     const executor = new FakeExecutor();

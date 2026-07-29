@@ -36,6 +36,15 @@ python3 packages/advertising-core/python/scripts/uac_experiment.py analyze <inpu
 python3 packages/advertising-core/python/scripts/uac_experiment.py decide <input.json> --json [--question "..."]
 ```
 
+Script resolution chain (evaluated when the engine is constructed):
+
+1. `ADPILOT_UAC_SCRIPT` — explicit full path to `uac_experiment.py`.
+2. `ADPILOT_RESOURCES_PATH` — production: the packaged Electron shell sets it
+   to `process.resourcesPath`, and the script lives at
+   `<resources>/advertising-core/python/scripts/uac_experiment.py` (bundled
+   via electron-builder `extraResources`).
+3. Repository-relative path under `packages/advertising-core/python` (dev).
+
 Request mapping (`UacAnalyzeRequest`):
 
 | field      | engine mapping                                                        |
@@ -49,11 +58,20 @@ Response mapping: stdout is JSON-parsed and validated —
 `measurement_state.status`, `learning_eligibility.status`,
 `optimization_feasibility.status`, passes the rest through) and
 `UacQuickDecisionResult` for `decide` (checks `mode`, `terminology`,
-`decision.verdict/confidence/summary`).
+`decision.verdict/confidence/summary`). Every successful result is stamped
+with `engine: { name: "uac-experiment", version }`, where the version is read
+from the `VERSION` marker at the engine root (fallback `"0.1.0"`).
+
+Runtime dependency: the system `python3` must be able to `import yaml`
+(PyYAML). The `decide` path loads the bundled YAML heuristic policies, so the
+bridge verifies the module up front (`python3 -c "import yaml"`) instead of
+surfacing a raw engine crash. `jsonschema` is only needed by the engine's
+optional `doctor` command, which this bridge does not expose.
 
 Failure contract (coded `AdsIntelligenceError`, never a fabricated result):
 
-- `UAC_ENGINE_UNAVAILABLE` — interpreter does not answer `python3 --version`
+- `UAC_ENGINE_UNAVAILABLE` — interpreter does not answer `python3 --version`,
+  or a required third-party module (PyYAML) cannot be imported
 - `UAC_ENGINE_FAILED` — non-zero exit, spawn failure, or 30s timeout
 - `UAC_OUTPUT_INVALID` — stdout is not JSON or fails schema validation
 
@@ -76,8 +94,8 @@ What genuinely runs today:
 What is blocked: anything that is not a Google Ads app campaign (the engine
 contract rejects other platforms/campaign types), any request whose `case`
 fails the engine's input contract (exit 2 → `UAC_ENGINE_FAILED`), and any
-environment without a working `python3` (+ PyYAML for YAML inputs; JSON input
-is used by this bridge).
+environment without a working `python3` with PyYAML importable
+(→ `UAC_ENGINE_UNAVAILABLE`).
 
 ## Daily Brief
 

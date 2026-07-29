@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -251,8 +251,62 @@ describe("File stores", () => {
 });
 
 describe("PythonUacEngine", () => {
+  /**
+   * A stand-in "python3" executable (POSIX sh): answers --version, accepts the
+   * `-c "import <module>"` dependency probe (exit 0 unless moduleProbeFails),
+   * and forwards everything else to node so fake engine scripts stay JS.
+   */
+  async function fakePython(root: string, options: { moduleProbeFails?: boolean } = {}): Promise<string> {
+    const shim = join(root, "fake-python3");
+    await writeFile(shim, [
+      "#!/bin/sh",
+      'if [ "$1" = "--version" ]; then echo "Python 3.0.0-fake"; exit 0; fi',
+      `if [ "$1" = "-c" ]; then exit ${options.moduleProbeFails ? 1 : 0}; fi`,
+      `exec "${process.execPath}" "$@"`,
+      ""
+    ].join("\n"), { mode: 0o755 });
+    return shim;
+  }
+
+  /** Minimal engine-output object that satisfies UacAnalysisResult. */
+  function fakeAnalysisOutput(): Record<string, unknown> {
+    return {
+      schema_version: "1.0",
+      account_state: {},
+      measurement_state: { status: "ok" },
+      learning_eligibility: { status: "ok" },
+      optimization_feasibility: { status: "ok" }
+    };
+  }
+
+  async function withEnv<T>(overrides: Record<string, string | undefined>, run: () => Promise<T>): Promise<T> {
+    const saved = new Map(Object.keys(overrides).map((key) => [key, process.env[key]]));
+    for (const [key, value] of Object.entries(overrides)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    try {
+      return await run();
+    } finally {
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
+
   it("reports availability and refuses to fake results when python3 is missing", async () => {
     const engine = new PythonUacEngine({ pythonPath: "/nonexistent/adpilot-python3" });
+    expect(await engine.isAvailable()).toBe(false);
+    await expect(engine.analyze({ kind: "analyze", case: {} })).rejects.toMatchObject({
+      code: UAC_ENGINE_UNAVAILABLE
+    });
+  });
+
+  it("reports unavailable when a required python module cannot be imported", async () => {
+    const root = await tempRoot("adpilot-uac-nodeps-");
+    const shim = await fakePython(root, { moduleProbeFails: true });
+    const engine = new PythonUacEngine({ pythonPath: shim });
     expect(await engine.isAvailable()).toBe(false);
     await expect(engine.analyze({ kind: "analyze", case: {} })).rejects.toMatchObject({
       code: UAC_ENGINE_UNAVAILABLE
@@ -268,9 +322,10 @@ describe("PythonUacEngine", () => {
     expect(result.result.mode).toBe("quick_decision");
     expect(result.result.decision.verdict.length).toBeGreaterThan(0);
     expect(["AC2.0", "AC2.5", "AC3.0", null]).toContain(result.result.terminology.resolved_level);
+    expect(result.result.engine?.name).toBe("uac-experiment");
   });
 
-  it("runs the real UAC full-analysis engine over a JSON case", async () => {
+  it("runs the real UAC full-analysis engine over a JSON case and stamps the engine version", async () => {
     const engine = new PythonUacEngine();
     const result = await engine.analyze({ kind: "analyze", case: await loadYamlCase(ANALYZE_EXAMPLE) });
     expect(result.kind).toBe("analyze");
@@ -278,6 +333,11 @@ describe("PythonUacEngine", () => {
     expect(result.result.schema_version).toBe("1.0");
     expect(result.result.measurement_state.status.length).toBeGreaterThan(0);
     expect(result.result.learning_eligibility.status.length).toBeGreaterThan(0);
+    const expectedVersion = (await readFile(
+      fileURLToPath(new URL("../../../packages/advertising-core/python/VERSION", import.meta.url)),
+      "utf8"
+    )).trim();
+    expect(result.result.engine).toEqual({ name: "uac-experiment", version: expectedVersion });
   });
 
   it("maps engine contract failures to UAC_ENGINE_FAILED", async () => {
@@ -290,7 +350,7 @@ describe("PythonUacEngine", () => {
     const root = await tempRoot("adpilot-uac-fake-");
     const script = join(root, "fake-engine.cjs");
     await writeFile(script, "process.stdout.write('not json at all');\n", "utf8");
-    const engine = new PythonUacEngine({ pythonPath: process.execPath, scriptPath: script, cwd: root });
+    const engine = new PythonUacEngine({ pythonPath: await fakePython(root), scriptPath: script, cwd: root });
     expect(await engine.isAvailable()).toBe(true);
     await expect(engine.analyze({ kind: "analyze", case: {} })).rejects.toMatchObject({
       code: UAC_OUTPUT_INVALID
@@ -301,7 +361,7 @@ describe("PythonUacEngine", () => {
     const root = await tempRoot("adpilot-uac-failing-");
     const script = join(root, "failing-engine.cjs");
     await writeFile(script, "console.error('boom'); process.exit(2);\n", "utf8");
-    const engine = new PythonUacEngine({ pythonPath: process.execPath, scriptPath: script, cwd: root });
+    const engine = new PythonUacEngine({ pythonPath: await fakePython(root), scriptPath: script, cwd: root });
     await expect(engine.analyze({ kind: "decide", case: {} })).rejects.toMatchObject({
       code: UAC_ENGINE_FAILED
     });
@@ -311,10 +371,73 @@ describe("PythonUacEngine", () => {
     const root = await tempRoot("adpilot-uac-badshape-");
     const script = join(root, "bad-shape-engine.cjs");
     await writeFile(script, "process.stdout.write(JSON.stringify({ schema_version: '9.9' }));\n", "utf8");
-    const engine = new PythonUacEngine({ pythonPath: process.execPath, scriptPath: script, cwd: root });
+    const engine = new PythonUacEngine({ pythonPath: await fakePython(root), scriptPath: script, cwd: root });
     await expect(engine.analyze({ kind: "analyze", case: {} })).rejects.toMatchObject({
       code: UAC_OUTPUT_INVALID
     });
+  });
+
+  it("resolves the script from ADPILOT_UAC_SCRIPT and falls back to the default version without a VERSION marker", async () => {
+    const root = await tempRoot("adpilot-uac-override-");
+    const scriptDir = join(root, "scripts");
+    await mkdir(scriptDir, { recursive: true });
+    const script = join(scriptDir, "uac_experiment.py");
+    await writeFile(script, `process.stdout.write(JSON.stringify(${JSON.stringify(fakeAnalysisOutput())}));\n`, "utf8");
+    const shim = await fakePython(root);
+    await withEnv({ ADPILOT_UAC_SCRIPT: script }, async () => {
+      const engine = new PythonUacEngine({ pythonPath: shim });
+      const result = await engine.analyze({ kind: "analyze", case: {} });
+      expect(result.kind).toBe("analyze");
+      if (result.kind !== "analyze") return;
+      expect(result.result.schema_version).toBe("1.0");
+      // No VERSION marker next to the override script → documented fallback.
+      expect(result.result.engine).toEqual({ name: "uac-experiment", version: "0.1.0" });
+    });
+  });
+
+  it("resolves the script from ADPILOT_RESOURCES_PATH and reads the packaged VERSION marker", async () => {
+    const root = await tempRoot("adpilot-uac-resources-");
+    const pythonRoot = join(root, "resources", "advertising-core", "python");
+    await mkdir(join(pythonRoot, "scripts"), { recursive: true });
+    const script = join(pythonRoot, "scripts", "uac_experiment.py");
+    await writeFile(script, `process.stdout.write(JSON.stringify(${JSON.stringify(fakeAnalysisOutput())}));\n`, "utf8");
+    await writeFile(join(pythonRoot, "VERSION"), "9.9.9\n", "utf8");
+    const shim = await fakePython(root);
+    await withEnv({ ADPILOT_RESOURCES_PATH: join(root, "resources") }, async () => {
+      const engine = new PythonUacEngine({ pythonPath: shim });
+      const result = await engine.analyze({ kind: "analyze", case: {} });
+      expect(result.kind).toBe("analyze");
+      if (result.kind !== "analyze") return;
+      expect(result.result.engine).toEqual({ name: "uac-experiment", version: "9.9.9" });
+    });
+  });
+
+  it("prefers ADPILOT_UAC_SCRIPT over ADPILOT_RESOURCES_PATH", async () => {
+    const root = await tempRoot("adpilot-uac-precedence-");
+    const overrideDir = join(root, "override", "scripts");
+    await mkdir(overrideDir, { recursive: true });
+    const overrideScript = join(overrideDir, "uac_experiment.py");
+    await writeFile(
+      overrideScript,
+      `process.stdout.write(JSON.stringify(${JSON.stringify(fakeAnalysisOutput())}));\n`,
+      "utf8"
+    );
+    const resourcesPython = join(root, "resources", "advertising-core", "python");
+    await mkdir(join(resourcesPython, "scripts"), { recursive: true });
+    await writeFile(
+      join(resourcesPython, "scripts", "uac_experiment.py"),
+      "console.error('must not run'); process.exit(2);\n",
+      "utf8"
+    );
+    const shim = await fakePython(root);
+    await withEnv(
+      { ADPILOT_UAC_SCRIPT: overrideScript, ADPILOT_RESOURCES_PATH: join(root, "resources") },
+      async () => {
+        const engine = new PythonUacEngine({ pythonPath: shim });
+        const result = await engine.analyze({ kind: "analyze", case: {} });
+        expect(result.kind).toBe("analyze");
+      }
+    );
   });
 });
 

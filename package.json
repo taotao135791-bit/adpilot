@@ -123,6 +123,18 @@
       {
         "from": "build/native-helper/AdPilot Computer Helper.app",
         "to": "native/AdPilot Computer Helper.app"
+      },
+      {
+        "from": "packages/advertising-core/python",
+        "to": "advertising-core/python",
+        "filter": [
+          "VERSION",
+          "scripts/uac_experiment.py",
+          "scripts/adpilot_ads/**",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!**/*.pyo"
+        ]
       }
     ],
     "files": [

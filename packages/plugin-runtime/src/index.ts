@@ -700,6 +700,29 @@ export interface PluginApprovalReceiptVerifier {
   ): Promise<boolean> | boolean;
 }
 
+/**
+ * Everything the central-approval gate needs to decide one mutable tool
+ * invocation. `approval` is the opaque proof supplied by the caller (e.g. an
+ * ApprovalService approval id plus its one-time token); the gate owns its
+ * verification semantics.
+ */
+export interface PluginMutableToolApprovalContext {
+  pluginId: string;
+  tool: string;
+  input: unknown;
+  approval: unknown;
+}
+
+/**
+ * Fail-closed gate for mutable (readOnly: false) plugin tools. The
+ * composition root wires it to the central approval pipeline; the runtime
+ * refuses every mutable invocation when no gate is configured or when the
+ * gate rejects, so plugin writes can never bypass ApprovalService.
+ */
+export interface PluginMutableToolApprovalGate {
+  verify(context: PluginMutableToolApprovalContext): Promise<void>;
+}
+
 const mutationReconciliationRecordSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -1694,6 +1717,12 @@ export interface PluginInvocationOptions {
   signal?: AbortSignal;
   expectedIntegrity?: string;
   reconciliationLedger?: PluginMutationReconciliationLedger;
+  /**
+   * Central-approval proof required for mutable (readOnly: false) tools. It
+   * is verified by the runtime's mutable-tool approval gate and never reaches
+   * the plugin host process.
+   */
+  approval?: unknown;
 }
 
 interface HostMessage {
@@ -2362,6 +2391,7 @@ export class CuratedPluginRuntime {
   readonly #trustStore: PluginTrustStore;
   readonly #policy: BundleVerificationPolicy;
   readonly #approvalVerifier: PluginApprovalReceiptVerifier | undefined;
+  readonly #mutableToolApprovalGate: PluginMutableToolApprovalGate | undefined;
 
   constructor(options: {
     registry: CuratedRegistry;
@@ -2370,12 +2400,14 @@ export class CuratedPluginRuntime {
     supervisor?: PluginSupervisor;
     policy?: BundleVerificationPolicy;
     approvalVerifier?: PluginApprovalReceiptVerifier;
+    mutableToolApprovalGate?: PluginMutableToolApprovalGate;
   }) {
     this.registry = options.registry;
     this.store = options.store;
     this.#trustStore = options.trustStore;
     this.#policy = options.policy ?? DEFAULT_VERIFICATION_POLICY;
     this.#approvalVerifier = options.approvalVerifier;
+    this.#mutableToolApprovalGate = options.mutableToolApprovalGate;
     this.supervisor =
       options.supervisor ??
       new PluginSupervisor({ developerMode: this.#policy.developerMode });
@@ -2679,9 +2711,39 @@ export class CuratedPluginRuntime {
           }
         );
       }
+      // Mutable (write) tools are gated on the central approval pipeline:
+      // without a configured gate, or without a caller-supplied approval that
+      // the gate accepts, the invocation is refused before any host process
+      // starts. The approval proof never leaves this process.
+      if (!this.#mutableToolApprovalGate) {
+        throw new PluginRuntimeError(
+          "APPROVAL_REQUIRED",
+          `${tool} is mutable; mutable plugin tools require a central approval gate`,
+          { retryable: false }
+        );
+      }
+      const approval = typeof options === "number" ? undefined : options?.approval;
+      if (approval === undefined || approval === null) {
+        throw new PluginRuntimeError(
+          "APPROVAL_REQUIRED",
+          `${tool} is mutable; invoke it with a valid central approval`,
+          { retryable: false }
+        );
+      }
+      try {
+        await this.#mutableToolApprovalGate.verify({ pluginId, tool, input, approval });
+      } catch (error) {
+        if (error instanceof PluginRuntimeError) throw error;
+        throw new PluginRuntimeError(
+          "APPROVAL_INVALID",
+          `central approval rejected mutable tool ${tool}: ${error instanceof Error ? error.message : String(error)}`,
+          { retryable: false }
+        );
+      }
     }
-    const invocationOptions =
+    const rawOptions: PluginInvocationOptions =
       typeof options === "number" ? { timeoutMs: options } : { ...(options ?? {}) };
+    const { approval: _approval, ...invocationOptions } = rawOptions;
     return this.supervisor.executeTool(snapshot, tool, input, broker, {
       ...invocationOptions,
       expectedIntegrity: state.activeIntegrity,

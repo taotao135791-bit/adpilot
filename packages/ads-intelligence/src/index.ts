@@ -47,6 +47,7 @@ export {
   PythonUacEngine,
   UacAnalysisResult,
   UacAnalyzeRequest,
+  UacEngineInfo,
   UacQuickDecisionResult,
   UAC_ENGINE_FAILED,
   UAC_ENGINE_UNAVAILABLE,

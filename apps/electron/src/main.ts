@@ -113,6 +113,9 @@ function configurePackagedNativeHelperPath(): void {
   if (!app.isPackaged) return;
   // Packaged builds never accept a user-controlled executable override.
   process.env.ADPILOT_NATIVE_HELPER_PATH = packagedNativeHelperPath(process.resourcesPath);
+  // Let the Python UAC engine resolve its bundled script under
+  // resources/advertising-core/python (see resolveEngineScript in uac-engine.ts).
+  process.env.ADPILOT_RESOURCES_PATH = process.resourcesPath;
 }
 
 app.whenReady().then(async () => {
