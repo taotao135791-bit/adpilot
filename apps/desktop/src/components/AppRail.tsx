@@ -5,7 +5,6 @@ import {
   IconAsterisk,
   IconBolt,
   IconDiamond,
-  IconDiamondFilled,
   IconDocLines,
   IconMoon,
   IconPuzzle,
@@ -42,10 +41,6 @@ export function AppRail({ copy, view, theme, pluginsLabel, settingsLabel, themeL
   ];
   return (
     <nav className="app-rail" aria-label="AdPilot">
-      <span className="app-rail-brand" aria-hidden="true">
-        <IconDiamond size={12} />
-        <IconDiamondFilled size={12} />
-      </span>
       {items.map((item) => {
         const active = item.key === "projects" ? view === "projects" || view === "project" : view === item.key;
         return (

@@ -319,7 +319,7 @@ select {
   gap: 8px;
   padding: 14px 10px 10px 14px;
 }
-.shell[data-native="true"] .sidebar-head { -webkit-app-region: drag; }
+.shell[data-native="true"] .sidebar-head { padding-top: 44px; -webkit-app-region: drag; }
 .shell[data-native="true"] .sidebar-head button { -webkit-app-region: no-drag; }
 .sidebar-head .brand { flex: 1; min-width: 0; }
 .sidebar-toggle {
@@ -1908,6 +1908,8 @@ select {
 }
 .shell[data-native="true"] .app-rail { padding-top: 44px; -webkit-app-region: drag; }
 .shell[data-native="true"] .app-rail button { -webkit-app-region: no-drag; }
+.shell[data-native="true"] .nav-sidebar { padding-top: 44px; -webkit-app-region: drag; }
+.shell[data-native="true"] .nav-sidebar button { -webkit-app-region: no-drag; }
 .app-rail-item {
   display: grid;
   place-items: center;
@@ -2702,14 +2704,6 @@ select {
 /* --------------------------------------------------------------------------
    Monochrome shell — nav sidebar, top bar, and the mockup Home.
    -------------------------------------------------------------------------- */
-.app-rail-brand {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  margin-bottom: 6px;
-  color: var(--ink-2);
-}
-
 .nav-sidebar {
   grid-area: sidebar;
   z-index: var(--z-rail);
@@ -2721,15 +2715,6 @@ select {
   border-right: 1px solid var(--line);
   padding: 14px 12px 12px;
 }
-.nav-sidebar-brand {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 2px 0 14px;
-  color: var(--ink);
-}
-.nav-sidebar-brand strong { font-size: 13px; font-weight: 650; letter-spacing: var(--track-title); }
 .nav-sidebar-new {
   display: flex;
   align-items: center;

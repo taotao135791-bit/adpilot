@@ -2,7 +2,6 @@ import type { WorkspaceCopy } from "../labels.js";
 import {
   IconAsterisk,
   IconDiamond,
-  IconDiamondFilled,
   IconDocLines,
   IconStarFilled
 } from "../icons.js";
@@ -34,10 +33,6 @@ export function NavSidebar({ copy, view, clients, clientId, onNewSession, onNavi
   ];
   return (
     <aside className="nav-sidebar" aria-label={copy.navHome}>
-      <div className="nav-sidebar-brand">
-        <IconDiamondFilled size={11} />
-        <strong>adpilot</strong>
-      </div>
       <button type="button" className="nav-sidebar-new" onClick={onNewSession}>
         <span aria-hidden="true">+</span> {copy.newChat}
       </button>
