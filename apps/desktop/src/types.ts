@@ -41,6 +41,7 @@ export type SessionStatus = "idle" | "queued" | "running" | "waiting_for_approva
 export type ProductSession = {
   id: string;
   clientId: string;
+  projectId?: string;
   runtimeConversationId: string;
   title: string;
   status: SessionStatus;

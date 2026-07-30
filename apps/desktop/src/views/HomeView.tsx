@@ -7,8 +7,7 @@ import {
   type KernelProject
 } from "../workspace.js";
 import { Badge, Button } from "../ui.js";
-import { IconArrowUpRight, IconPlus, IconSend } from "../icons.js";
-import { TopBar } from "../components/TopBar.js";
+import { IconArrowUpRight, IconChevronDown, IconDocLines, IconPlus, IconSend } from "../icons.js";
 
 type FeedRow = {
   id: string;
@@ -37,49 +36,43 @@ function relativeTime(iso: string, locale: AppLocale): string {
  * the ask/code composer, and a unified Recent/Archive feed of approvals and
  * sessions. No fabricated numbers — rows only show what exists.
  */
-export function HomeView({ locale, clientId, workspaceName, openApprovals, recentSessions, archivedSessions, onSubmitGoal, onSubmitCode, onOpenProjects, onOpenApprovals, onOpenSession, onOpenSettings }: {
+export function HomeView({ locale, clientId, workspaceName, projects, openApprovals, recentSessions, archivedSessions, onSubmitGoal, onSubmitCode, onSubmitProjectGoal, onOpenProjects, onOpenApprovals, onOpenSession }: {
   locale: AppLocale;
   clientId: string;
   workspaceName: string;
+  projects: KernelProject[];
   openApprovals: Approval[];
   recentSessions: ProductSession[];
   archivedSessions: ProductSession[];
   onSubmitGoal: (message: string) => void;
   onSubmitCode: (message: string) => void;
+  onSubmitProjectGoal: (projectId: string, message: string) => void;
   onOpenProjects: () => void;
   onOpenApprovals: () => void;
   onOpenSession: (sessionId: string) => void;
-  onOpenSettings: () => void;
 }) {
   const copy = workspaceCopy(locale);
   const [goal, setGoal] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [tab, setTab] = useState<"recent" | "archive">("recent");
-  const [activeProject, setActiveProject] = useState<KernelProject | undefined>();
+  const [scopeProjectId, setScopeProjectId] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void fetch(kernelProjectsUrl(clientId))
-      .then((response) => response.ok ? response.json() as Promise<{ projects?: KernelProject[] }> : { projects: [] })
-      .then((body) => {
-        if (!cancelled) setActiveProject((body.projects ?? []).find((project) => project.status !== "archived"));
-      })
-      .catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [clientId]);
+  const scopeProject = projects.find((project) => project.id === scopeProjectId);
 
   const submit = useCallback(async () => {
     const text = goal.trim();
     if (!text || submitting) return;
     setSubmitting(true);
     try {
-      onSubmitGoal(text);
+      if (scopeProjectId) onSubmitProjectGoal(scopeProjectId, text);
+      else onSubmitGoal(text);
       setGoal("");
+      setPickerOpen(false);
     } finally {
       setSubmitting(false);
     }
-  }, [goal, submitting, onSubmitGoal]);
+  }, [goal, submitting, scopeProjectId, onSubmitGoal, onSubmitProjectGoal]);
 
   const rows = useMemo<FeedRow[]>(() => {
     if (tab === "archive") {
@@ -116,17 +109,50 @@ export function HomeView({ locale, clientId, workspaceName, openApprovals, recen
 
   return (
     <div className="home">
-      <TopBar
-        crumbs={["adpilot", copy.workspace, workspaceName]}
-        settingsLabel={copy.settings}
-        onOpenSettings={onOpenSettings}
-      />
       <div className="home-body">
         <h1 className="home-heading">{copy.homeHeading}</h1>
         <p className="home-context">
           {copy.workspace.toLowerCase()} · {workspaceName}
-          {activeProject ? ` / ${activeProject.name}` : ""}
+          {scopeProject ? ` / ${scopeProject.name}` : ""}
         </p>
+
+        <div className="home-scope">
+          <button
+            type="button"
+            className="home-scope-pill"
+            aria-expanded={pickerOpen}
+            onClick={() => setPickerOpen((open) => !open)}
+          >
+            <IconDocLines size={13} />
+            <span>{scopeProject ? scopeProject.name : copy.selectProject}</span>
+            <IconChevronDown size={11} {...(pickerOpen ? { className: "open" } : {})} />
+          </button>
+          {pickerOpen && (
+            <div className="home-scope-menu" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                className="home-scope-option"
+                data-active={scopeProjectId === null || undefined}
+                onClick={() => { setScopeProjectId(null); setPickerOpen(false); inputRef.current?.focus(); }}
+              >
+                {copy.justChat}
+              </button>
+              {projects.filter((project) => project.status !== "archived").map((project) => (
+                <button
+                  key={project.id}
+                  type="button"
+                  role="menuitem"
+                  className="home-scope-option"
+                  data-active={project.id === scopeProjectId || undefined}
+                  onClick={() => { setScopeProjectId(project.id); setPickerOpen(false); inputRef.current?.focus(); }}
+                >
+                  {project.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
         <div className="home-composer" data-submitting={submitting || undefined}>
           <textarea

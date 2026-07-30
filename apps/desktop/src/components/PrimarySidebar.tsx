@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import type { WorkspaceCopy, ConsoleCopy, AppLocale } from "../labels.js";
 import { sessionStatusTone } from "../sessionList.js";
 import { sessionStatusLabel } from "../labels.js";
+import { groupSessionsByProject, type KernelProject } from "../workspace.js";
 import { Tooltip } from "../ui.js";
 import {
   IconAsterisk,
@@ -10,6 +11,7 @@ import {
   IconChevronDown,
   IconDismiss,
   IconDocLines,
+  IconFolder,
   IconMenu,
   IconMoon,
   IconPencil,
@@ -39,7 +41,7 @@ const STORAGE_KEY = "adpilot-primary-sidebar-width";
  * app toggles. The parent hides the whole column below the resize
  * threshold instead of shrinking it into an icon strip.
  */
-export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients, clientId, sessions, selectedSessionId, search, pinnedSessions, archivedSessions, archivedOpen, renamingId, renameDraft, pluginsLabel, settingsLabel, themeLabel, onNewSession, onNavigate, onSelectClient, onSelectSession, onTogglePin, onStartRename, onRenameDraft, onCommitRename, onCancelRename, onArchive, onRestore, onToggleArchivedOpen, onSearchChange, onShowPlugins, onOpenSettings, onToggleTheme, onHideSidebar }: {
+export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients, clientId, projects, sessions, selectedSessionId, search, pinnedSessions, archivedSessions, archivedOpen, renamingId, renameDraft, pluginsLabel, settingsLabel, themeLabel, onNavigate, onCreateProject, onSelectClient, onSelectSession, onTogglePin, onStartRename, onRenameDraft, onCommitRename, onCancelRename, onArchive, onRestore, onToggleArchivedOpen, onSearchChange, onShowPlugins, onOpenSettings, onToggleTheme, onHideSidebar }: {
   copy: WorkspaceCopy;
   consoleCopy: ConsoleCopy;
   locale: AppLocale;
@@ -47,6 +49,7 @@ export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients
   theme: "dark" | "light";
   clients: Client[];
   clientId: string;
+  projects: KernelProject[];
   sessions: ProductSession[];
   selectedSessionId: string | null;
   search: string;
@@ -58,8 +61,8 @@ export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients
   pluginsLabel: string;
   settingsLabel: string;
   themeLabel: string;
-  onNewSession: () => void;
   onNavigate: (view: "home" | "chat" | "projects" | "automations" | "skills") => void;
+  onCreateProject: () => void;
   onSelectClient: (clientId: string) => void;
   onSelectSession: (session: ProductSession) => void;
   onTogglePin: (session: ProductSession) => void;
@@ -110,6 +113,9 @@ export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients
     setWidth(clamped);
     localStorage.setItem(STORAGE_KEY, String(clamped));
   }, [width, onHideSidebar]);
+
+  const [searchOpen, setSearchOpen] = useState(false);
+  const groups = groupSessionsByProject(sessions, projects);
 
   const navItems: Array<{ key: "home" | "projects" | "automations" | "skills"; label: string; icon: React.ReactNode }> = [
     { key: "home", label: copy.navHome, icon: <IconStarFilled size={15} /> },
@@ -205,27 +211,6 @@ export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients
         </Tooltip>
       </div>
 
-      <button type="button" className="primary-new" onClick={onNewSession}>
-        <IconPlus size={14} />
-        <span>{copy.newChat}</span>
-      </button>
-
-      <div className="sidebar-search">
-        <IconSearch size={13} />
-        <input
-          type="search"
-          value={search}
-          placeholder={consoleCopy.searchSessions}
-          aria-label={consoleCopy.searchSessions}
-          onChange={(event) => onSearchChange(event.target.value)}
-        />
-        {search && (
-          <button type="button" className="sidebar-search-clear" aria-label={consoleCopy.clearSearch} onClick={() => onSearchChange("")}>
-            <IconDismiss size={11} />
-          </button>
-        )}
-      </div>
-
       <nav className="primary-nav">
         {navItems.map((item) => (
           <button
@@ -240,22 +225,64 @@ export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients
             <span>{item.label}</span>
           </button>
         ))}
+        <button type="button" className="primary-item" onClick={onCreateProject}>
+          <IconPlus size={15} />
+          <span>{copy.newProject}</span>
+        </button>
       </nav>
 
       <div className="primary-sessions">
+        <div className="primary-sessions-head">
+          <span className="sidebar-label">{consoleCopy.conversation}</span>
+          <Tooltip content={consoleCopy.searchSessions} side="top">
+            <button
+              type="button"
+              className="primary-sessions-search"
+              aria-label={consoleCopy.searchSessions}
+              aria-pressed={searchOpen}
+              data-active={searchOpen || search !== "" || undefined}
+              onClick={() => setSearchOpen((open) => !open)}
+            >
+              <IconSearch size={12} />
+            </button>
+          </Tooltip>
+        </div>
+        {searchOpen && (
+          <div className="sidebar-search">
+            <IconSearch size={13} />
+            <input
+              type="search"
+              value={search}
+              placeholder={consoleCopy.searchSessions}
+              aria-label={consoleCopy.searchSessions}
+              autoFocus
+              onChange={(event) => onSearchChange(event.target.value)}
+            />
+            {search && (
+              <button type="button" className="sidebar-search-clear" aria-label={consoleCopy.clearSearch} onClick={() => onSearchChange("")}>
+                <IconDismiss size={11} />
+              </button>
+            )}
+          </div>
+        )}
         {pinnedSessions.length > 0 && (
           <>
             <span className="sidebar-label">{consoleCopy.pinnedGroup}</span>
             <ul>{pinnedSessions.map((session) => renderRow(session, false))}</ul>
           </>
         )}
-        <span className="sidebar-label">{consoleCopy.conversation}</span>
-        <ul>
-          {sessions.map((session) => renderRow(session, false))}
-          {sessions.length === 0 && pinnedSessions.length === 0 && (
-            <li className="sidebar-empty">{search ? consoleCopy.noSessionMatches : consoleCopy.emptySessions}</li>
-          )}
-        </ul>
+        {groups.map((group) => (
+          <section key={group.project?.id ?? "ungrouped"} className="session-group">
+            <span className="session-group-label">
+              <IconFolder size={12} />
+              <span>{group.project?.name ?? consoleCopy.ungroupedSessions}</span>
+            </span>
+            <ul>{group.sessions.map((session) => renderRow(session, false))}</ul>
+          </section>
+        ))}
+        {sessions.length === 0 && pinnedSessions.length === 0 && groups.length === 0 && (
+          <li className="sidebar-empty">{search ? consoleCopy.noSessionMatches : consoleCopy.emptySessions}</li>
+        )}
         {archivedSessions.length > 0 && (
           <>
             <button

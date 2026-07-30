@@ -44,6 +44,7 @@ import {
   notificationReadUrl,
   notificationsUrl,
   parseRootPathsInput,
+  groupSessionsByProject,
   shortId,
   sortArtifactsRecent,
   sortDecisionsRecent,
@@ -224,6 +225,26 @@ describe("misc view logic", () => {
   it("interpolates copy placeholders and leaves unknown ones intact", () => {
     expect(interpolate("{count} 个目标", { count: "3" })).toBe("3 个目标");
     expect(interpolate("{missing}", {})).toBe("{missing}");
+  });
+
+  it("groups sessions under their project with freshest group first", () => {
+    const projects = [
+      { id: "p1", name: "Alpha", status: "active" },
+      { id: "p2", name: "Beta", status: "active" }
+    ] as never[];
+    const session = (id: string, projectId: string | undefined, lastActivityAt: string) => ({
+      id, projectId, lastActivityAt
+    }) as never;
+    const groups = groupSessionsByProject([
+      session("s1", "p1", "2026-07-28T00:00:00Z"),
+      session("s2", "p2", "2026-07-29T00:00:00Z"),
+      session("s3", "p1", "2026-07-28T06:00:00Z"),
+      session("s4", undefined, "2026-07-27T00:00:00Z"),
+      session("s5", "ghost", "2026-07-29T01:00:00Z")
+    ], projects);
+    expect(groups.map((group) => group.project === null ? "ungrouped" : (group.project as { id: string }).id)).toEqual(["p2", "p1", "ungrouped"]);
+    expect(groups[1]!.sessions.map((item: { id: string }) => item.id)).toEqual(["s3", "s1"]);
+    expect(groups[2]!.sessions.map((item: { id: string }) => item.id)).toEqual(["s5", "s4"]);
   });
 
   it("shortens ids for display", () => {

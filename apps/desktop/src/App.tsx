@@ -15,6 +15,7 @@ import { localInsightCommand } from "./slashCommands.js";
 import { normalizePlanMode, planModeEndpoint, planModeRequestBody } from "./planMode.js";
 import { autonomyEndpoint, autonomyRequestBody, normalizeAutonomy } from "./autonomy.js";
 import { modelChipLabel } from "./composerKeys.js";
+import { kernelProjectsUrl, type KernelProject } from "./workspace.js";
 import {
   SESSION_SEARCH_DEBOUNCE_MS,
   applySessionSnapshot,
@@ -247,6 +248,17 @@ export function App() {
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [kernelProjects, setKernelProjects] = useState<KernelProject[]>([]);
+
+  useEffect(() => {
+    if (!clientId) return;
+    let cancelled = false;
+    void fetch(kernelProjectsUrl(clientId))
+      .then((response) => response.ok ? response.json() as Promise<{ projects?: KernelProject[] }> : { projects: [] })
+      .then((body) => { if (!cancelled) setKernelProjects(body.projects ?? []); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [clientId, mainView]);
 
   function applySettings(data: SettingsData) {
     setSettingsData(data);
@@ -361,6 +373,15 @@ export function App() {
   function openApprovalsInChat() {
     setMainView("chat");
     window.setTimeout(() => jumpToApprovals(), 350);
+  }
+
+  /** Home's project-scoped Ask: jump into the project workbench with the
+     text prefilled in its mission composer (same hand-off as Code). */
+  function submitProjectGoal(projectId: string, message: string) {
+    setCodeHandoff({ projectId, mission: message });
+    setActiveProjectId(projectId);
+    setFocusArtifactId(null);
+    setMainView("project");
   }
 
   function toggleTheme() {
@@ -692,6 +713,7 @@ export function App() {
           theme={theme}
           clients={state.clients}
           clientId={clientId}
+          projects={kernelProjects}
           sessions={visibleSessions}
           selectedSessionId={selectedSessionId}
           search={sessionSearch}
@@ -703,11 +725,11 @@ export function App() {
           pluginsLabel={pluginsCopy(locale).nav}
           settingsLabel={copy.settings}
           themeLabel={copy.themeToggle}
-          onNewSession={() => {
-            setMainView("chat");
-            void newSession();
-          }}
           onNavigate={navigateRail}
+          onCreateProject={() => {
+            setMainView("projects");
+            setProjectsDialogNonce((nonce) => nonce + 1);
+          }}
           onSelectClient={selectClient}
           onSelectSession={selectSession}
           onTogglePin={(session) => void togglePin(session)}
@@ -763,18 +785,19 @@ export function App() {
                 locale={locale}
                 clientId={clientId}
                 workspaceName={state.clients.find((client) => client.id === clientId)?.name ?? clientId}
+                projects={kernelProjects}
                 openApprovals={openApprovals}
                 recentSessions={recentSessions}
                 archivedSessions={archivedSessions}
                 onSubmitGoal={submitAndChat}
                 onSubmitCode={(message) => void submitCodeProject(message)}
+                onSubmitProjectGoal={submitProjectGoal}
                 onOpenProjects={() => setMainView("projects")}
                 onOpenApprovals={openApprovalsInChat}
                 onOpenSession={(sessionId) => {
                   const session = sessions.find((candidate) => candidate.id === sessionId);
                   if (session) selectSession(session);
                 }}
-                onOpenSettings={() => openSettings("general")}
               />
             )}
             {mainView === "projects" && (

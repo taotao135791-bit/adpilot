@@ -6,7 +6,7 @@
  * vitest config (node environment), matching the plugins.ts / sessionList.ts
  * convention.
  */
-import type { ConversationMessage } from "./types.js";
+import type { ConversationMessage, ProductSession } from "./types.js";
 
 /* ------------------------------------------------------------------ */
 /* Wire types (mirror packages/kernel, packages/artifacts, terminal)   */
@@ -811,4 +811,46 @@ export function localProjectUserMessage(clientId: string, conversationId: string
     status: "complete",
     at: new Date().toISOString()
   };
+}
+
+/** A project folder (or the ungrouped bucket) with its sessions, sidebar order. */
+export type SessionGroup = {
+  project: KernelProject | null;
+  sessions: ProductSession[];
+};
+
+/**
+ * Group sessions under their bound kernel project, Codex-style: one folder
+ * per project ordered by the freshest session inside, ungrouped sessions
+ * last under the workspace bucket. Projects without sessions still appear
+ * so the folder tree stays stable.
+ */
+export function groupSessionsByProject(
+  sessions: readonly ProductSession[],
+  projects: readonly KernelProject[]
+): SessionGroup[] {
+  const byProject = new Map<string, ProductSession[]>();
+  const ungrouped: ProductSession[] = [];
+  for (const session of sessions) {
+    if (session.projectId && projects.some((project) => project.id === session.projectId)) {
+      const bucket = byProject.get(session.projectId) ?? [];
+      bucket.push(session);
+      byProject.set(session.projectId, bucket);
+    } else {
+      ungrouped.push(session);
+    }
+  }
+  const activeProjects = projects.filter((project) => project.status !== "archived");
+  const groups: SessionGroup[] = activeProjects
+    .map((project) => ({
+      project,
+      sessions: (byProject.get(project.id) ?? []).sort((left, right) =>
+        right.lastActivityAt.localeCompare(left.lastActivityAt))
+    }))
+    .filter((group) => group.sessions.length > 0)
+    .sort((left, right) =>
+      right.sessions[0]!.lastActivityAt.localeCompare(left.sessions[0]!.lastActivityAt));
+  ungrouped.sort((left, right) => right.lastActivityAt.localeCompare(left.lastActivityAt));
+  if (ungrouped.length > 0) groups.push({ project: null, sessions: ungrouped });
+  return groups;
 }
