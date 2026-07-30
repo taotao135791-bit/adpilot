@@ -143,6 +143,7 @@ export class AdPilotAgent {
    */
   private agentExecutionContext(clientId: string, context: AgentConversationContext, conversationId: string): AgentExecutionContext {
     const scope = context.executionContext;
+    const computerAvailable = Boolean(this.agentTools?.deps.computer?.host && !this.agentTools.deps.computer.host.closed);
     return {
       workspaceId: clientId,
       ...(scope?.projectId !== undefined ? { projectId: scope.projectId } : {}),
@@ -150,8 +151,16 @@ export class AdPilotAgent {
       ...(scope?.taskId !== undefined ? { taskId: scope.taskId } : {}),
       sessionId: context.sessionId ?? conversationId,
       rootPaths: scope?.rootPaths ?? [],
-      enabledCapabilityPacks: scope?.enabledCapabilityPacks ?? ["code"],
-      permissions: { read: true, write: true, destructive: false, computerUse: false, network: false },
+      enabledCapabilityPacks: scope?.enabledCapabilityPacks ?? (computerAvailable ? ["code", "computer-use"] : ["code"]),
+      permissions: {
+        read: true,
+        write: true,
+        destructive: false,
+        // computer.observe becomes visible when a live authenticated Helper is
+        // wired into the deps; without it the pack stays hidden entirely.
+        computerUse: computerAvailable,
+        network: false
+      },
       locale: context.interfaceLocale ?? "en",
       createdAt: new Date().toISOString()
     };
@@ -247,7 +256,7 @@ export class AdPilotAgent {
           "You are AdPilot, the user's local general-purpose assistant, now executing a local action request. Advertising operations is your domain specialty, but this task is ordinary local work.",
           "Available tools: read, grep, find and ls observe the workspace and explicitly allowed directories; write and edit create and modify files inside the workspace; bash runs sandboxed shell commands, including `open` on macOS to launch applications and URLs (for example `open https://www.baidu.com` or `open -a Safari`).",
           "Bash commands are deterministically classified. Read-level commands run directly. Write-level commands (file changes, installs, `open`) run without an approval reference when the operator granted full access; in guarded mode the gate denial explains exactly what is missing — report it to the user instead of retrying the same call. Deny-classified commands (network tools, screen capture, credential and browser-profile stores, process control, protected paths, rm -rf) are hard-blocked in every mode; never try to work around them.",
-          "Two red lines: you never change an advertising account from this path — account mutations go through an investigation and the full approval chain. And outside the managed advertising browser you cannot see the user's screen; if a request needs that, say so honestly instead of claiming an observation.",
+          "Two red lines: you never change an advertising account from this path — account mutations go through an investigation and the full approval chain. And when computer.observe is not among your tools you cannot see the user's screen; say so honestly instead of claiming an observation.",
           "Do the work, then report: use tools until the request is actually done, and finish with a concise user-facing summary of what you did (files touched, commands run, apps or pages opened). Use the conversation interfaceLocale: Simplified Chinese for zh-CN and English for en.",
           ...(this.agentTools ? [agentToolsPromptSection()] : [])
         ].join("\n"),
@@ -456,6 +465,7 @@ export class AdPilotAgent {
 function agentToolsPromptSection(): string {
   return [
     "Workspace tools (dot-named) call the Universal Workspace directly: project.* reads and updates the current project, goal.* and task.* manage goals and the task graph, terminal.* runs shell commands inside the project roots, git.* inspects and mutates repositories, artifact.* renders real deliverables, ads.* reads the advertising registry and records decisions, automation.* manages scheduled actors, workflow.* runs recorded workflows.",
+    "When computer.observe is present, you CAN see the user's screen: it captures the frontmost window and returns app/title/bounds, the browser URL when readable, and a JPEG of the window for you to inspect. Use it whenever the user asks what is on their screen or in their browser; never claim you cannot see the screen while it is available, and never describe a screen you did not capture.",
     "Every dot-named call is audited and its structured result (success/data or a coded, recoverable error) is written back to the project/task record. Create a git checkpoint before mutating a repository, attach produced artifacts to the task, and when a call returns a non-recoverable permission error, ask the user instead of retrying."
   ].join("\n");
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getCopy, phaseLabel, phaseTone, nextStepLabel, roleLabel, formatTime, pluginsCopy, workspaceCopy, type AppLocale } from "./labels.js";
+import { getCopy, phaseLabel, phaseTone, nextStepLabel, pluginsCopy, workspaceCopy, type AppLocale } from "./labels.js";
 import {
   appendProductEvent,
   emptyState,
@@ -841,27 +841,15 @@ export function App() {
           )}
 
           {currentTask ? (
-            <>
-              <section className="task-header">
-                <div>
-                  <span className="section-kicker">{copy.activeMission} · {currentTask.id.slice(0, 6)}</span>
-                  <h1>{currentTask.goal}</h1>
-                  <p>{currentTask.nextStep ? nextStepLabel(currentTask.nextStep, locale) : copy.preparingEvidence}</p>
-                </div>
-                <div className="task-header-actions">
-                  <Badge tone={phaseTone(currentTask.phase)} variant="soft">{phaseLabel(currentTask.phase, locale)}</Badge>
-                  <Tooltip content={copy.dismissTask} side="top">
-                    <Button size="sm" variant="subtle" className="icon-button" aria-label={copy.dismissTask} icon={<IconDismiss size={13} />} onClick={() => void dismissTask(currentTask.id)} />
-                  </Tooltip>
-                </div>
-              </section>
-              <section className="task-ledger" aria-label={copy.activeMission}>
-                <Metric label={copy.evidenceSteps} value={String(currentTask.completedSteps.length).padStart(2, "0")} />
-                <Metric label={copy.blockers} value={String(currentTask.blockers.length).padStart(2, "0")} />
-                <Metric label={copy.operator} value={currentTask.owner ? roleLabel(currentTask.owner, locale) : copy.agent} compact />
-                <Metric label={copy.reviewWindow} value={currentTask.reviewAt ? formatTime(currentTask.reviewAt, locale) : copy.unscheduled} compact />
-              </section>
-            </>
+            <section className="task-banner" data-phase={currentTask.phase}>
+              <span className="task-banner-label">{copy.activeMission} · {currentTask.id.slice(0, 6)}</span>
+              <span className="task-banner-goal" title={currentTask.goal}>{currentTask.goal}</span>
+              <span className="task-banner-next">{currentTask.nextStep ? nextStepLabel(currentTask.nextStep, locale) : copy.preparingEvidence}</span>
+              <Badge tone={phaseTone(currentTask.phase)} variant="soft">{phaseLabel(currentTask.phase, locale)}</Badge>
+              <Tooltip content={copy.dismissTask} side="top">
+                <Button size="sm" variant="subtle" className="icon-button" aria-label={copy.dismissTask} icon={<IconDismiss size={13} />} onClick={() => void dismissTask(currentTask.id)} />
+              </Tooltip>
+            </section>
           ) : state.messages.length === 0 ? (
             <div className="chat-empty">
               <LogoMark size={26} />
@@ -977,6 +965,3 @@ export function App() {
   );
 }
 
-function Metric({ label, value, compact = false }: { label: string; value: string; compact?: boolean }) {
-  return <div className={compact ? "compact" : ""}><span>{label}</span><strong>{value}</strong></div>;
-}

@@ -743,6 +743,7 @@ export async function createServer(system: AdPilotSystem, options: {
           executor: system.workflowExecutor
         })
       },
+      computer: { host: system.nativeComputerHost },
       audit: async (clientId, action, details) => {
         const event = await system.audit.append({ clientId, actor: "adpilot_agent", action, status: "succeeded", details });
         return event.id;

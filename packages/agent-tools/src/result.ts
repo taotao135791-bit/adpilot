@@ -29,6 +29,10 @@ export interface AgentToolResult<T = unknown> {
   evidenceIds: string[];
   artifactIds: string[];
   auditEventId?: string;
+  /** Optional image payload handed to the model alongside the text result
+     (pi ImageContent: base64 data + mime type). Only tools that genuinely
+     captured pixels (computer.observe) set this. */
+  image?: { data: string; mimeType: string };
   startedAt: string;
   completedAt: string;
 }

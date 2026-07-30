@@ -30,6 +30,7 @@ import { createGoalTools } from "./groups/goal.js";
 import { createProjectTools } from "./groups/project.js";
 import { createTaskTools } from "./groups/task.js";
 import { createWorkflowTools } from "./groups/workflow.js";
+import { createComputerTools } from "./groups/computer.js";
 
 export { createAdsTools } from "./groups/ads.js";
 export { createArtifactTools } from "./groups/artifact.js";
@@ -40,6 +41,7 @@ export { createGoalTools } from "./groups/goal.js";
 export { createProjectTools } from "./groups/project.js";
 export { createTaskTools } from "./groups/task.js";
 export { createWorkflowTools } from "./groups/workflow.js";
+export { createComputerTools } from "./groups/computer.js";
 
 /** Registry holding every 0.3 capability tool group. */
 export function buildAgentToolRegistry(): AgentToolRegistry {
@@ -53,5 +55,6 @@ export function buildAgentToolRegistry(): AgentToolRegistry {
   registry.registerAll(createAdsTools());
   registry.registerAll(createAutomationTools());
   registry.registerAll(createWorkflowTools());
+  registry.registerAll(createComputerTools());
   return registry;
 }

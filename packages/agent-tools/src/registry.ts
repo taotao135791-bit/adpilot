@@ -83,7 +83,10 @@ export class AgentToolRegistry {
       execute: async (_toolCallId, rawParams) => {
         const result = await runAgentToolCall(definition, rawParams, ctx, deps);
         return {
-          content: [{ type: "text", text: JSON.stringify(result) }],
+          content: [
+            { type: "text", text: JSON.stringify(result) },
+            ...(result.image ? [{ type: "image" as const, data: result.image.data, mimeType: result.image.mimeType }] : [])
+          ],
           details: result
         };
       }
