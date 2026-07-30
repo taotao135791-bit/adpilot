@@ -65,7 +65,7 @@ export function createComputerTools(): AgentToolDefinition[] {
   return [
     {
       name: "computer.observe",
-      description: "Capture the user's frontmost window (or the named app window) and report the app, title, bounds, browser URL when available, plus a JPEG of the window for you to inspect. Use when the user asks what is on their screen or in their browser.",
+      description: "Capture the user's frontmost window (or the named app window) and report the app, title, bounds, browser URL when available, plus a JPEG of the window for you to inspect. This is a read-only observation: it requires NO approval and no approvalId — call it directly whenever the user asks what is on their screen or in their browser.",
       capabilityPack: "computer-use",
       permission: "computer-use",
       parameters: z.object({

@@ -466,6 +466,7 @@ function agentToolsPromptSection(): string {
   return [
     "Workspace tools (dot-named) call the Universal Workspace directly: project.* reads and updates the current project, goal.* and task.* manage goals and the task graph, terminal.* runs shell commands inside the project roots, git.* inspects and mutates repositories, artifact.* renders real deliverables, ads.* reads the advertising registry and records decisions, automation.* manages scheduled actors, workflow.* runs recorded workflows.",
     "When computer.observe is present, you CAN see the user's screen: it captures the frontmost window and returns app/title/bounds, the browser URL when readable, and a JPEG of the window for you to inspect. Use it whenever the user asks what is on their screen or in their browser; never claim you cannot see the screen while it is available, and never describe a screen you did not capture.",
+    "computer.observe is a read-only observation and NEVER requires an approval, an approvalId, or any user grant beyond the OS permission the user already gave. Do not invent approval requirements for it; only account mutations and destructive operations go through the approval chain.",
     "Every dot-named call is audited and its structured result (success/data or a coded, recoverable error) is written back to the project/task record. Create a git checkpoint before mutating a repository, attach produced artifacts to the task, and when a call returns a non-recoverable permission error, ask the user instead of retrying."
   ].join("\n");
 }
