@@ -44,6 +44,7 @@ export type ProductSession = {
   projectId?: string;
   runtimeConversationId: string;
   title: string;
+  preview?: string;
   status: SessionStatus;
   permissionProfile?: {
     level: "OBSERVE" | "PREPARE" | "EXECUTE";

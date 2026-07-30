@@ -532,10 +532,16 @@ export async function createServer(system: AdPilotSystem, options: {
         const response = await system.agent.respond(clientId, prompt, { conversationId, interfaceLocale: body.locale, userMessageId: userMessage.id, ...(session ? { sessionId: session.id } : {}), ...(modelOverride ? { modelOverride } : {}), ...(project ? { executionContext: { projectId: project.id, ...(body.goalId ? { goalId: body.goalId } : {}), ...(body.taskId ? { taskId: body.taskId } : {}), rootPaths: project.rootPaths, enabledCapabilityPacks: project.enabledCapabilityPacks } } : {}), recentConversation: existing.slice(-12).map((item) => sanitizeLegacyConversationError(item, body.locale)).map(({ role, content }) => ({ role, content })) });
         const assistantMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId, ...(session ? { sessionId: session.id } : {}), role: "assistant", content: response.reply, ...(response.task ? { taskId: response.task.id } : {}), at: new Date().toISOString() });
         await system.workspace.appendJsonl(clientId, "conversation.jsonl", assistantMessage);
-        if (session && isUntitledSession(session.title)) {
-          // Name the session from its first real exchange instead of leaving a
-          // bare "New session" or raw UUID in the list forever.
-          session = await system.sessions.rename(session.id, sessionTitleFromMessage(prompt)).catch(() => session);
+        if (session) {
+          if (isUntitledSession(session.title)) {
+            // Name the session from its first real exchange instead of leaving a
+            // bare "New session" or raw UUID in the list forever.
+            const renamed = await system.sessions.rename(session.id, sessionTitleFromMessage(prompt)).catch(() => undefined);
+            if (renamed) session = renamed;
+          }
+          const sessionId = session.id;
+          const previewed = await system.sessions.setPreview(sessionId, response.reply).catch(() => undefined);
+          if (previewed) session = previewed;
         }
         await setSessionStatus("completed");
         system.events.publish({ type: "task", clientId, status: response.task?.phase ?? "completed", ...(response.task ? { taskId: response.task.id } : {}), message: response.reply });

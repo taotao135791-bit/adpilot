@@ -417,7 +417,30 @@ export function App() {
     setSelectedSessionId(session.id);
     setConversationId(session.runtimeConversationId);
     setInsights([]);
+    setGoal("");
+    setError("");
+    setMainView("chat");
     await loadState(clientId, session.runtimeConversationId);
+  }
+
+  async function deleteSession(session: ProductSession) {
+    if (!clientId) return;
+    try {
+      const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/sessions/${encodeURIComponent(session.id)}?revision=${session.revision}`, { method: "DELETE" });
+      if (!response.ok) throw new Error(String(response.status));
+      setSessions((current) => current.filter((candidate) => candidate.id !== session.id));
+      if (selectedSessionId === session.id) {
+        const next = sessions.find((candidate) => candidate.id !== session.id && !candidate.archivedAt && !candidate.deletedAt);
+        if (next) selectSession(next);
+        else {
+          setSelectedSessionId(null);
+          setConversationId("primary");
+          await loadState(clientId, "primary");
+        }
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
   }
 
   async function togglePin(session: ProductSession) {
@@ -717,6 +740,8 @@ export function App() {
             setMainView("projects");
             setProjectsDialogNonce((nonce) => nonce + 1);
           }}
+          onNewSession={() => void newSession()}
+          onDeleteSession={(session) => void deleteSession(session)}
           onSelectClient={selectClient}
           onSelectSession={selectSession}
           onTogglePin={(session) => void togglePin(session)}

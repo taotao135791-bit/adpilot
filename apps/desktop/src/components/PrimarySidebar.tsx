@@ -41,7 +41,7 @@ const STORAGE_KEY = "adpilot-primary-sidebar-width";
  * app toggles. The parent hides the whole column below the resize
  * threshold instead of shrinking it into an icon strip.
  */
-export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients, clientId, projects, sessions, selectedSessionId, search, pinnedSessions, archivedSessions, archivedOpen, renamingId, renameDraft, pluginsLabel, settingsLabel, themeLabel, onNavigate, onCreateProject, onSelectClient, onSelectSession, onTogglePin, onStartRename, onRenameDraft, onCommitRename, onCancelRename, onArchive, onRestore, onToggleArchivedOpen, onSearchChange, onShowPlugins, onOpenSettings, onToggleTheme, onHideSidebar }: {
+export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients, clientId, projects, sessions, selectedSessionId, search, pinnedSessions, archivedSessions, archivedOpen, renamingId, renameDraft, pluginsLabel, settingsLabel, themeLabel, onNavigate, onCreateProject, onNewSession, onSelectClient, onSelectSession, onDeleteSession, onTogglePin, onStartRename, onRenameDraft, onCommitRename, onCancelRename, onArchive, onRestore, onToggleArchivedOpen, onSearchChange, onShowPlugins, onOpenSettings, onToggleTheme, onHideSidebar }: {
   copy: WorkspaceCopy;
   consoleCopy: ConsoleCopy;
   locale: AppLocale;
@@ -63,8 +63,10 @@ export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients
   themeLabel: string;
   onNavigate: (view: "home" | "chat" | "projects" | "automations" | "skills") => void;
   onCreateProject: () => void;
+  onNewSession: () => void;
   onSelectClient: (clientId: string) => void;
   onSelectSession: (session: ProductSession) => void;
+  onDeleteSession: (session: ProductSession) => void;
   onTogglePin: (session: ProductSession) => void;
   onStartRename: (session: ProductSession) => void;
   onRenameDraft: (value: string) => void;
@@ -115,6 +117,7 @@ export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients
   }, [width, onHideSidebar]);
 
   const [searchOpen, setSearchOpen] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const groups = groupSessionsByProject(sessions, projects);
 
   const navItems: Array<{ key: "home" | "projects" | "automations" | "skills"; label: string; icon: React.ReactNode }> = [
@@ -151,45 +154,65 @@ export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients
     }
     return (
       <li key={session.id} className={`session-item${selected ? " active" : ""}${archived ? " archived" : ""}`}>
-        <button
-          type="button"
-          className="session-open"
-          aria-current={selected ? "true" : undefined}
-          onClick={() => onSelectSession(session)}
-        >
-          {tone !== "quiet" && (
-            <span className="session-status" data-tone={tone} role="img" aria-label={sessionStatusLabel(session.status, locale)} />
-          )}
-          <span className="session-title">{session.title || consoleCopy.untitledSession}</span>
-          {pinned && !archived && <IconPin size={11} className="session-pinned-mark" />}
-        </button>
-        <span className="session-actions">
-          {archived ? (
-            <Tooltip content={consoleCopy.restoreSession} side="top">
-              <button type="button" aria-label={`${consoleCopy.restoreSession}: ${session.title}`} onClick={() => onRestore(session)}>
-                <IconRestore size={13} />
-              </button>
-            </Tooltip>
-          ) : (
-            <>
-              <Tooltip content={pinned ? consoleCopy.unpinSession : consoleCopy.pinSession} side="top">
-                <button type="button" aria-label={`${pinned ? consoleCopy.unpinSession : consoleCopy.pinSession}: ${session.title}`} data-on={pinned || undefined} onClick={() => onTogglePin(session)}>
-                  <IconPin size={13} />
-                </button>
-              </Tooltip>
-              <Tooltip content={consoleCopy.renameSession} side="top">
-                <button type="button" aria-label={`${consoleCopy.renameSession}: ${session.title}`} onClick={() => onStartRename(session)}>
-                  <IconPencil size={13} />
-                </button>
-              </Tooltip>
-              <Tooltip content={consoleCopy.archiveSession} side="top">
-                <button type="button" aria-label={`${consoleCopy.archiveSession}: ${session.title}`} onClick={() => onArchive(session)}>
-                  <IconArchive size={13} />
-                </button>
-              </Tooltip>
-            </>
-          )}
-        </span>
+        {confirmDeleteId === session.id ? (
+          <span className="session-delete-confirm">
+            <span>{consoleCopy.deleteSessionConfirm}</span>
+            <button type="button" className="session-delete-yes" onClick={() => { setConfirmDeleteId(null); onDeleteSession(session); }}>
+              {consoleCopy.deleteSessionYes}
+            </button>
+            <button type="button" onClick={() => setConfirmDeleteId(null)}>{copy.cancel}</button>
+          </span>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="session-open"
+              aria-current={selected ? "true" : undefined}
+              onClick={() => onSelectSession(session)}
+            >
+              {tone !== "quiet" && (
+                <span className="session-status" data-tone={tone} role="img" aria-label={sessionStatusLabel(session.status, locale)} />
+              )}
+              <span className="session-main">
+                <span className="session-title">{session.title || consoleCopy.untitledSession}</span>
+                {session.preview && <span className="session-preview">{session.preview}</span>}
+              </span>
+              {pinned && !archived && <IconPin size={11} className="session-pinned-mark" />}
+            </button>
+            <span className="session-actions">
+              {archived ? (
+                <Tooltip content={consoleCopy.restoreSession} side="top">
+                  <button type="button" aria-label={`${consoleCopy.restoreSession}: ${session.title}`} onClick={() => onRestore(session)}>
+                    <IconRestore size={13} />
+                  </button>
+                </Tooltip>
+              ) : (
+                <>
+                  <Tooltip content={pinned ? consoleCopy.unpinSession : consoleCopy.pinSession} side="top">
+                    <button type="button" aria-label={`${pinned ? consoleCopy.unpinSession : consoleCopy.pinSession}: ${session.title}`} data-on={pinned || undefined} onClick={() => onTogglePin(session)}>
+                      <IconPin size={13} />
+                    </button>
+                  </Tooltip>
+                  <Tooltip content={consoleCopy.renameSession} side="top">
+                    <button type="button" aria-label={`${consoleCopy.renameSession}: ${session.title}`} onClick={() => onStartRename(session)}>
+                      <IconPencil size={13} />
+                    </button>
+                  </Tooltip>
+                  <Tooltip content={consoleCopy.archiveSession} side="top">
+                    <button type="button" aria-label={`${consoleCopy.archiveSession}: ${session.title}`} onClick={() => onArchive(session)}>
+                      <IconArchive size={13} />
+                    </button>
+                  </Tooltip>
+                  <Tooltip content={consoleCopy.deleteSession} side="top">
+                    <button type="button" className="session-delete" aria-label={`${consoleCopy.deleteSession}: ${session.title}`} onClick={() => setConfirmDeleteId(session.id)}>
+                      <IconDismiss size={12} />
+                    </button>
+                  </Tooltip>
+                </>
+              )}
+            </span>
+          </>
+        )}
       </li>
     );
   };
@@ -234,18 +257,25 @@ export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients
       <div className="primary-sessions">
         <div className="primary-sessions-head">
           <span className="sidebar-label">{consoleCopy.conversation}</span>
-          <Tooltip content={consoleCopy.searchSessions} side="top">
-            <button
-              type="button"
-              className="primary-sessions-search"
-              aria-label={consoleCopy.searchSessions}
-              aria-pressed={searchOpen}
-              data-active={searchOpen || search !== "" || undefined}
-              onClick={() => setSearchOpen((open) => !open)}
-            >
-              <IconSearch size={12} />
-            </button>
-          </Tooltip>
+          <span className="primary-sessions-tools">
+            <Tooltip content={consoleCopy.newChat} side="top">
+              <button type="button" className="primary-sessions-search" aria-label={consoleCopy.newChat} onClick={onNewSession}>
+                <IconPlus size={12} />
+              </button>
+            </Tooltip>
+            <Tooltip content={consoleCopy.searchSessions} side="top">
+              <button
+                type="button"
+                className="primary-sessions-search"
+                aria-label={consoleCopy.searchSessions}
+                aria-pressed={searchOpen}
+                data-active={searchOpen || search !== "" || undefined}
+                onClick={() => setSearchOpen((open) => !open)}
+              >
+                <IconSearch size={12} />
+              </button>
+            </Tooltip>
+          </span>
         </div>
         {searchOpen && (
           <div className="sidebar-search">

@@ -165,6 +165,8 @@ export const Session = z.object({
   platforms: SessionPlatforms,
   runtimeConversationId: NonEmptyId,
   title: z.string().trim().min(1).max(200),
+  /** One-line preview of the latest exchange, maintained by the message route. */
+  preview: z.string().trim().max(280).optional(),
   status: SessionStatus,
   modelBinding: SessionModelBinding,
   permissionProfile: SessionPermissionProfile,

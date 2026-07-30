@@ -299,6 +299,16 @@ export class SessionService {
     }));
   }
 
+  /** Refresh the one-line preview after each exchange. */
+  async setPreview(sessionId: string, preview: string): Promise<SessionType> {
+    const value = preview.replace(/\s+/g, " ").trim().slice(0, 280);
+    return this.mutate(sessionId, undefined, (current, now) => ({
+      ...current,
+      ...(value ? { preview: value } : {}),
+      updatedAt: now
+    }));
+  }
+
   async pin(sessionId: string, expectedRevision?: number): Promise<SessionType> {
     return this.mutate(sessionId, expectedRevision, (current, now) => ({
       ...current,
