@@ -235,10 +235,6 @@ export function App() {
   const openApprovals = useMemo(() => state.approvals.filter((item) => isApprovalOpen(item.status)), [state.approvals]);
   const autonomy = normalizeAutonomy(state.autonomy);
   const selectedSession = useMemo(() => sessions.find((session) => session.id === selectedSessionId), [sessions, selectedSessionId]);
-  const recentSessions = useMemo(() => sessions
-    .filter((session) => !session.archivedAt && !session.deletedAt)
-    .sort((left, right) => right.lastActivityAt.localeCompare(left.lastActivityAt))
-    .slice(0, 6), [sessions]);
   const archivedSessions = useMemo(() => sessions
     .filter((session) => session.archivedAt && !session.deletedAt)
     .sort((left, right) => right.lastActivityAt.localeCompare(left.lastActivityAt))
@@ -368,11 +364,6 @@ export function App() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
-  }
-
-  function openApprovalsInChat() {
-    setMainView("chat");
-    window.setTimeout(() => jumpToApprovals(), 350);
   }
 
   /** Home's project-scoped Ask: jump into the project workbench with the
@@ -651,12 +642,6 @@ export function App() {
     await response.json(); if (!response.ok) setError(copy.executionError); await loadState(clientId);
   }
 
-  function jumpToApprovals() {
-    const target = openApprovals[0] ?? state.approvals[0];
-    if (!target) return;
-    document.querySelector(`[data-approval="${CSS.escape(target.id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }
-
   /** Dismiss a blocked/completed task banner — archives server-side (audited, restorable), then refetches. */
   async function dismissTask(taskId: string) {
     try {
@@ -783,21 +768,11 @@ export function App() {
             {mainView === "home" && (
               <HomeView
                 locale={locale}
-                clientId={clientId}
                 workspaceName={state.clients.find((client) => client.id === clientId)?.name ?? clientId}
                 projects={kernelProjects}
-                openApprovals={openApprovals}
-                recentSessions={recentSessions}
-                archivedSessions={archivedSessions}
                 onSubmitGoal={submitAndChat}
                 onSubmitCode={(message) => void submitCodeProject(message)}
                 onSubmitProjectGoal={submitProjectGoal}
-                onOpenProjects={() => setMainView("projects")}
-                onOpenApprovals={openApprovalsInChat}
-                onOpenSession={(sessionId) => {
-                  const session = sessions.find((candidate) => candidate.id === sessionId);
-                  if (session) selectSession(session);
-                }}
               />
             )}
             {mainView === "projects" && (
