@@ -14,7 +14,6 @@ import { mergeConversationTimeline, type TimelineInsight } from "./conversationT
 import { localInsightCommand } from "./slashCommands.js";
 import { normalizePlanMode, planModeEndpoint, planModeRequestBody } from "./planMode.js";
 import { autonomyEndpoint, autonomyRequestBody, normalizeAutonomy } from "./autonomy.js";
-import { modelChipLabel } from "./composerKeys.js";
 import { kernelProjectsUrl, type KernelProject } from "./workspace.js";
 import {
   SESSION_SEARCH_DEBOUNCE_MS,
@@ -28,9 +27,9 @@ import {
 import { SettingsPanel, type SettingsData, type SettingsTab } from "./SettingsPanel.js";
 import { ConversationFeed } from "./components/ConversationFeed.js";
 import { Composer } from "./components/Composer.js";
-import { MissionZero } from "./components/MissionZero.js";
 import { PluginsView } from "./components/PluginsView.js";
 import { PrimarySidebar, type PrimaryView } from "./components/PrimarySidebar.js";
+import { LogoMark } from "./components/LogoMark.js";
 import { HomeView } from "./views/HomeView.js";
 import { ProjectsView } from "./views/ProjectsView.js";
 import { ProjectView } from "./views/ProjectView.js";
@@ -263,6 +262,9 @@ export function App() {
     setTheme(nextTheme);
     localStorage.setItem("adpilot-locale", data.locale);
     localStorage.setItem("adpilot-theme", nextTheme);
+    // Model and capability states depend on settings (chat/vision auth) —
+    // reload so a saved model switch takes effect immediately, not next launch.
+    void loadState();
   }
 
   function toggleSidebarHidden() {
@@ -761,6 +763,8 @@ export function App() {
             focusArtifactId={focusArtifactId}
             initialMission={codeHandoff?.projectId === activeProjectId ? codeHandoff.mission : undefined}
             onBack={() => setMainView("projects")}
+            onModelSaved={applySettings}
+            onOpenSettings={() => openSettings("models")}
             onSubmitGoal={submitAndChat}
           />
         ) : mainView !== "chat" ? (
@@ -773,6 +777,8 @@ export function App() {
                 onSubmitGoal={submitAndChat}
                 onSubmitCode={(message) => void submitCodeProject(message)}
                 onSubmitProjectGoal={submitProjectGoal}
+                onModelSaved={applySettings}
+                onOpenSettings={() => openSettings("models")}
               />
             )}
             {mainView === "projects" && (
@@ -832,8 +838,9 @@ export function App() {
               </section>
             </>
           ) : state.messages.length === 0 ? (
-            <div className="empty-stage">
-              <MissionZero onPick={(prompt) => void submitGoal(prompt)} guiReady={state.models.guiConfigured} clients={state.clients.length} locale={locale} />
+            <div className="chat-empty">
+              <LogoMark size={26} />
+              <p>{copy.chatEmptyHint}</p>
             </div>
           ) : null}
 
@@ -888,7 +895,7 @@ export function App() {
             autonomy={autonomy}
             autonomyDisabled={!clientId}
             onToggleAutonomy={() => void toggleAutonomy()}
-            modelLabel={modelChipLabel(state.models.fast, copy.unassigned)}
+            onModelSaved={applySettings}
             onOpenModelSettings={() => openSettings("models")}
           />
         </div>

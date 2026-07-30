@@ -47,6 +47,8 @@ import {
   type KernelGoal,
   type ProjectDetail
 } from "../workspace.js";
+import type { SettingsData } from "../SettingsPanel.js";
+import { ModelPicker } from "../components/ModelPicker.js";
 import type { ConversationMessage, ProductSession } from "../types.js";
 import { Badge, Button, Tooltip } from "../ui.js";
 import {
@@ -87,7 +89,7 @@ type RightTab = "terminal" | "git" | "preview";
  * project/goal/task binding. Right — collapsible dynamic panel
  * (terminal / git / artifact preview).
  */
-export function ProjectView({ locale, clientId, projectId, focusArtifactId, initialMission, onBack }: {
+export function ProjectView({ locale, clientId, projectId, focusArtifactId, initialMission, onBack, onModelSaved, onOpenSettings }: {
   locale: AppLocale;
   clientId: string;
   projectId: string;
@@ -96,6 +98,8 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
   /** Prefill the mission composer (e.g. Home's Code hand-off). */
   initialMission?: string | undefined;
   onBack: () => void;
+  onModelSaved: (data: SettingsData) => void;
+  onOpenSettings: () => void;
   /** @deprecated Missions no longer hand off to the chat view; kept for App's prop contract. */
   onSubmitGoal?: (message: string) => void;
 }) {
@@ -359,6 +363,7 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
 
           <div className="project-chat-cta">
             <div className="project-chat-row">
+              <ModelPicker locale={locale} settingsLabel={consoleCopy.configureModel} onSaved={onModelSaved} onOpenSettings={onOpenSettings} />
               <input
                 value={mission}
                 placeholder={copy.chatCtaPlaceholder}

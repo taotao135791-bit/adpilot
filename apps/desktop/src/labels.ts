@@ -84,6 +84,7 @@ const zh = {
   visualChannel: "视觉通道",
   awaitingSignal: "等待任务信号",
   modelNotConfigured: "所选代码模型不支持图像或缺少凭据",
+  chatEmptyHint: "输入消息开始对话，或从左侧选择已有会话。",
   currentMicroTask: "当前微任务",
   standby: "待命",
   oneAction: "每次只执行一个经过验证的视觉动作",
@@ -312,6 +313,7 @@ const en: Record<keyof typeof zh, string> = {
   visualChannel: "Visual channel",
   awaitingSignal: "Awaiting mission signal",
   modelNotConfigured: "Selected code models lack vision or credentials",
+  chatEmptyHint: "Type a message to start, or pick a session on the left.",
   currentMicroTask: "Current micro-task",
   standby: "Standby",
   oneAction: "One verified visual action at a time",
@@ -482,25 +484,6 @@ export type ConsoleCopy = { readonly [K in keyof typeof zh]: string };
 
 export function getCopy(locale: AppLocale): ConsoleCopy {
   return locale === "zh-CN" ? zh : en;
-}
-
-/**
- * Empty-state suggestion cards: a short display title plus the exact
- * directive sent when the card is picked. Clicking a card submits the
- * prompt immediately (Codex-style), it does not stage text in the composer.
- */
-export function starterCards(locale: AppLocale): { title: string; prompt: string }[] {
-  return locale === "zh-CN" ? [
-    { title: "诊断投放不足", prompt: "检查投放不足的根因，并给出可审批的预算建议" },
-    { title: "审计转化测量", prompt: "审计转化测量是否可信，列出缺失证据" },
-    { title: "解析 CPA 异常", prompt: "找出近 7 天 CPA 异常上升的主要驱动因素" },
-    { title: "生成投放日报", prompt: "/report daily" }
-  ] : [
-    { title: "Diagnose underspend", prompt: "Find the cause of underspend and propose an approvable budget change" },
-    { title: "Audit conversion tracking", prompt: "Audit conversion measurement and list the missing evidence" },
-    { title: "Explain the CPA spike", prompt: "Explain the primary drivers of the seven-day CPA increase" },
-    { title: "Daily performance report", prompt: "/report daily" }
-  ];
 }
 
 /* ------------------------------------------------------------------ */
@@ -677,6 +660,7 @@ export function settingsCopy(locale: AppLocale): SettingsCopy {
 
 const computerZh = {
   ready: "系统就绪", needsSetup: "需要配置", readyTitle: "电脑控制已就绪", setupTitle: "电脑控制尚未就绪",
+  visionHint: "无需专门的视觉模型：在模型配置里选一个带「视觉」标记的代码模型（日常或深度，可两个 Provider），保存并重启后即自动启用定位与校验链路。",
   permission: "当前权限", activePrivacy: "生效中的隐私模式", localOnly: "仅本机", masked: "最小化传输",
   modelRoute: "自动模型路由", modelRouteBody: "系统按任务难度与失败次数自动选择模型。", automatic: "自动",
   dailyModel: "日常对话模型", deepModel: "深度推理模型", groundingModel: "界面定位模型", verificationModel: "独立校验模型",
@@ -694,6 +678,7 @@ const computerZh = {
 
 const computerEn: Record<keyof typeof computerZh, string> = {
   ready: "System ready", needsSetup: "Setup required", readyTitle: "Computer use is ready", setupTitle: "Computer use is not ready",
+  visionHint: "No dedicated vision model needed: pick any code model flagged “vision” in model settings (daily or deep role — two providers are fine), save and restart, and grounding plus verification come up automatically.",
   permission: "Current permission", activePrivacy: "Active privacy mode", localOnly: "Local only", masked: "Minimized transfer",
   modelRoute: "Automatic model routing", modelRouteBody: "AdPilot selects a model from task complexity and previous failures.", automatic: "Automatic",
   dailyModel: "Daily conversation model", deepModel: "Deep reasoning model", groundingModel: "GUI grounding model", verificationModel: "Independent verifier",
@@ -1167,6 +1152,10 @@ const workspaceZh = {
   homeArchiveEmpty: "没有归档会话",
   selectProject: "选择项目",
   justChat: "仅对话（不关联项目）",
+  modelPickerLabel: "选择模型",
+  modelProviderNeedsKey: "未配置密钥",
+  modelVisionCapable: "视觉",
+  modelRestartHint: "重启生效",
   homeQuickSubmit: "开始",
   homeProjects: "进行中的项目",
   homeProjectsEmpty: "还没有项目",
@@ -1475,6 +1464,10 @@ const workspaceEn: Record<keyof typeof workspaceZh, string> = {
   homeArchiveEmpty: "No archived sessions",
   selectProject: "Select project",
   justChat: "Just chat (no project)",
+  modelPickerLabel: "Choose model",
+  modelProviderNeedsKey: "no API key",
+  modelVisionCapable: "vision",
+  modelRestartHint: "Restart to apply",
   homeQuickSubmit: "Start",
   homeProjects: "Active projects",
   homeProjectsEmpty: "No projects yet",

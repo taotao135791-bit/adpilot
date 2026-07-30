@@ -1,21 +1,25 @@
 import { useCallback, useRef, useState } from "react";
 import { workspaceCopy, type AppLocale } from "../labels.js";
 import type { KernelProject } from "../workspace.js";
+import type { SettingsData } from "../SettingsPanel.js";
 import { Button } from "../ui.js";
 import { IconChevronDown, IconDocLines, IconPlus, IconSend } from "../icons.js";
+import { ModelPicker } from "../components/ModelPicker.js";
 
 /**
  * Home: a centered hero — display heading, workspace context, the project
  * scope picker, and the ask/code composer. Sessions live in the sidebar;
  * there is intentionally no second feed here.
  */
-export function HomeView({ locale, workspaceName, projects, onSubmitGoal, onSubmitCode, onSubmitProjectGoal }: {
+export function HomeView({ locale, workspaceName, projects, onSubmitGoal, onSubmitCode, onSubmitProjectGoal, onModelSaved, onOpenSettings }: {
   locale: AppLocale;
   workspaceName: string;
   projects: KernelProject[];
   onSubmitGoal: (message: string) => void;
   onSubmitCode: (message: string) => void;
   onSubmitProjectGoal: (projectId: string, message: string) => void;
+  onModelSaved: (data: SettingsData) => void;
+  onOpenSettings: () => void;
 }) {
   const copy = workspaceCopy(locale);
   const [goal, setGoal] = useState("");
@@ -102,7 +106,7 @@ export function HomeView({ locale, workspaceName, projects, onSubmitGoal, onSubm
             }}
           />
           <div className="home-composer-row">
-            <Button size="sm" variant="subtle" className="icon-button" icon={<IconPlus size={14} />} aria-label={copy.homeAttach} disabled />
+            <ModelPicker locale={locale} settingsLabel={copy.settings} onSaved={onModelSaved} onOpenSettings={onOpenSettings} />
             <div className="home-mode" role="group" aria-label="mode">
               <button type="button" className="home-mode-item" data-active="true" onClick={() => void submit()}>Ask</button>
               <button
@@ -116,7 +120,6 @@ export function HomeView({ locale, workspaceName, projects, onSubmitGoal, onSubm
                 }}
               >{copy.homeCodeMode}</button>
             </div>
-            <kbd className="home-kbd" title={copy.homeSlashHint}>⌘K</kbd>
             <span className="home-send-hint">{copy.homeSendHint}</span>
             <button
               type="button"

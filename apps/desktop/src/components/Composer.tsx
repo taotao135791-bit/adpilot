@@ -4,8 +4,10 @@ import { isNoopCompletion, matchSlashCompletions, slashCommandSpecs, type SlashC
 import { composerKeyAction } from "../composerKeys.js";
 import type { AutonomyMode } from "../autonomy.js";
 import type { Client } from "../types.js";
+import type { SettingsData } from "../SettingsPanel.js";
 import { Button, Textarea, Tooltip } from "../ui.js";
-import { IconBolt, IconChevronDown, IconChip, IconPlan, IconPlus, IconSend, IconShieldCheck } from "../icons.js";
+import { IconBolt, IconChevronDown, IconPlan, IconPlus, IconSend, IconShieldCheck } from "../icons.js";
+import { ModelPicker } from "./ModelPicker.js";
 
 /** Auto-resize ceiling: eight 14px/1.55 lines ≈ 174px, rounded up. */
 const MAX_TEXTAREA_HEIGHT = 176;
@@ -25,7 +27,7 @@ const MAX_TEXTAREA_HEIGHT = 176;
  * call their endpoints and render the state; enforcement always lives in
  * the runtime, never in these controls.
  */
-export function Composer({ copy, locale, goal, onGoalChange, chatConfigured, submitting, onSubmit, onConfigureModel, planMode = false, planModeDisabled = false, onTogglePlanMode, clients, clientId, onSelectClient, autonomy = "guarded", autonomyDisabled = false, onToggleAutonomy, modelLabel, onOpenModelSettings }: {
+export function Composer({ copy, locale, goal, onGoalChange, chatConfigured, submitting, onSubmit, onConfigureModel, planMode = false, planModeDisabled = false, onTogglePlanMode, clients, clientId, onSelectClient, autonomy = "guarded", autonomyDisabled = false, onToggleAutonomy, onModelSaved, onOpenModelSettings }: {
   copy: ConsoleCopy;
   locale: AppLocale;
   goal: string;
@@ -44,7 +46,7 @@ export function Composer({ copy, locale, goal, onGoalChange, chatConfigured, sub
   autonomy?: AutonomyMode;
   autonomyDisabled?: boolean;
   onToggleAutonomy?: () => void;
-  modelLabel: string;
+  onModelSaved: (data: SettingsData) => void;
   onOpenModelSettings: () => void;
 }) {
   const [completionIndex, setCompletionIndex] = useState(0);
@@ -210,12 +212,7 @@ export function Composer({ copy, locale, goal, onGoalChange, chatConfigured, sub
             )}
           </div>
           <div className="composer-actions">
-            <Tooltip content={copy.modelChipHint} side="top">
-              <button type="button" className="chip chip-button" onClick={onOpenModelSettings}>
-                <IconChip size={12} />
-                <span>{modelLabel}</span>
-              </button>
-            </Tooltip>
+            <ModelPicker locale={locale} settingsLabel={copy.configureModel} onSaved={onModelSaved} onOpenSettings={onOpenModelSettings} />
             <Button
               variant="primary"
               className="launch-button"

@@ -188,6 +188,7 @@ export function ComputerUseSettings({
         <span className="computer-state-label">{runtime.guiConfigured ? copy.ready : copy.needsSetup}</span>
         <h3>{runtime.guiConfigured ? copy.readyTitle : copy.setupTitle}</h3>
         <p>{route}</p>
+        {!runtime.guiConfigured && <p className="computer-readiness-hint">{copy.visionHint}</p>}
       </div>
       <dl>
         <div><dt>{copy.permission}</dt><dd>{permissionLabel(runtime.permission ?? "OBSERVE", locale)}</dd></div>
