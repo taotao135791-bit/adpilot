@@ -442,6 +442,35 @@ describe("automation tools (real scheduler and stores)", () => {
     const listed = await call("automation.list", { state: "active" }, ctx, deps);
     expect((listed.data as { count: number }).count).toBe(1);
   });
+
+  it("rejects unimplemented event triggers and cross-workspace automation ids", async () => {
+    const { deps } = await workspace();
+    const owner = makeCtx({ workspaceId: "client-a" });
+    const created = await call("automation.create", {
+      title: "Owner schedule",
+      trigger: { kind: "schedule", cron: { minute: "0", hour: "9", dom: "*", month: "*", dow: "*" } },
+      action: { kind: "notify", message: "owner only" }
+    }, owner, deps);
+    const automationId = (created.data as { automation: { id: string } }).automation.id;
+
+    const event = await call("automation.create", {
+      title: "Unsupported event",
+      trigger: { kind: "event", event: "campaign.changed" },
+      action: { kind: "notify", message: "never" }
+    }, owner, deps);
+    expect(event.error).toMatchObject({ code: "INVALID_PARAMS" });
+
+    const foreign = makeCtx({ workspaceId: "client-b" });
+    for (const [tool, params] of [
+      ["automation.pause", { automationId }],
+      ["automation.resume", { automationId }],
+      ["automation.run_now", { automationId }],
+      ["automation.get_runs", { automationId }]
+    ] as const) {
+      const result = await call(tool, params, foreign, deps);
+      expect(result.error, tool).toMatchObject({ code: "AUTOMATION_NOT_FOUND" });
+    }
+  });
 });
 
 describe("workflow tools (real store and runner)", () => {

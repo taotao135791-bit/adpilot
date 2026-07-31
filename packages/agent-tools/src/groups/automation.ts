@@ -3,7 +3,7 @@ import { z } from "zod";
 import {
   Automation,
   AutomationAction,
-  AutomationTrigger,
+  CronSpec,
   nextFireAt,
   type Automation as AutomationValue
 } from "@adpilot/automations";
@@ -19,14 +19,18 @@ const CreateParams = z.object({
   title: z.string().min(1).max(256),
   description: z.string().max(4000).optional(),
   projectId: z.string().uuid().optional(),
-  trigger: AutomationTrigger,
+  // Event triggers are intentionally excluded until the scheduler has an
+  // event bus. Exposing them would create automations that can never fire.
+  trigger: z.object({ kind: z.literal("schedule"), cron: CronSpec }).strict(),
   action: AutomationAction,
   maxRunsPerDay: z.number().int().min(1).max(1000).optional(),
   idempotencyWindowSeconds: z.number().int().min(1).max(31_536_000).optional()
 });
 
 /**
- * Automation tools: create, list, pause/resume, run now, and inspect runs.
+ * Automation tools: create UTC schedules, list, pause/resume, run now, and
+ * inspect runs. Event triggers stay out of the tool contract until the
+ * scheduler can execute them.
  * Only the three sanctioned action kinds exist (daily-brief, create-task,
  * notify) — the AutomationAction schema enforces that. Creating and state
  * changes go through the automation store (the scheduler owns run dispatch;
@@ -36,14 +40,20 @@ export function createAutomationTools(): AgentToolDefinition[] {
   return [
     {
       name: "automation.create",
-      description: "Create an active automation: a schedule (5-field UTC cron) or event trigger plus one action — daily-brief, create-task, or notify. Mutation actions are approval-gated by the built-in guard.",
+      description: "Create an active UTC cron automation with one action — daily-brief, create-task, or notify. Event triggers are not available yet. Mutation actions are approval-gated by the built-in guard.",
       capabilityPack: "automation",
       permission: "write",
       parameters: CreateParams,
       execute: async (raw, ctx, deps) => {
         const params = CreateParams.parse(raw);
-        const fireAt = params.trigger.kind === "schedule" ? nextFireAt(params.trigger.cron, deps.now()) : undefined;
-        if (params.trigger.kind === "schedule" && !fireAt) {
+        if (params.projectId !== undefined) {
+          const project = await deps.kernel.getProject(params.projectId);
+          if (!project || project.workspaceId !== ctx.workspaceId) {
+            throw toolError("PROJECT_NOT_FOUND", `project not found in this workspace: ${params.projectId}`);
+          }
+        }
+        const fireAt = nextFireAt(params.trigger.cron, deps.now());
+        if (!fireAt) {
           throw toolError("INVALID", "the cron schedule selects no future fire time");
         }
         const now = deps.now().toISOString();
@@ -61,7 +71,7 @@ export function createAutomationTools(): AgentToolDefinition[] {
           },
           state: "active",
           idempotencyWindowSeconds: params.idempotencyWindowSeconds ?? 3_600,
-          ...(fireAt ? { nextFireAt: fireAt.toISOString() } : {}),
+          nextFireAt: fireAt.toISOString(),
           runCount: 0,
           createdAt: now,
           updatedAt: now,
@@ -101,7 +111,7 @@ export function createAutomationTools(): AgentToolDefinition[] {
       parameters: IdParams,
       execute: async (raw, ctx, deps) => {
         const params = IdParams.parse(raw);
-        const automation = await transition(params.automationId, "paused", deps);
+        const automation = await transition(params.automationId, "paused", ctx.workspaceId, deps);
         return succeed("automation.pause", ctx, { automation });
       }
     },
@@ -113,7 +123,7 @@ export function createAutomationTools(): AgentToolDefinition[] {
       parameters: IdParams,
       execute: async (raw, ctx, deps) => {
         const params = IdParams.parse(raw);
-        const automation = await transition(params.automationId, "active", deps);
+        const automation = await transition(params.automationId, "active", ctx.workspaceId, deps);
         return succeed("automation.resume", ctx, { automation });
       }
     },
@@ -125,6 +135,7 @@ export function createAutomationTools(): AgentToolDefinition[] {
       parameters: IdParams,
       execute: async (raw, ctx, deps) => {
         const params = IdParams.parse(raw);
+        await requireAutomation(params.automationId, ctx.workspaceId, deps);
         const run = await deps.automations.runNow(params.automationId);
         return succeed("automation.run_now", ctx, { run });
       }
@@ -141,6 +152,7 @@ export function createAutomationTools(): AgentToolDefinition[] {
         const params = IdParams.extend({
           status: z.enum(["running", "succeeded", "failed", "skipped-duplicate", "waiting-approval"]).optional()
         }).parse(raw);
+        await requireAutomation(params.automationId, ctx.workspaceId, deps);
         const runs = await automationSchedulerDeps(deps.automations).runs.list({
           automationId: params.automationId,
           ...(params.status !== undefined ? { status: params.status } : {})
@@ -154,11 +166,11 @@ export function createAutomationTools(): AgentToolDefinition[] {
 async function transition(
   automationId: string,
   state: "active" | "paused",
+  workspaceId: string,
   deps: AgentToolDeps
 ): Promise<AutomationValue> {
   const store = automationSchedulerDeps(deps.automations).automations;
-  const automation = await store.get(automationId);
-  if (!automation) throw toolError("AUTOMATION_NOT_FOUND", `automation not found: ${automationId}`);
+  const automation = await requireAutomation(automationId, workspaceId, deps);
   if (automation.state === state) return automation;
   const nextFire = state === "active" && automation.trigger.kind === "schedule"
     ? nextFireAt(automation.trigger.cron, deps.now())
@@ -172,4 +184,16 @@ async function transition(
   });
   await store.save(next);
   return next;
+}
+
+async function requireAutomation(
+  automationId: string,
+  workspaceId: string,
+  deps: AgentToolDeps
+): Promise<AutomationValue> {
+  const automation = await automationSchedulerDeps(deps.automations).automations.get(automationId);
+  if (!automation || automation.workspaceId !== workspaceId) {
+    throw toolError("AUTOMATION_NOT_FOUND", `automation not found in this workspace: ${automationId}`);
+  }
+  return automation;
 }
