@@ -22,6 +22,15 @@ afterEach(async () => {
 describe("desktop native REST boundary", () => {
   it("requires the instance cookie and same-origin browser context", async () => {
     const { server, productSession } = await boot();
+    const settingsWithoutCookie = await server.inject({ method: "GET", url: "/api/settings" });
+    expect(settingsWithoutCookie.statusCode).toBe(403);
+    expect(settingsWithoutCookie.json()).toMatchObject({ code: "DESKTOP_NATIVE_FORBIDDEN" });
+    const settingsWithCookie = await server.inject({
+      method: "GET",
+      url: "/api/settings",
+      headers: { cookie, "sec-fetch-site": "same-origin" }
+    });
+    expect(settingsWithCookie.statusCode).toBe(200);
     const missing = await server.inject({ method: "GET", url: "/api/desktop-native/permissions" });
     expect(missing.statusCode).toBe(403);
     const crossSite = await server.inject({

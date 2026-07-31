@@ -187,10 +187,11 @@ export async function createServer(system: AdPilotSystem, options: {
     }
     app.addHook("onRequest", async (request, reply) => {
       const path = request.url.split("?")[0]!;
-      const productComputerPermission = /^\/api\/clients\/[^/]+\/sessions\/[^/]+\/computer-use$/.test(path);
-      if (!path.startsWith("/api/desktop-native/")
-        && !path.startsWith("/api/computer/")
-        && !productComputerPermission) return;
+      // The desktop server is a loopback capability endpoint, not a public
+      // web API. Bind every API request (settings, files, terminal, ads,
+      // plugins, and Computer Use alike) to the random token held by this
+      // exact Electron instance so another local process cannot reuse it.
+      if (!path.startsWith("/api/")) return;
       return requireDesktopInstanceRequest(request, reply);
     });
   }
