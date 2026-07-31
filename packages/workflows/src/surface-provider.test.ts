@@ -71,7 +71,14 @@ function makeRequest(): StepExecutionRequest {
   const step = makeStep();
   const workflow = makeWorkflow(step);
   const run = makeRun(workflow, step);
-  return { workflow, run, step, renderedAction: step.action, expectedResult: step.expectedResult };
+  return {
+    workflow,
+    run,
+    step,
+    renderedAction: step.action,
+    expectedResult: step.expectedResult,
+    signal: new AbortController().signal
+  };
 }
 
 function makeConnectedSession(overrides: Record<string, unknown> = {}): BrowserSession {
@@ -116,12 +123,17 @@ describe("browserSessionSurfaceProvider", () => {
   it("resolves the exact connected browser session into the step surface context", async () => {
     const session = makeConnectedSession();
     const provider = browserSessionSurfaceProvider({ list: async () => [session] });
+    const request = makeRequest();
 
-    const context = await provider(makeRequest());
+    const context = await provider(request);
 
     expect(context).toBeDefined();
     expect(context?.clientId).toBe("personal");
     expect(context?.platform).toBe("google_ads");
+    expect(context?.binding).toEqual({
+      adPilotSessionId: request.run.id,
+      browserSessionId: session.sessionId
+    });
     expect(context?.surface).toEqual({
       app: "Google Chrome",
       applicationId: "com.google.Chrome",
@@ -253,5 +265,43 @@ describe("browserSessionSurfaceProvider", () => {
       url: "https://ads.google.com/aw/campaigns",
       origin: "https://ads.google.com"
     });
+  });
+
+  it("bridges workflow cancellation into the exact visual runtime binding", async () => {
+    const session = makeConnectedSession();
+    let started: () => void = () => undefined;
+    const runtimeStarted = new Promise<void>((resolve) => { started = resolve; });
+    let finish: (value: unknown) => void = () => undefined;
+    const runtime = {
+      runMicroTask: vi.fn(async () => {
+        started();
+        return new Promise((resolve) => { finish = resolve; });
+      }),
+      cancel: vi.fn(() => {
+        finish({
+          status: "failed",
+          attempts: 0,
+          blocker: "user cancelled",
+          blockerCode: "CANCELLED"
+        });
+      })
+    } as unknown as VisualComputerRuntime;
+    const executor = new VisualRuntimeStepExecutor(
+      runtime,
+      browserSessionSurfaceProvider({ list: async () => [session] })
+    );
+    const controller = new AbortController();
+    const request = makeRequest();
+    const executing = executor.executeStep({ ...request, signal: controller.signal });
+    await runtimeStarted;
+
+    controller.abort(new Error("workflow run cancelled by user"));
+    const outcome = await executing;
+
+    expect(runtime.cancel).toHaveBeenCalledWith({
+      adPilotSessionId: request.run.id,
+      browserSessionId: session.sessionId
+    });
+    expect(outcome).toMatchObject({ status: "failed", error: "user cancelled" });
   });
 });

@@ -337,11 +337,19 @@ describe("workflow REST routes", () => {
     expect(invalidResume.statusCode).toBe(400);
     expect(invalidResume.json().code).toBe("RUN_NOT_PAUSED");
 
-    // cancel a run whose executor is blocked mid-step
-    let release: (() => void) | undefined;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    executor.push(async () => {
-      await gate;
+    // Cancel only after the executor is observably inside the step. This
+    // removes the former test race and proves the durable cancellation also
+    // reaches the in-flight executor's AbortSignal.
+    let entered: () => void = () => undefined;
+    const executorEntered = new Promise<void>((resolve) => { entered = resolve; });
+    let observedSignal: AbortSignal | undefined;
+    executor.push(async (request) => {
+      observedSignal = request.signal;
+      entered();
+      await new Promise<void>((resolve) => {
+        if (request.signal?.aborted) resolve();
+        else request.signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
       return { status: "succeeded", verification: { matched: true, confidence: 0.95, reason: "gated" } };
     });
     const blocking = await server.inject({
@@ -350,6 +358,7 @@ describe("workflow REST routes", () => {
       payload: { workspaceId: "personal", parameters: {}, approvalId }
     });
     const blockingRunId = blocking.json().id;
+    await executorEntered;
     const cancelled = await server.inject({
       method: "POST",
       url: `/api/workflow-runs/${blockingRunId}/cancel`,
@@ -357,7 +366,7 @@ describe("workflow REST routes", () => {
     });
     expect(cancelled.statusCode).toBe(200);
     expect(cancelled.json().status).toBe("cancelled");
-    release!();
+    expect(observedSignal?.aborted).toBe(true);
     const after = await waitForRun(server, blockingRunId, ["cancelled"]);
     expect(after.status).toBe("cancelled");
   });

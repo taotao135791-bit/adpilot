@@ -16,6 +16,7 @@ import {
   MemoryWorkflowStore,
   Workflow,
   WorkflowError,
+  WorkflowRun,
   WorkflowRecorder,
   WorkflowRunner,
   publishAsSkill,
@@ -23,6 +24,9 @@ import {
   type StepExecutionOutcome,
   type StepExecutionRequest,
   type StepExecutor,
+  type WorkflowRun as WorkflowRunValue,
+  type WorkflowRunFilter,
+  type WorkflowRunStore,
   type WorkflowStep,
   type WorkflowStepAction
 } from "./index.js";
@@ -146,6 +150,58 @@ class FakeExecutor implements StepExecutor {
     const next = this.plan.shift();
     const outcome = typeof next === "function" ? next(request) : next;
     return outcome ?? ok(`step ${request.step.order} verified`);
+  }
+}
+
+/**
+ * Deterministically opens the old lost-update window: execute() has built a
+ * transition from revision N but cannot submit its CAS until the test lets it.
+ * cancel() is not blocked, so it can commit N+1 first.
+ */
+class BlockingRunStore implements WorkflowRunStore {
+  private readonly inner = new MemoryWorkflowRunStore();
+  private blockNextExecutionTransition = true;
+  private readonly entered: () => void;
+  private readonly releaseBlocked: () => void;
+  readonly executionTransitionEntered: Promise<void>;
+  private readonly releaseGate: Promise<void>;
+
+  constructor() {
+    let entered: () => void = () => undefined;
+    let releaseBlocked: () => void = () => undefined;
+    this.executionTransitionEntered = new Promise<void>((resolveEntered) => {
+      entered = resolveEntered;
+    });
+    this.releaseGate = new Promise<void>((resolveRelease) => {
+      releaseBlocked = resolveRelease;
+    });
+    this.entered = entered;
+    this.releaseBlocked = releaseBlocked;
+  }
+
+  create(run: WorkflowRunValue): Promise<void> {
+    return this.inner.create(run);
+  }
+
+  async compareAndSwap(run: WorkflowRunValue, expectedRevision: number): Promise<void> {
+    if (this.blockNextExecutionTransition && run.status !== "cancelled") {
+      this.blockNextExecutionTransition = false;
+      this.entered();
+      await this.releaseGate;
+    }
+    await this.inner.compareAndSwap(run, expectedRevision);
+  }
+
+  get(id: string): Promise<WorkflowRunValue | undefined> {
+    return this.inner.get(id);
+  }
+
+  list(filter?: WorkflowRunFilter): Promise<WorkflowRunValue[]> {
+    return this.inner.list(filter);
+  }
+
+  releaseExecutionTransition(): void {
+    this.releaseBlocked();
   }
 }
 
@@ -357,6 +413,47 @@ describe("WorkflowRunner", () => {
     expect(cancelled.status).toBe("cancelled");
     await expect(runner.resume(created.id)).rejects.toMatchObject({ code: "RUN_NOT_PAUSED" });
   });
+
+  it("makes cancellation win over a stale in-flight transition and keeps it terminal", async () => {
+    const step = makeStep(1, { kind: "click" });
+    const workflow = workflowFor([step]);
+    const workflows = new MemoryWorkflowStore();
+    const runs = new BlockingRunStore();
+    const executor = new FakeExecutor();
+    await workflows.save(workflow);
+    const runner = new WorkflowRunner({ workflows, runs, executor });
+    const created = await runner.createRun({
+      workflowId: workflow.id,
+      workspaceId: "personal",
+      parameters: {}
+    });
+
+    const executing = runner.execute(created.id);
+    await runs.executionTransitionEntered;
+    const cancelled = await runner.cancel(created.id);
+    expect(cancelled.status).toBe("cancelled");
+
+    // Release the stale revision-1 "step is running" update only after cancel
+    // committed revision 2. Its CAS must fail instead of restoring `running`.
+    runs.releaseExecutionTransition();
+    const settled = await executing;
+    expect(settled.status).toBe("cancelled");
+    expect(executor.calls).toHaveLength(0);
+
+    const persisted = await runs.get(created.id);
+    expect(persisted).toMatchObject({
+      status: "cancelled",
+      revision: cancelled.revision,
+      failureReason: "cancelled by user"
+    });
+    await expect(runs.compareAndSwap({
+      ...persisted!,
+      status: "completed",
+      updatedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      revision: persisted!.revision + 1
+    }, persisted!.revision)).rejects.toMatchObject({ code: "WORKFLOW_RUN_TERMINAL" });
+  });
 });
 
 /* ------------------------------------------------------------------------ */
@@ -418,7 +515,7 @@ describe("workflow file stores", () => {
     expect(await workflows.list({ workspaceId: "other" })).toHaveLength(0);
 
     const now = new Date().toISOString();
-    await runs.save({
+    await runs.create({
       id: randomUUID(),
       workflowId: workflow.id,
       workflowRevision: 1,
@@ -450,6 +547,57 @@ describe("workflow file stores", () => {
     await symlink(real, join(parent, "definitions"), "dir");
     const workflows = new FileWorkflowStore(root);
     await expect(workflows.save(workflowFor([makeStep(1, { kind: "click" })]))).rejects.toThrow(/symlink/);
+  });
+
+  it("serializes compare-and-swap across file-store instances and preserves cancellation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-workflow-run-cas-"));
+    roots.push(root);
+    const workflow = workflowFor([makeStep(1, { kind: "click" })]);
+    const first = new FileWorkflowRunStore(root);
+    const second = new FileWorkflowRunStore(root);
+    const now = new Date().toISOString();
+    const run = WorkflowRun.parse({
+      id: randomUUID(),
+      workflowId: workflow.id,
+      workflowRevision: workflow.revision,
+      workspaceId: workflow.workspaceId,
+      parameters: {},
+      status: "running",
+      steps: [],
+      evidenceIds: [],
+      startedAt: now,
+      createdAt: now,
+      updatedAt: now,
+      revision: 1
+    });
+    await first.create(run);
+    const cancelled = WorkflowRun.parse({
+      ...run,
+      status: "cancelled",
+      failureReason: "cancelled by user",
+      completedAt: now,
+      revision: 2
+    });
+    const staleCompletion = WorkflowRun.parse({
+      ...run,
+      status: "completed",
+      completedAt: now,
+      revision: 2
+    });
+
+    const cancelWrite = first.compareAndSwap(cancelled, 1);
+    const staleWrite = second.compareAndSwap(staleCompletion, 1);
+    await Promise.all([
+      expect(cancelWrite).resolves.toBeUndefined(),
+      expect(staleWrite).rejects.toMatchObject({
+        code: "WORKFLOW_RUN_TERMINAL",
+        status: "cancelled"
+      })
+    ]);
+    await expect(second.get(run.id)).resolves.toMatchObject({
+      status: "cancelled",
+      revision: 2
+    });
   });
 });
 

@@ -8,7 +8,12 @@ import {
   type WorkflowStepAction,
   type WorkflowStepResult
 } from "./model.js";
-import type { WorkflowRunStore, WorkflowStore } from "./store.js";
+import {
+  WorkflowRunRevisionConflictError,
+  WorkflowRunTerminalStateError,
+  type WorkflowRunStore,
+  type WorkflowStore
+} from "./store.js";
 import type { StepExecutionOutcome, StepExecutor } from "./executor.js";
 
 /**
@@ -56,7 +61,7 @@ export class WorkflowRunner {
   private readonly now: () => Date;
   private readonly id: () => string;
   private readonly minConfidence: number;
-  private readonly active = new Set<string>();
+  private readonly active = new Map<string, AbortController>();
 
   constructor(options: WorkflowRunnerOptions) {
     this.workflows = options.workflows;
@@ -95,7 +100,7 @@ export class WorkflowRunner {
       updatedAt: nowIso,
       revision: 1
     });
-    await this.runs.save(run);
+    await this.runs.create(run);
     return run;
   }
 
@@ -104,9 +109,10 @@ export class WorkflowRunner {
     if (this.active.has(runId)) {
       throw new WorkflowError(`workflow run is already executing: ${runId}`, "RUN_ACTIVE");
     }
-    this.active.add(runId);
+    const controller = new AbortController();
+    this.active.set(runId, controller);
     try {
-      return await this.executeLoop(runId);
+      return await this.executeLoop(runId, controller.signal);
     } finally {
       this.active.delete(runId);
     }
@@ -121,23 +127,52 @@ export class WorkflowRunner {
   }
 
   async cancel(runId: string): Promise<WorkflowRunValue> {
-    const run = await this.requireRun(runId);
-    if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") {
-      return run;
+    // A run may transition while cancel is reading it. Retry optimistic
+    // conflicts until cancellation linearizes or another terminal state wins.
+    for (;;) {
+      const run = await this.requireRun(runId);
+      if (run.status === "completed" || run.status === "failed") return run;
+      if (run.status === "cancelled") {
+        this.abortActiveRun(runId);
+        return run;
+      }
+      const cancelled = WorkflowRun.parse({
+        ...run,
+        status: "cancelled",
+        completedAt: this.now().toISOString(),
+        failureReason: "cancelled by user",
+        updatedAt: this.now().toISOString(),
+        revision: run.revision + 1
+      });
+      try {
+        await this.runs.compareAndSwap(cancelled, run.revision);
+        this.abortActiveRun(runId);
+        return cancelled;
+      } catch (error) {
+        if (error instanceof WorkflowRunRevisionConflictError) continue;
+        if (error instanceof WorkflowRunTerminalStateError) {
+          const current = await this.requireRun(runId);
+          if (current.status === "cancelled") {
+            this.abortActiveRun(runId);
+            return current;
+          }
+        }
+        throw error;
+      }
     }
-    const cancelled = await this.persist(run, {
-      status: "cancelled",
-      completedAt: this.now().toISOString(),
-      failureReason: "cancelled by user"
-    });
-    return cancelled;
   }
 
-  private async executeLoop(runId: string): Promise<WorkflowRunValue> {
+  private async executeLoop(runId: string, signal: AbortSignal): Promise<WorkflowRunValue> {
     let run = await this.requireRun(runId);
     if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") return run;
     const workflow = await this.requireWorkflow(run.workflowId);
-    run = await this.persist(run, { status: "running" });
+    // Fresh runs are already running. Resume is the only path that needs this
+    // transition; its CAS cannot overwrite a cancellation that landed after
+    // resume() read the paused record.
+    if (run.status === "paused") {
+      run = await this.persist(run, { status: "running" });
+      if (run.status === "cancelled") return run;
+    }
     const orderedSteps = [...workflow.steps].sort((left, right) => left.order - right.order);
     for (const step of orderedSteps) {
       // Honor an external cancel between steps.
@@ -163,6 +198,12 @@ export class WorkflowRunner {
         status: "running",
         startedAt: this.now().toISOString()
       });
+      if (run.status === "cancelled") return run;
+      if (signal.aborted) {
+        run = await this.requireRun(runId);
+        if (run.status === "cancelled") return run;
+        throw signal.reason instanceof Error ? signal.reason : new Error("workflow execution aborted");
+      }
       let outcome: StepExecutionOutcome;
       try {
         outcome = await this.executor.executeStep({
@@ -171,6 +212,7 @@ export class WorkflowRunner {
           step,
           renderedAction,
           expectedResult,
+          signal,
           ...(run.approvalId ? { approvalId: run.approvalId } : {})
         });
       } catch (executorError) {
@@ -197,10 +239,12 @@ export class WorkflowRunner {
           evidenceIds: outcome.evidenceIds ?? [],
           completedAt: this.now().toISOString()
         });
+        if (run.status === "cancelled") return run;
         const evidence = new Set(run.evidenceIds);
         if (outcome.recordId) evidence.add(`action:${outcome.recordId}`);
         for (const id of outcome.evidenceIds ?? []) evidence.add(id);
         run = await this.persist(run, { evidenceIds: [...evidence] });
+        if (run.status === "cancelled") return run;
         continue;
       }
       const error = outcome.error
@@ -219,6 +263,7 @@ export class WorkflowRunner {
         error,
         completedAt: this.now().toISOString()
       });
+      if (run.status === "cancelled") return run;
       return this.applyFailurePolicy(run, step.onFailure ?? workflow.failurePolicy, step.id, error);
     }
     run = await this.requireRun(runId);
@@ -262,8 +307,29 @@ export class WorkflowRunner {
       updatedAt: this.now().toISOString(),
       revision: run.revision + 1
     });
-    await this.runs.save(next);
-    return next;
+    try {
+      await this.runs.compareAndSwap(next, run.revision);
+      return next;
+    } catch (error) {
+      if (
+        error instanceof WorkflowRunRevisionConflictError
+        || error instanceof WorkflowRunTerminalStateError
+      ) {
+        const current = await this.requireRun(run.id);
+        // Cancellation is an authority boundary, not an ordinary optimistic
+        // conflict. Return the winning terminal record so every caller exits
+        // without executing or persisting another step.
+        if (current.status === "cancelled") return current;
+      }
+      throw error;
+    }
+  }
+
+  private abortActiveRun(runId: string): void {
+    const controller = this.active.get(runId);
+    if (controller && !controller.signal.aborted) {
+      controller.abort(new Error(`workflow run cancelled by user: ${runId}`));
+    }
   }
 
   private async requireWorkflow(workflowId: string): Promise<WorkflowValue> {

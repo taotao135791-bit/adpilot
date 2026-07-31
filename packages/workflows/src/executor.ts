@@ -1,5 +1,6 @@
 import {
   VisualRuntimeBlocker,
+  visualComputerBindingFromTask,
   type BrowserSession,
   type SurfaceContext,
   type VisualAction,
@@ -24,6 +25,11 @@ export interface StepExecutionRequest {
   renderedAction: WorkflowStepAction;
   /** Step expectedResult after `{{name}}` substitution. */
   expectedResult: string;
+  /**
+   * Aborted as soon as the durable run reaches `cancelled`. Optional only for
+   * backwards-compatible direct executor callers; WorkflowRunner always sets it.
+   */
+  signal?: AbortSignal;
   /** Present only when the run was created with one; required for mutation steps. */
   approvalId?: string;
 }
@@ -117,6 +123,14 @@ export function browserSessionSurfaceProvider(
         allowedApps: [session.browserApp, session.browserApplicationId],
         allowedDomains: domain ? [domain] : []
       },
+      // Give every workflow run its own Computer Use control identity while
+      // retaining the exact durable browser Session. Cancelling one workflow
+      // can then abort its native action without poisoning another run that
+      // happens to use the same browser window later.
+      binding: {
+        adPilotSessionId: request.run.id,
+        browserSessionId: session.sessionId
+      },
       clientId: session.clientId,
       platform: session.platform
     };
@@ -147,8 +161,10 @@ export class VisualRuntimeStepExecutor implements StepExecutor {
 
   async executeStep(request: StepExecutionRequest): Promise<StepExecutionOutcome> {
     const { step, renderedAction } = request;
+    const signal = request.signal ?? NEVER_ABORTED_SIGNAL;
+    signal.throwIfAborted();
     if (renderedAction.kind === "wait") {
-      await delay(renderedAction.milliseconds);
+      await delay(renderedAction.milliseconds, signal);
       return {
         status: "succeeded",
         verification: {
@@ -159,11 +175,26 @@ export class VisualRuntimeStepExecutor implements StepExecutor {
       };
     }
     const context = await this.provideContext(request);
+    signal.throwIfAborted();
     if (!context) {
       return { status: "failed", error: "no live execution surface is bound to this workflow run" };
     }
     const task = this.buildTask(request, context);
+    const cancelRuntime = () => {
+      try {
+        // runMicroTask owns its own abort controller. Cancelling the exact
+        // binding bridges the WorkflowRunner signal into that controller and
+        // also clears any native input still queued for this surface.
+        this.runtime.cancel(visualComputerBindingFromTask(task));
+      } catch {
+        // The durable workflow cancellation still wins. A runtime that already
+        // lost/closed its surface has nothing left for this callback to stop.
+      }
+    };
+    if (signal.aborted) cancelRuntime();
+    else signal.addEventListener("abort", cancelRuntime, { once: true });
     try {
+      signal.throwIfAborted();
       if (renderedAction.kind === "assert") {
         const result = await this.runtime.verifyVisible(request.expectedResult, task);
         return {
@@ -199,10 +230,20 @@ export class VisualRuntimeStepExecutor implements StepExecutor {
         ...(result.blockerCode && PAUSE_BLOCKER_CODES.has(result.blockerCode) ? { pauseRequested: true } : {})
       };
     } catch (error) {
+      if (signal.aborted) {
+        return {
+          status: "failed",
+          error: signal.reason instanceof Error
+            ? signal.reason.message
+            : "workflow run cancelled"
+        };
+      }
       if (error instanceof VisualRuntimeBlocker && PAUSE_BLOCKER_CODES.has(error.code)) {
         return { status: "failed", error: error.message, pauseRequested: true };
       }
       return { status: "failed", error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      signal.removeEventListener("abort", cancelRuntime);
     }
   }
 
@@ -256,9 +297,25 @@ function allowedActionsFor(action: WorkflowStepAction): VisualAction["action"][]
   }
 }
 
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolvePromise) => {
-    const timer = setTimeout(resolvePromise, milliseconds);
+function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolvePromise, rejectPromise) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      rejectPromise(abortReason(signal));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolvePromise();
+    }, milliseconds);
+    signal.addEventListener("abort", onAbort, { once: true });
     timer.unref?.();
   });
 }
+
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error("workflow run cancelled");
+}
+
+const NEVER_ABORTED_SIGNAL = new AbortController().signal;

@@ -13,6 +13,7 @@ import { join, resolve } from "node:path";
 import { assertSafeIdentifier } from "@adpilot/shared";
 import {
   Workflow,
+  WorkflowError,
   WorkflowRun,
   type Workflow as WorkflowValue,
   type WorkflowRun as WorkflowRunValue,
@@ -20,9 +21,11 @@ import {
 } from "./model.js";
 
 /**
- * Persistence contracts for workflows and their runs. Semantics mirror the
- * kernel entity stores: whole-document, last-writer-wins saves that are
- * atomic via a private temporary file plus rename.
+ * Persistence contracts for workflows and their runs. Workflow definitions
+ * retain whole-document saves. Run records use create + compare-and-swap:
+ * transitions must name the revision they observed, and `cancelled` is an
+ * immutable terminal state. File writes remain atomic via a private temporary
+ * file plus rename.
  */
 export interface WorkflowStore {
   save(workflow: WorkflowValue): Promise<void>;
@@ -31,9 +34,43 @@ export interface WorkflowStore {
 }
 
 export interface WorkflowRunStore {
-  save(run: WorkflowRunValue): Promise<void>;
+  /** Create revision 1. Refuses to replace an existing run. */
+  create(run: WorkflowRunValue): Promise<void>;
+  /**
+   * Atomically replace exactly `expectedRevision` with the next revision.
+   * A stale writer never wins, and no transition may leave `cancelled`.
+   */
+  compareAndSwap(run: WorkflowRunValue, expectedRevision: number): Promise<void>;
   get(id: string): Promise<WorkflowRunValue | undefined>;
   list(filter?: WorkflowRunFilter): Promise<WorkflowRunValue[]>;
+}
+
+export class WorkflowRunRevisionConflictError extends WorkflowError {
+  constructor(
+    readonly runId: string,
+    readonly expectedRevision: number,
+    readonly actualRevision: number
+  ) {
+    super(
+      `workflow run revision changed (${expectedRevision} -> ${actualRevision}): ${runId}`,
+      "WORKFLOW_RUN_REVISION_CONFLICT"
+    );
+    this.name = "WorkflowRunRevisionConflictError";
+  }
+}
+
+export class WorkflowRunTerminalStateError extends WorkflowError {
+  constructor(
+    readonly runId: string,
+    readonly status: WorkflowRunValue["status"],
+    readonly revision: number
+  ) {
+    super(
+      `workflow run is in immutable terminal state ${status}: ${runId}`,
+      "WORKFLOW_RUN_TERMINAL"
+    );
+    this.name = "WorkflowRunTerminalStateError";
+  }
 }
 
 export type WorkflowFilter = {
@@ -74,7 +111,7 @@ abstract class FileWorkflowEntityStore<T extends { id: string; createdAt: string
     this.directory = resolve(this.root, ".adpilot", "workflows", entityDirectory);
   }
 
-  async save(value: T): Promise<void> {
+  protected async saveEntity(value: T): Promise<void> {
     const parsed = this.schema.parse(value);
     await this.ensureSafeDirectory();
     const target = this.pathFor(parsed.id);
@@ -122,7 +159,7 @@ abstract class FileWorkflowEntityStore<T extends { id: string; createdAt: string
 
   protected abstract matches(value: T, filter: F): boolean;
 
-  private async ensureSafeDirectory(): Promise<void> {
+  protected async ensureSafeDirectory(): Promise<void> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     const rootMetadata = await lstat(this.root);
     if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) {
@@ -135,7 +172,7 @@ abstract class FileWorkflowEntityStore<T extends { id: string; createdAt: string
     await chmod(this.directory, 0o700);
   }
 
-  private pathFor(id: string): string {
+  protected pathFor(id: string): string {
     assertSafeIdentifier(id, `workflow ${this.entityDirectory} id`);
     const path = resolve(join(this.directory, `${id}.json`));
     if (!path.startsWith(`${this.directory}/`)) {
@@ -144,7 +181,7 @@ abstract class FileWorkflowEntityStore<T extends { id: string; createdAt: string
     return path;
   }
 
-  private pathForTemporary(id: string): string {
+  protected pathForTemporary(id: string): string {
     assertSafeIdentifier(id, `workflow ${this.entityDirectory} id`);
     const path = resolve(join(this.directory, `.${id}.${process.pid}.${randomUUID()}.tmp`));
     if (!path.startsWith(`${this.directory}/`)) {
@@ -173,6 +210,10 @@ export class FileWorkflowStore
     super(root, "definitions", Workflow);
   }
 
+  async save(workflow: WorkflowValue): Promise<void> {
+    await this.saveEntity(workflow);
+  }
+
   protected matches(value: WorkflowValue, filter: WorkflowFilter): boolean {
     return (!filter.workspaceId || value.workspaceId === filter.workspaceId)
       && (!filter.status || value.status === filter.status);
@@ -190,6 +231,30 @@ export class FileWorkflowRunStore
   protected matches(value: WorkflowRunValue, filter: WorkflowRunFilter): boolean {
     return (!filter.workspaceId || value.workspaceId === filter.workspaceId)
       && (!filter.workflowId || value.workflowId === filter.workflowId);
+  }
+
+  async create(run: WorkflowRunValue): Promise<void> {
+    const parsed = WorkflowRun.parse(run);
+    assertInitialRunRevision(parsed);
+    await withFileRunLock(this.pathFor(parsed.id), async () => {
+      const existing = await this.get(parsed.id);
+      if (existing) {
+        throw new WorkflowRunRevisionConflictError(parsed.id, 0, existing.revision);
+      }
+      await this.saveEntity(parsed);
+    });
+  }
+
+  async compareAndSwap(run: WorkflowRunValue, expectedRevision: number): Promise<void> {
+    const parsed = WorkflowRun.parse(run);
+    await withFileRunLock(this.pathFor(parsed.id), async () => {
+      const current = await this.get(parsed.id);
+      if (!current) {
+        throw new WorkflowError(`workflow run not found: ${parsed.id}`, "WORKFLOW_RUN_NOT_FOUND");
+      }
+      assertRunTransition(current, parsed, expectedRevision);
+      await this.saveEntity(parsed);
+    });
   }
 }
 
@@ -219,8 +284,24 @@ export class MemoryWorkflowStore implements WorkflowStore {
 export class MemoryWorkflowRunStore implements WorkflowRunStore {
   private readonly records = new Map<string, WorkflowRunValue>();
 
-  async save(run: WorkflowRunValue): Promise<void> {
-    this.records.set(run.id, WorkflowRun.parse(run));
+  async create(run: WorkflowRunValue): Promise<void> {
+    const parsed = WorkflowRun.parse(run);
+    assertInitialRunRevision(parsed);
+    const existing = this.records.get(parsed.id);
+    if (existing) {
+      throw new WorkflowRunRevisionConflictError(parsed.id, 0, existing.revision);
+    }
+    this.records.set(parsed.id, parsed);
+  }
+
+  async compareAndSwap(run: WorkflowRunValue, expectedRevision: number): Promise<void> {
+    const parsed = WorkflowRun.parse(run);
+    const current = this.records.get(parsed.id);
+    if (!current) {
+      throw new WorkflowError(`workflow run not found: ${parsed.id}`, "WORKFLOW_RUN_NOT_FOUND");
+    }
+    assertRunTransition(current, parsed, expectedRevision);
+    this.records.set(parsed.id, parsed);
   }
 
   async get(id: string): Promise<WorkflowRunValue | undefined> {
@@ -236,5 +317,52 @@ export class MemoryWorkflowRunStore implements WorkflowRunStore {
         (!filter?.workspaceId || record.workspaceId === filter.workspaceId)
         && (!filter?.workflowId || record.workflowId === filter.workflowId)
     );
+  }
+}
+
+function assertInitialRunRevision(run: WorkflowRunValue): void {
+  if (run.revision !== 1) {
+    throw new WorkflowRunRevisionConflictError(run.id, 0, run.revision);
+  }
+}
+
+function assertRunTransition(
+  current: WorkflowRunValue,
+  next: WorkflowRunValue,
+  expectedRevision: number
+): void {
+  if (current.status === "cancelled") {
+    throw new WorkflowRunTerminalStateError(current.id, current.status, current.revision);
+  }
+  if (current.revision !== expectedRevision) {
+    throw new WorkflowRunRevisionConflictError(current.id, expectedRevision, current.revision);
+  }
+  if (next.revision !== expectedRevision + 1) {
+    throw new WorkflowRunRevisionConflictError(current.id, expectedRevision + 1, next.revision);
+  }
+}
+
+/**
+ * The product owns one workspace writer lease, so all live run writers are in
+ * this process. Multiple FileWorkflowRunStore instances still share this
+ * module-level queue, making the read-check-rename CAS indivisible between
+ * route, agent-tool, and scheduler callers.
+ */
+const fileRunLocks = new Map<string, Promise<void>>();
+
+async function withFileRunLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  const previous = fileRunLocks.get(key) ?? Promise.resolve();
+  let release: () => void = () => undefined;
+  const current = new Promise<void>((resolveLock) => {
+    release = resolveLock;
+  });
+  const queued = previous.then(() => current);
+  fileRunLocks.set(key, queued);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (fileRunLocks.get(key) === queued) fileRunLocks.delete(key);
   }
 }
