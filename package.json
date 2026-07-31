@@ -53,6 +53,7 @@
     "package:smoke": "node scripts/smoke-macos-package.mjs",
     "format": "node scripts/repository-hygiene.mjs format",
     "lint": "node scripts/repository-hygiene.mjs lint",
+    "privacy:scan": "node scripts/privacy-scan.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:security": "vitest run tests/electron-security.test.ts tests/electron-desktop-native-bridge.test.ts tests/real-browser-manifest.test.ts packages/native-computer-host/src/index.test.ts packages/computer-use/src/runtime-store.test.ts packages/server/src/desktop-native.test.ts",
@@ -64,7 +65,7 @@
     "test:computer:permissions": "pnpm build:native-helper && node scripts/smoke-native-helper.mjs --permissions",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "verify": "pnpm format && pnpm lint && pnpm typecheck && pnpm test && pnpm test:security && pnpm test:computer && pnpm test:computer:permissions && pnpm test:ads-core && pnpm build && pnpm package:mac:dir && pnpm package:smoke -- --require",
+    "verify": "pnpm format && pnpm lint && pnpm privacy:scan && pnpm typecheck && pnpm test && pnpm test:security && pnpm test:computer && pnpm test:computer:permissions && pnpm test:ads-core && pnpm build && pnpm package:mac:dir && pnpm package:smoke -- --require",
     "check": "pnpm verify",
     "validate:live-view": "tsx scripts/live-view-e2e.ts"
   },
