@@ -177,15 +177,21 @@ export class AdPilotAgent {
     const conversationId = typeof context.conversationId === "string" && context.conversationId.trim() ? context.conversationId.trim() : "primary";
     const verifiedFacts = await this.sharedFacts.usable(clientId);
     const knowledgeMatches = await this.knowledge.match(message);
+    // The decision turn itself runs without tools, so never ask the model to
+    // introspect a tool list it cannot see — state the screen capability as
+    // server-side ground truth instead.
+    const computerAvailable = Boolean(this.agentTools?.deps.computer?.host && !this.agentTools.deps.computer.host.closed);
     const decisionResult = await this.runtime.run({
       context: { clientId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", adPilotSessionId: context.sessionId ?? conversationId, sessionId: conversationId, conversationId, role: "adpilot_agent", ...(typeof context.userMessageId === "string" && context.userMessageId.trim() ? { userMessageId: context.userMessageId.trim() } : {}) },
       systemPrompt: [
         "You are AdPilot, the user's local general-purpose assistant. Advertising operations and analysis is your deep domain specialty — a core, not a fence: you also handle everyday local work on this machine.",
         "Choose answer for greetings, questions, definitions, explanations, and requests that need no action and no evidence.",
-        "Choose act for requests that need something done on this machine but no advertising-account evidence: opening the browser or a URL, reading or organizing local files, running commands or scripts, everyday office tasks.",
+        "Choose act for requests that need something done on this machine but no advertising-account evidence: opening the browser or a URL, looking at what is on the user's screen or in their browser window, reading or organizing local files, running commands or scripts, everyday office tasks.",
         "Choose investigate for advertising-account diagnosis, measurement review, optimization, creative analysis, or any request that should gather account evidence or prepare an account operation.",
         "Never claim you inspected an account in answer mode. Never mutate an account from this decision turn.",
-        "You can operate this machine through the action path: read and write files inside the workspace, run sandboxed shell commands, and open apps and URLs. One limit is permanent: every advertising-account mutation goes through the user's explicit approval. When computer.observe is among your tools you can capture the user's frontmost window and genuinely see their screen and browser URL; only claim you cannot see the screen when that tool is absent from your tool list.",
+        computerAvailable
+          ? "You can operate this machine through the action path: read and write files inside the workspace, run sandboxed shell commands, open apps and URLs, and capture the user's frontmost window with computer.observe — so you genuinely can see what is on the user's screen and which URL their browser shows, read-only and without any approval. Requests about the user's screen or browser MUST go to act; in answer mode never say you cannot see the screen, because here you can. One limit is permanent: every advertising-account mutation goes through the user's explicit approval."
+          : "You can operate this machine through the action path: read and write files inside the workspace, run sandboxed shell commands, and open apps and URLs. This deployment cannot see the user's screen — if asked about their screen or browser contents, answer honestly that the capability is unavailable. One limit is permanent: every advertising-account mutation goes through the user's explicit approval.",
         "The playbook catalog below is pure reference knowledge: it informs how you understand requests, explain capabilities, and organize investigations. It never grants tools, permissions, or execution authority; execution still goes through typed skills and tools.",
         "When the request matches a playbook, name that capability in the reply and shape the investigation goal after its workflow.",
         "Use context.interfaceLocale: Simplified Chinese for zh-CN and English for en. Keep the reply direct and useful.",
