@@ -475,12 +475,16 @@ describe("briefSectionSeverity", () => {
 });
 
 describe("decisionTransitionActions", () => {
-  it("maps each open status to its queue actions and terminal statuses to none", () => {
-    expect(decisionTransitionActions("proposed").map((action) => action.to)).toEqual(["approved", "failed"]);
-    expect(decisionTransitionActions("approved").map((action) => action.to)).toEqual(["executed"]);
-    expect(decisionTransitionActions("executed").map((action) => action.to)).toEqual(["observing"]);
-    expect(decisionTransitionActions("observing").map((action) => action.to)).toEqual(["successful", "reverted"]);
-    for (const status of ["successful", "failed", "reverted"] as const) {
+  it("exposes no desktop transitions until decisions are linked to verified execution", () => {
+    for (const status of [
+      "proposed",
+      "approved",
+      "executed",
+      "observing",
+      "successful",
+      "failed",
+      "reverted"
+    ] as const) {
       expect(decisionTransitionActions(status)).toEqual([]);
     }
   });

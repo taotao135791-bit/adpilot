@@ -18,12 +18,10 @@ import {
   type AppLocale
 } from "../labels.js";
 import {
-  adsDecisionTransitionUrl,
   adsDecisionsUrl,
   buildMissionRequest,
   buildProjectMessageRequest,
   buildProjectSessionRequest,
-  decisionTransitionActions,
   fsFileUrl,
   fsTreeUrl,
   groupKernelTasks,
@@ -39,7 +37,6 @@ import {
   sortDecisionsRecent,
   type AdDecision,
   type DecisionConfidence,
-  type DecisionStatus,
   type FsFileResponse,
   type FsTreeEntry,
   type FsTreeResponse,
@@ -348,7 +345,7 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
 
           <div className="project-col-scroll project-chat-scroll">
             {detail?.type === "advertising" && (
-              <ActionQueue locale={locale} clientId={clientId} projectId={projectId} />
+              <DecisionLedger locale={locale} clientId={clientId} projectId={projectId} />
             )}
             {messages.length === 0 && !submitting ? (
               <div className="empty-block">
@@ -728,16 +725,16 @@ const EMPTY_DECISION_DRAFT: DecisionDraft = {
 };
 
 /**
- * Decision action queue for advertising projects: the ledger cards with
- * per-status lifecycle buttons (approve → execute → observe → verdict) and
- * the create dialog. The server owns the state machine — illegal transitions
- * and duplicate recommendations come back as coded errors shown verbatim.
+ * Read-only decision ledger for advertising projects. A record captures a
+ * proposal and its planning context; it is not an Approval, Computer Action,
+ * Experiment outcome, or proof that an advertising account changed. Legacy
+ * lifecycle values remain visible with explicitly unverified labels, but this
+ * surface never advances them.
  */
-function ActionQueue({ locale, clientId, projectId }: { locale: AppLocale; clientId: string; projectId: string }) {
+function DecisionLedger({ locale, clientId, projectId }: { locale: AppLocale; clientId: string; projectId: string }) {
   const copy = workspaceCopy(locale);
   const [decisions, setDecisions] = useState<AdDecision[] | null>(null);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [draft, setDraft] = useState<DecisionDraft>(EMPTY_DECISION_DRAFT);
   const [saving, setSaving] = useState(false);
@@ -759,32 +756,6 @@ function ActionQueue({ locale, clientId, projectId }: { locale: AppLocale; clien
   }, [clientId, projectId]);
 
   useEffect(() => { void load(); }, [load]);
-
-  /** The server is the authority; DECISION_INVALID_TRANSITION shows verbatim. */
-  async function transition(decision: AdDecision, to: DecisionStatus) {
-    if (busy) return;
-    setBusy(`${decision.id}:${to}`);
-    try {
-      const response = await fetch(adsDecisionTransitionUrl(decision.id), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ workspaceId: clientId, status: to })
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => undefined) as { error?: string } | undefined;
-        throw new Error(body?.error ?? String(response.status));
-      }
-      if (duplicateId === decision.id) {
-        setDuplicateId(null);
-        setDuplicateNotice(false);
-      }
-      await load();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusy("");
-    }
-  }
 
   async function createDecision() {
     if (!draft.recommendation.trim() || saving) return;
@@ -831,15 +802,6 @@ function ActionQueue({ locale, clientId, projectId }: { locale: AppLocale; clien
     }
   }
 
-  function actionLabel(id: string): string {
-    if (id === "approve") return copy.decisionApprove;
-    if (id === "reject") return copy.decisionReject;
-    if (id === "execute") return copy.decisionMarkExecuted;
-    if (id === "observe") return copy.decisionStartObserving;
-    if (id === "succeed") return copy.decisionMarkSuccessful;
-    return copy.decisionRevert;
-  }
-
   return (
     <section className="action-queue" aria-label={copy.decisionQueue}>
       <div className="home-section-head">
@@ -850,6 +812,11 @@ function ActionQueue({ locale, clientId, projectId }: { locale: AppLocale; clien
             {copy.decisionNew}
           </Button>
         </div>
+      </div>
+
+      <div className="decision-duplicate-note" role="note">
+        <IconInfo size={14} aria-hidden="true" />
+        <span>{copy.decisionReadOnlyNotice}</span>
       </div>
 
       {error && (
@@ -876,7 +843,6 @@ function ActionQueue({ locale, clientId, projectId }: { locale: AppLocale; clien
         <ul className="decision-list">
           {decisions.map((decision) => {
             const expanded = expandedId === decision.id;
-            const actions = decisionTransitionActions(decision.status);
             return (
               <li key={decision.id} className="decision-card" data-duplicate={decision.id === duplicateId || undefined}>
                 <div className="decision-card-head">
@@ -899,21 +865,6 @@ function ActionQueue({ locale, clientId, projectId }: { locale: AppLocale; clien
                   <Badge tone="accent" variant="soft">{decisionConfidenceLabel(decision.confidence, locale)}</Badge>
                   <Badge tone={decisionStatusTone(decision.status)} variant="soft">{decisionStatusLabel(decision.status, locale)}</Badge>
                 </div>
-                {actions.length > 0 && (
-                  <div className="decision-card-actions">
-                    {actions.map((action) => (
-                      <Button
-                        key={action.id}
-                        size="sm"
-                        variant={action.id === "reject" || action.id === "revert" ? "outline" : "primary"}
-                        disabled={busy !== ""}
-                        onClick={() => void transition(decision, action.to)}
-                      >
-                        {actionLabel(action.id)}
-                      </Button>
-                    ))}
-                  </div>
-                )}
                 {expanded && (
                   <div className="decision-card-detail">
                     {decision.rationale.length > 0 && (

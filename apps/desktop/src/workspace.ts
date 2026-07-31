@@ -709,30 +709,18 @@ export function briefSectionSeverity(items: readonly BriefItem[]): BriefSeverity
   return null;
 }
 
-export type DecisionActionId = "approve" | "reject" | "execute" | "observe" | "succeed" | "revert";
-export type DecisionAction = { id: DecisionActionId; to: DecisionStatus };
-
 /**
- * Buttons a decision card exposes per status. Mirrors the lifecycle the
- * queue surface offers; the server remains the authority and answers illegal
- * transitions with DECISION_INVALID_TRANSITION, which the view shows verbatim.
+ * Desktop decision records are deliberately read-only until a Decision is
+ * durably linked to the real Approval → Computer Action →
+ * Experiment chain. The legacy transition endpoint remains server-compatible,
+ * but no persisted status is sufficient evidence for this UI to expose an
+ * execution, observation, outcome, or rollback action.
  */
-export function decisionTransitionActions(status: DecisionStatus): DecisionAction[] {
-  switch (status) {
-    case "proposed":
-      return [{ id: "approve", to: "approved" }, { id: "reject", to: "failed" }];
-    case "approved":
-      return [{ id: "execute", to: "executed" }];
-    case "executed":
-      return [{ id: "observe", to: "observing" }];
-    case "observing":
-      return [{ id: "succeed", to: "successful" }, { id: "revert", to: "reverted" }];
-    default:
-      return [];
-  }
+export function decisionTransitionActions(_status: DecisionStatus): readonly never[] {
+  return [];
 }
 
-/** Most-recently-updated decisions first; the action queue caps the list. */
+/** Most-recently-updated decisions first; the decision ledger caps the list. */
 export function sortDecisionsRecent(decisions: readonly AdDecision[], limit?: number): AdDecision[] {
   const sorted = [...decisions].sort(
     (left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.id.localeCompare(left.id)
