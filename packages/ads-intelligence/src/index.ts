@@ -24,7 +24,14 @@ export {
   FileAdAccountStore,
   FileAdvertisingDecisionStore,
   FileCampaignStore,
-  FileCreativeAssetStore
+  FileCreativeAssetStore,
+  listAdAccountsForWorkspace,
+  listCampaignsForWorkspace,
+  listCreativesForWorkspace,
+  loadWorkspaceAdsSnapshot,
+  requireAdAccountForWorkspace,
+  requireCampaignForWorkspace,
+  requireCreativeForWorkspace
 } from "./stores.js";
 export type {
   AdAccountFilter,
@@ -35,7 +42,11 @@ export type {
   CampaignFilter,
   CampaignStore,
   CreativeAssetFilter,
-  CreativeAssetStore
+  CreativeAssetStore,
+  WorkspaceAdsSnapshot,
+  WorkspaceAdsStores,
+  WorkspaceCampaignStores,
+  WorkspaceCreativeStores
 } from "./stores.js";
 export {
   DecisionService,

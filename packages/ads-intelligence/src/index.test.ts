@@ -7,19 +7,25 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   AdAccount,
   AdvertisingDecision,
+  CampaignEntity,
   CreativeAsset,
   DailyBriefService,
   DecisionService,
   FileAdAccountStore,
   FileAdvertisingDecisionStore,
+  FileCampaignStore,
   FileCreativeAssetStore,
   PythonUacEngine,
   UAC_ENGINE_FAILED,
   UAC_ENGINE_UNAVAILABLE,
   UAC_OUTPUT_INVALID,
   hashRecommendation,
+  listCampaignsForWorkspace,
+  loadWorkspaceAdsSnapshot,
+  requireCampaignForWorkspace,
   type AdAccount as AdAccountValue,
   type AdvertisingDecision as AdvertisingDecisionValue,
+  type CampaignEntity as CampaignEntityValue,
   type CreativeAsset as CreativeAssetValue
 } from "./index.js";
 import { AdsIntelligenceError } from "./errors.js";
@@ -250,6 +256,128 @@ describe("File stores", () => {
     await symlink(outside, target);
     await expect(store.get(creative.id)).rejects.toThrow(/symlink/);
     await expect(store.save(creative)).rejects.toThrow(/symlink/);
+  });
+
+  it("derives legacy campaign and creative ownership through accounts and fails closed on foreign references", async () => {
+    const root = await tempRoot("adpilot-ads-workspace-scope-");
+    const accounts = new FileAdAccountStore(root);
+    const campaigns = new FileCampaignStore(root);
+    const creatives = new FileCreativeAssetStore(root);
+    const now = new Date().toISOString();
+    const ownedAccount = sampleAccount(crypto.randomUUID(), "workspace-a");
+    const foreignAccount = sampleAccount(crypto.randomUUID(), "workspace-b");
+    await accounts.save(ownedAccount);
+    await accounts.save(foreignAccount);
+
+    // These are the original, workspaceId-free JSON shapes. Logical ownership
+    // through accountId keeps them readable without rewriting existing files.
+    const ownedCampaign: CampaignEntityValue = CampaignEntity.parse({
+      id: crypto.randomUUID(),
+      accountId: ownedAccount.id,
+      name: "Owned campaign",
+      createdAt: now,
+      updatedAt: now,
+      revision: 1
+    });
+    const foreignCampaign: CampaignEntityValue = CampaignEntity.parse({
+      id: crypto.randomUUID(),
+      accountId: foreignAccount.id,
+      name: "Foreign campaign",
+      createdAt: now,
+      updatedAt: now,
+      revision: 1
+    });
+    const orphanedCampaign: CampaignEntityValue = CampaignEntity.parse({
+      id: crypto.randomUUID(),
+      accountId: crypto.randomUUID(),
+      name: "Orphaned campaign",
+      createdAt: now,
+      updatedAt: now,
+      revision: 1
+    });
+    await campaigns.save(ownedCampaign);
+    await campaigns.save(foreignCampaign);
+    await campaigns.save(orphanedCampaign);
+    await creatives.save(CreativeAsset.parse({
+      id: crypto.randomUUID(),
+      accountId: ownedAccount.id,
+      campaignIds: [ownedCampaign.id],
+      name: "Owned creative",
+      platform: "google",
+      createdAt: now,
+      updatedAt: now,
+      revision: 1
+    }));
+    await creatives.save(CreativeAsset.parse({
+      id: crypto.randomUUID(),
+      accountId: foreignAccount.id,
+      campaignIds: [foreignCampaign.id],
+      name: "Foreign creative",
+      platform: "google",
+      createdAt: now,
+      updatedAt: now,
+      revision: 1
+    }));
+
+    await expect(listCampaignsForWorkspace(
+      { accounts, campaigns },
+      "workspace-a"
+    )).resolves.toEqual([ownedCampaign]);
+    await expect(requireCampaignForWorkspace(
+      { accounts, campaigns },
+      "workspace-a",
+      foreignCampaign.id
+    )).rejects.toMatchObject({ code: "CAMPAIGN_NOT_FOUND" });
+    await expect(requireCampaignForWorkspace(
+      { accounts, campaigns },
+      "workspace-a",
+      orphanedCampaign.id
+    )).rejects.toMatchObject({ code: "CAMPAIGN_NOT_FOUND" });
+
+    const snapshot = await loadWorkspaceAdsSnapshot(
+      { accounts, campaigns, creatives },
+      "workspace-a"
+    );
+    expect(snapshot.accounts.map((account) => account.id)).toEqual([ownedAccount.id]);
+    expect(snapshot.campaigns.map((campaign) => campaign.id)).toEqual([ownedCampaign.id]);
+    expect(snapshot.creatives).toHaveLength(1);
+    expect(snapshot.creatives[0]?.accountId).toBe(ownedAccount.id);
+  });
+
+  it("rejects poisoned legacy creatives that reference a campaign outside the workspace", async () => {
+    const root = await tempRoot("adpilot-ads-workspace-poison-");
+    const accounts = new FileAdAccountStore(root);
+    const campaigns = new FileCampaignStore(root);
+    const creatives = new FileCreativeAssetStore(root);
+    const now = new Date().toISOString();
+    const ownedAccount = sampleAccount(crypto.randomUUID(), "workspace-a");
+    const foreignAccount = sampleAccount(crypto.randomUUID(), "workspace-b");
+    await accounts.save(ownedAccount);
+    await accounts.save(foreignAccount);
+    const foreignCampaign = CampaignEntity.parse({
+      id: crypto.randomUUID(),
+      accountId: foreignAccount.id,
+      name: "Foreign campaign",
+      createdAt: now,
+      updatedAt: now,
+      revision: 1
+    });
+    await campaigns.save(foreignCampaign);
+    await creatives.save(CreativeAsset.parse({
+      id: crypto.randomUUID(),
+      accountId: ownedAccount.id,
+      campaignIds: [foreignCampaign.id],
+      name: "Poisoned creative",
+      platform: "google",
+      createdAt: now,
+      updatedAt: now,
+      revision: 1
+    }));
+
+    await expect(loadWorkspaceAdsSnapshot(
+      { accounts, campaigns, creatives },
+      "workspace-a"
+    )).rejects.toMatchObject({ code: "ADS_STORE_SCOPE_DENIED" });
   });
 });
 

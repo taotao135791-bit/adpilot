@@ -43,6 +43,12 @@ export type AdAccount = z.infer<typeof AdAccount>;
 
 export const CampaignEntity = z.object({
   ...EntityBase,
+  /**
+   * Canonical workspace ownership is inherited from this AdAccount. This
+   * deliberately preserves the original on-disk schema: legacy campaign JSON
+   * needs no rewrite, while workspace-aware readers must resolve the account
+   * and fail closed when it is missing or belongs to another workspace.
+   */
   accountId: Uuid,
   externalId: z.string().min(1).optional(),
   name: z.string().min(1),
@@ -74,6 +80,11 @@ export type DecisionStatus = z.infer<typeof DecisionStatus>;
 
 export const AdvertisingDecision = z.object({
   ...EntityBase,
+  /**
+   * Canonical workspace ownership is inherited from the kernel Project. The
+   * project reference predates workspace-scoped Agent tools, so callers must
+   * resolve it rather than trusting a caller-supplied workspace id.
+   */
   projectId: Uuid,
   campaignId: Uuid.optional(),
   recommendation: z.string().min(1),
@@ -105,6 +116,10 @@ export type CreativeMetrics = z.infer<typeof CreativeMetrics>;
 
 export const CreativeAsset = z.object({
   ...EntityBase,
+  /**
+   * As with campaigns, legacy creative records inherit workspace ownership
+   * from their AdAccount. Orphaned records are never safe to expose.
+   */
   accountId: Uuid,
   name: z.string().min(1),
   platform: AdPlatform,

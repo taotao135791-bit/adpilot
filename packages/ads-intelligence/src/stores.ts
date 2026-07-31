@@ -24,6 +24,7 @@ import {
   type CreativeLifecycle,
   type DecisionStatus
 } from "./entities.js";
+import { AdsIntelligenceError } from "./errors.js";
 
 /**
  * Persistence contract shared by every ads-intelligence entity store.
@@ -65,6 +66,24 @@ export type AdAccountStore = AdsEntityStore<AdAccountValue, AdAccountFilter>;
 export type CampaignStore = AdsEntityStore<CampaignEntityValue, CampaignFilter>;
 export type AdvertisingDecisionStore = AdsEntityStore<AdvertisingDecisionValue, AdvertisingDecisionFilter>;
 export type CreativeAssetStore = AdsEntityStore<CreativeAssetValue, CreativeAssetFilter>;
+
+export interface WorkspaceCampaignStores {
+  accounts: AdAccountStore;
+  campaigns: CampaignStore;
+}
+
+export interface WorkspaceCreativeStores {
+  accounts: AdAccountStore;
+  creatives: CreativeAssetStore;
+}
+
+export interface WorkspaceAdsStores extends WorkspaceCampaignStores, WorkspaceCreativeStores {}
+
+export interface WorkspaceAdsSnapshot {
+  accounts: AdAccountValue[];
+  campaigns: CampaignEntityValue[];
+  creatives: CreativeAssetValue[];
+}
 
 interface EntitySchema<T> {
   parse(value: unknown): T;
@@ -247,4 +266,196 @@ export class FileCreativeAssetStore extends FileEntityStore<CreativeAssetValue, 
     return (!filter.accountId || value.accountId === filter.accountId)
       && (!filter.lifecycle || value.lifecycle === filter.lifecycle);
   }
+}
+
+/**
+ * Workspace-safe accessors for the legacy flat ads registry.
+ *
+ * Campaign and Creative JSON predates an explicit workspaceId. Rewriting those
+ * files at read time would make a security fix destructive and race-prone, so
+ * ownership is migrated logically instead: the referenced AdAccount is the
+ * canonical owner. Existing valid records remain readable without an on-disk
+ * migration; orphaned or cross-workspace references fail closed.
+ */
+export async function listAdAccountsForWorkspace(
+  store: AdAccountStore,
+  workspaceId: string
+): Promise<AdAccountValue[]> {
+  assertWorkspaceId(workspaceId);
+  const accounts = await store.list({ workspaceId });
+  for (const account of accounts) {
+    if (account.workspaceId !== workspaceId) {
+      throw scopeIntegrityError("account store returned a record outside the requested workspace");
+    }
+  }
+  return accounts;
+}
+
+export async function requireAdAccountForWorkspace(
+  store: AdAccountStore,
+  workspaceId: string,
+  accountId: string
+): Promise<AdAccountValue> {
+  assertWorkspaceId(workspaceId);
+  const account = await store.get(accountId);
+  if (!account || account.workspaceId !== workspaceId) {
+    throw new AdsIntelligenceError(
+      `ad account not found in workspace: ${accountId}`,
+      "AD_ACCOUNT_NOT_FOUND"
+    );
+  }
+  return account;
+}
+
+export async function listCampaignsForWorkspace(
+  stores: WorkspaceCampaignStores,
+  workspaceId: string,
+  accountId?: string
+): Promise<CampaignEntityValue[]> {
+  const accounts = accountId !== undefined
+    ? [await requireAdAccountForWorkspace(stores.accounts, workspaceId, accountId)]
+    : await listAdAccountsForWorkspace(stores.accounts, workspaceId);
+  const campaigns = await Promise.all(accounts.map(async (account) => {
+    const records = await stores.campaigns.list({ accountId: account.id });
+    for (const campaign of records) {
+      if (campaign.accountId !== account.id) {
+        throw scopeIntegrityError("campaign store returned a record outside the requested account");
+      }
+    }
+    return records;
+  }));
+  return stableUnique(campaigns.flat());
+}
+
+export async function requireCampaignForWorkspace(
+  stores: WorkspaceCampaignStores,
+  workspaceId: string,
+  campaignId: string
+): Promise<CampaignEntityValue> {
+  assertWorkspaceId(workspaceId);
+  const campaign = await stores.campaigns.get(campaignId);
+  if (!campaign) {
+    throw new AdsIntelligenceError(
+      `campaign not found in workspace: ${campaignId}`,
+      "CAMPAIGN_NOT_FOUND"
+    );
+  }
+  const account = await stores.accounts.get(campaign.accountId);
+  if (!account || account.workspaceId !== workspaceId) {
+    // Do not reveal whether the campaign exists in another workspace.
+    throw new AdsIntelligenceError(
+      `campaign not found in workspace: ${campaignId}`,
+      "CAMPAIGN_NOT_FOUND"
+    );
+  }
+  return campaign;
+}
+
+export async function listCreativesForWorkspace(
+  stores: WorkspaceCreativeStores,
+  workspaceId: string
+): Promise<CreativeAssetValue[]> {
+  const accounts = await listAdAccountsForWorkspace(stores.accounts, workspaceId);
+  const creatives = await Promise.all(accounts.map(async (account) => {
+    const records = await stores.creatives.list({ accountId: account.id });
+    for (const creative of records) {
+      if (creative.accountId !== account.id) {
+        throw scopeIntegrityError("creative store returned a record outside the requested account");
+      }
+    }
+    return records;
+  }));
+  return stableUnique(creatives.flat());
+}
+
+export async function requireCreativeForWorkspace(
+  stores: WorkspaceCreativeStores,
+  workspaceId: string,
+  creativeId: string
+): Promise<CreativeAssetValue> {
+  assertWorkspaceId(workspaceId);
+  const creative = await stores.creatives.get(creativeId);
+  if (!creative) {
+    throw new AdsIntelligenceError(
+      `creative not found in workspace: ${creativeId}`,
+      "CREATIVE_NOT_FOUND"
+    );
+  }
+  const account = await stores.accounts.get(creative.accountId);
+  if (!account || account.workspaceId !== workspaceId) {
+    throw new AdsIntelligenceError(
+      `creative not found in workspace: ${creativeId}`,
+      "CREATIVE_NOT_FOUND"
+    );
+  }
+  return creative;
+}
+
+export async function loadWorkspaceAdsSnapshot(
+  stores: WorkspaceAdsStores,
+  workspaceId: string
+): Promise<WorkspaceAdsSnapshot> {
+  const accounts = await listAdAccountsForWorkspace(stores.accounts, workspaceId);
+  const [campaigns, creatives] = await Promise.all([
+    listCampaignsForOwnedAccounts(stores.campaigns, accounts),
+    listCreativesForOwnedAccounts(stores.creatives, accounts)
+  ]);
+  const campaignIds = new Set(campaigns.map((campaign) => campaign.id));
+  for (const creative of creatives) {
+    if (creative.campaignIds.some((campaignId) => !campaignIds.has(campaignId))) {
+      throw scopeIntegrityError(
+        "creative record references a campaign outside the requested workspace"
+      );
+    }
+  }
+  return { accounts, campaigns, creatives };
+}
+
+async function listCampaignsForOwnedAccounts(
+  store: CampaignStore,
+  accounts: readonly AdAccountValue[]
+): Promise<CampaignEntityValue[]> {
+  const campaigns = await Promise.all(accounts.map(async (account) => {
+    const records = await store.list({ accountId: account.id });
+    for (const campaign of records) {
+      if (campaign.accountId !== account.id) {
+        throw scopeIntegrityError("campaign store returned a record outside the requested account");
+      }
+    }
+    return records;
+  }));
+  return stableUnique(campaigns.flat());
+}
+
+async function listCreativesForOwnedAccounts(
+  store: CreativeAssetStore,
+  accounts: readonly AdAccountValue[]
+): Promise<CreativeAssetValue[]> {
+  const creatives = await Promise.all(accounts.map(async (account) => {
+    const records = await store.list({ accountId: account.id });
+    for (const creative of records) {
+      if (creative.accountId !== account.id) {
+        throw scopeIntegrityError("creative store returned a record outside the requested account");
+      }
+    }
+    return records;
+  }));
+  return stableUnique(creatives.flat());
+}
+
+function stableUnique<T extends { id: string; createdAt: string }>(records: readonly T[]): T[] {
+  const unique = [...new Map(records.map((record) => [record.id, record])).values()];
+  return unique.sort(
+    (left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
+  );
+}
+
+function assertWorkspaceId(workspaceId: string): void {
+  if (workspaceId.trim().length === 0) {
+    throw new AdsIntelligenceError("workspace id is required", "ADS_WORKSPACE_REQUIRED");
+  }
+}
+
+function scopeIntegrityError(message: string): AdsIntelligenceError {
+  return new AdsIntelligenceError(message, "ADS_STORE_SCOPE_DENIED");
 }

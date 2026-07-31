@@ -7,13 +7,30 @@ import {
   MetricsSnapshot,
   PendingReport,
   UacAnalyzeRequest,
-  hashRecommendation
+  hashRecommendation,
+  listAdAccountsForWorkspace,
+  listCampaignsForWorkspace,
+  loadWorkspaceAdsSnapshot,
+  requireAdAccountForWorkspace,
+  requireCampaignForWorkspace,
+  requireCreativeForWorkspace,
+  type AdAccountStore,
+  type AdvertisingDecisionValue,
+  type CampaignStore,
+  type CreativeAssetStore,
+  type WorkspaceAdsSnapshot,
+  type WorkspaceAdsStores,
+  type WorkspaceCampaignStores,
+  type WorkspaceCreativeStores
 } from "@adpilot/ads-intelligence";
+import type { AgentExecutionContext } from "../context.js";
+import type { AgentToolDeps } from "../deps.js";
 import type { AgentToolDefinition } from "../registry.js";
 import { succeed } from "../result.js";
 import { toolError } from "../errors.js";
 
 const ThresholdsInput = DailyBriefThresholds.partial();
+const EntityId = z.string().uuid();
 
 /**
  * Ads tools: read the advertising account registry, run the deterministic UAC
@@ -32,12 +49,12 @@ export function createAdsTools(): AgentToolDefinition[] {
       parameters: z.object({ platform: z.enum(["google", "meta", "tiktok", "other"]).optional() }),
       execute: async (raw, ctx, deps) => {
         const params = z.object({ platform: z.enum(["google", "meta", "tiktok", "other"]).optional() }).parse(raw);
-        const store = deps.ads.stores?.accounts;
-        if (!store) throw toolError("STORE_NOT_CONFIGURED", "the ads account store is not wired into this execution context");
-        const accounts = await store.list({
-          workspaceId: ctx.workspaceId,
-          ...(params.platform !== undefined ? { platform: params.platform } : {})
-        });
+        await assertContextProjectOwned(ctx, deps);
+        const store = requireAccountStore(deps);
+        const scoped = await listAdAccountsForWorkspace(store, ctx.workspaceId);
+        const accounts = params.platform === undefined
+          ? scoped
+          : scoped.filter((account) => account.platform === params.platform);
         return succeed("ads.list_accounts", ctx, { accounts, count: accounts.length });
       }
     },
@@ -46,12 +63,16 @@ export function createAdsTools(): AgentToolDefinition[] {
       description: "List registered campaigns, optionally for one account. Use to ground spend/CPA analysis in the campaign registry.",
       capabilityPack: "ads",
       permission: "read",
-      parameters: z.object({ accountId: z.string().min(1).optional() }),
+      parameters: z.object({ accountId: EntityId.optional() }),
       execute: async (raw, ctx, deps) => {
-        const params = z.object({ accountId: z.string().min(1).optional() }).parse(raw);
-        const store = deps.ads.stores?.campaigns;
-        if (!store) throw toolError("STORE_NOT_CONFIGURED", "the ads campaign store is not wired into this execution context");
-        const campaigns = await store.list(params.accountId !== undefined ? { accountId: params.accountId } : {});
+        const params = z.object({ accountId: EntityId.optional() }).parse(raw);
+        await assertContextProjectOwned(ctx, deps);
+        const stores = requireCampaignStores(deps);
+        const campaigns = await listCampaignsForWorkspace(
+          stores,
+          ctx.workspaceId,
+          params.accountId
+        );
         return succeed("ads.list_campaigns", ctx, { campaigns, count: campaigns.length });
       }
     },
@@ -71,6 +92,7 @@ export function createAdsTools(): AgentToolDefinition[] {
           case: z.record(z.string(), z.unknown()),
           question: z.string().min(1).max(4000).optional()
         }).parse(raw);
+        await assertContextProjectOwned(ctx, deps);
         if (!(await deps.ads.uac.isAvailable())) {
           throw toolError(
             "UAC_ENGINE_UNAVAILABLE",
@@ -91,8 +113,8 @@ export function createAdsTools(): AgentToolDefinition[] {
       capabilityPack: "ads",
       permission: "write",
       parameters: z.object({
-        projectId: z.string().min(1).optional(),
-        campaignId: z.string().min(1).optional(),
+        projectId: EntityId.optional(),
+        campaignId: EntityId.optional(),
         recommendation: z.string().min(1),
         rationale: z.array(z.string().min(1)).optional(),
         evidenceIds: z.array(z.string().min(1)).optional(),
@@ -103,8 +125,8 @@ export function createAdsTools(): AgentToolDefinition[] {
       }),
       execute: async (raw, ctx, deps) => {
         const params = z.object({
-          projectId: z.string().min(1).optional(),
-          campaignId: z.string().min(1).optional(),
+          projectId: EntityId.optional(),
+          campaignId: EntityId.optional(),
           recommendation: z.string().min(1),
           rationale: z.array(z.string().min(1)).optional(),
           evidenceIds: z.array(z.string().min(1)).optional(),
@@ -113,12 +135,23 @@ export function createAdsTools(): AgentToolDefinition[] {
           observationWindow: z.string().min(1).optional(),
           rollbackPlan: z.string().min(1).optional()
         }).parse(raw);
+        await assertContextProjectOwned(ctx, deps);
         const projectId = params.projectId ?? ctx.projectId;
         if (!projectId) {
           throw toolError("PROJECT_NOT_SELECTED", "no projectId was passed and the execution context has no current project");
         }
+        await requireProjectOwned(projectId, ctx.workspaceId, deps);
+        if (params.campaignId !== undefined) {
+          await requireCampaignForWorkspace(
+            requireCampaignStores(deps),
+            ctx.workspaceId,
+            params.campaignId
+          );
+        }
+        await assertEvidenceReferencesOwned(params.evidenceIds ?? [], ctx.workspaceId, deps);
         const duplicate = await deps.ads.decisions.findSimilarOpen(projectId, params.campaignId, hashRecommendation(params.recommendation));
         if (duplicate) {
+          await assertDecisionOwned(duplicate, projectId, ctx.workspaceId, deps);
           return succeed("ads.create_decision", ctx, { decision: duplicate, duplicate: true });
         }
         const decision = await deps.ads.decisions.createDecision({
@@ -143,7 +176,7 @@ export function createAdsTools(): AgentToolDefinition[] {
       capabilityPack: "ads",
       permission: "read",
       parameters: z.object({
-        projectId: z.string().min(1).optional(),
+        projectId: EntityId.optional(),
         metrics: MetricsSnapshot.optional(),
         thresholds: ThresholdsInput.optional(),
         pendingReports: z.array(PendingReport).optional(),
@@ -151,24 +184,39 @@ export function createAdsTools(): AgentToolDefinition[] {
       }),
       execute: async (raw, ctx, deps) => {
         const params = z.object({
-          projectId: z.string().min(1).optional(),
+          projectId: EntityId.optional(),
           metrics: MetricsSnapshot.optional(),
           thresholds: ThresholdsInput.optional(),
           pendingReports: z.array(PendingReport).optional(),
           measurementIssues: z.array(MeasurementIssue).optional()
         }).parse(raw);
+        await assertContextProjectOwned(ctx, deps);
         const projectId = params.projectId ?? ctx.projectId;
-        const accounts = deps.ads.stores?.accounts ? await deps.ads.stores.accounts.list({ workspaceId: ctx.workspaceId }) : [];
-        const campaigns = deps.ads.stores?.campaigns ? await deps.ads.stores.campaigns.list() : [];
-        const creatives = deps.ads.stores?.creatives ? await deps.ads.stores.creatives.list() : [];
+        if (projectId !== undefined) {
+          await requireProjectOwned(projectId, ctx.workspaceId, deps);
+        }
+        const snapshot = await loadWorkspaceAdsSnapshot(requireAdsStores(deps), ctx.workspaceId);
         const decisions = projectId !== undefined ? await deps.ads.decisions.listByProject(projectId) : [];
+        for (const decision of decisions) {
+          await assertDecisionOwned(decision, projectId!, ctx.workspaceId, deps, snapshot);
+        }
+        const metrics = params.metrics ?? MetricsSnapshot.parse({});
+        await assertBriefReferencesOwned(
+          metrics,
+          params.measurementIssues ?? [],
+          params.pendingReports ?? [],
+          decisions,
+          snapshot,
+          ctx.workspaceId,
+          deps
+        );
         const brief = deps.ads.brief.generate({
           workspaceId: ctx.workspaceId,
           ...(projectId !== undefined ? { projectId } : {}),
-          accounts,
-          campaigns,
-          creatives,
-          metrics: params.metrics ?? MetricsSnapshot.parse({}),
+          accounts: snapshot.accounts,
+          campaigns: snapshot.campaigns,
+          creatives: snapshot.creatives,
+          metrics,
           decisions,
           experiments: [],
           ...(params.pendingReports !== undefined ? { pendingReports: params.pendingReports } : {}),
@@ -197,6 +245,9 @@ export function createAdsTools(): AgentToolDefinition[] {
           severity: z.enum(["info", "warning", "critical"]).optional(),
           evidenceIds: z.array(z.string().min(1)).optional()
         }).parse(raw);
+        await assertContextProjectOwned(ctx, deps);
+        await assertKnownEntityReferenceOwned(params.subject, ctx.workspaceId, deps);
+        await assertEvidenceReferencesOwned(params.evidenceIds ?? [], ctx.workspaceId, deps);
         const observationId = `observation:${randomUUID()}`;
         // The lifecycle audits this call with the (redacted) parameters, so the
         // observation lands in the workspace's hash-chained audit trail — the
@@ -216,4 +267,279 @@ export function createAdsTools(): AgentToolDefinition[] {
       }
     }
   ];
+}
+
+function requireAccountStore(deps: AgentToolDeps): AdAccountStore {
+  const store = deps.ads.stores?.accounts;
+  if (!store) {
+    throw toolError(
+      "STORE_NOT_CONFIGURED",
+      "the ads account store is required for workspace ownership checks"
+    );
+  }
+  return store;
+}
+
+function requireCampaignStore(deps: AgentToolDeps): CampaignStore {
+  const store = deps.ads.stores?.campaigns;
+  if (!store) {
+    throw toolError(
+      "STORE_NOT_CONFIGURED",
+      "the ads campaign store is required for workspace ownership checks"
+    );
+  }
+  return store;
+}
+
+function requireCreativeStore(deps: AgentToolDeps): CreativeAssetStore {
+  const store = deps.ads.stores?.creatives;
+  if (!store) {
+    throw toolError(
+      "STORE_NOT_CONFIGURED",
+      "the ads creative store is required for workspace ownership checks"
+    );
+  }
+  return store;
+}
+
+function requireCampaignStores(deps: AgentToolDeps): WorkspaceCampaignStores {
+  return {
+    accounts: requireAccountStore(deps),
+    campaigns: requireCampaignStore(deps)
+  };
+}
+
+function requireCreativeStores(deps: AgentToolDeps): WorkspaceCreativeStores {
+  return {
+    accounts: requireAccountStore(deps),
+    creatives: requireCreativeStore(deps)
+  };
+}
+
+function requireAdsStores(deps: AgentToolDeps): WorkspaceAdsStores {
+  return {
+    ...requireCampaignStores(deps),
+    creatives: requireCreativeStore(deps)
+  };
+}
+
+async function assertContextProjectOwned(
+  ctx: AgentExecutionContext,
+  deps: AgentToolDeps
+): Promise<void> {
+  if (ctx.projectId !== undefined) {
+    await requireProjectOwned(ctx.projectId, ctx.workspaceId, deps);
+  }
+}
+
+async function requireProjectOwned(
+  projectId: string,
+  workspaceId: string,
+  deps: AgentToolDeps
+): Promise<void> {
+  if (!EntityId.safeParse(projectId).success) {
+    throw toolError(
+      "PROJECT_NOT_FOUND",
+      `project not found in workspace: ${projectId}`
+    );
+  }
+  const project = await deps.kernel.getProject(projectId);
+  if (!project || project.workspaceId !== workspaceId) {
+    throw toolError(
+      "PROJECT_NOT_FOUND",
+      `project not found in workspace: ${projectId}`
+    );
+  }
+}
+
+async function assertDecisionOwned(
+  decision: AdvertisingDecisionValue,
+  expectedProjectId: string,
+  workspaceId: string,
+  deps: AgentToolDeps,
+  snapshot?: WorkspaceAdsSnapshot
+): Promise<void> {
+  if (decision.projectId !== expectedProjectId) {
+    throw toolError(
+      "ADS_STORE_SCOPE_DENIED",
+      "decision store returned a record outside the requested project"
+    );
+  }
+  await requireProjectOwned(decision.projectId, workspaceId, deps);
+  if (decision.campaignId !== undefined) {
+    if (snapshot !== undefined) {
+      if (!snapshot.campaigns.some((campaign) => campaign.id === decision.campaignId)) {
+        throw toolError(
+          "DECISION_NOT_FOUND",
+          `decision not found in workspace: ${decision.id}`
+        );
+      }
+    } else {
+      await requireCampaignForWorkspace(
+        requireCampaignStores(deps),
+        workspaceId,
+        decision.campaignId
+      );
+    }
+  }
+  await assertEvidenceReferencesOwned(
+    decision.evidenceIds,
+    workspaceId,
+    deps,
+    snapshot
+  );
+}
+
+async function assertBriefReferencesOwned(
+  metrics: z.infer<typeof MetricsSnapshot>,
+  measurementIssues: readonly z.infer<typeof MeasurementIssue>[],
+  pendingReports: readonly z.infer<typeof PendingReport>[],
+  decisions: readonly AdvertisingDecisionValue[],
+  snapshot: WorkspaceAdsSnapshot,
+  workspaceId: string,
+  deps: AgentToolDeps
+): Promise<void> {
+  const accounts = new Map(snapshot.accounts.map((account) => [account.id, account]));
+  const campaigns = new Map(snapshot.campaigns.map((campaign) => [campaign.id, campaign]));
+  const creatives = new Map(snapshot.creatives.map((creative) => [creative.id, creative]));
+  for (const row of metrics.accounts) {
+    if (!accounts.has(row.accountId)) {
+      throw scopedReferenceNotFound("account", row.accountId);
+    }
+    await assertEvidenceReferencesOwned(row.evidenceIds ?? [], workspaceId, deps, snapshot);
+  }
+  for (const row of metrics.campaigns) {
+    if (!campaigns.has(row.campaignId)) {
+      throw scopedReferenceNotFound("campaign", row.campaignId);
+    }
+    await assertEvidenceReferencesOwned(row.evidenceIds ?? [], workspaceId, deps, snapshot);
+  }
+  for (const row of metrics.creatives) {
+    if (!creatives.has(row.creativeId)) {
+      throw scopedReferenceNotFound("creative", row.creativeId);
+    }
+    await assertEvidenceReferencesOwned(row.evidenceIds ?? [], workspaceId, deps, snapshot);
+  }
+  for (const issue of measurementIssues) {
+    const account = issue.accountId === undefined ? undefined : accounts.get(issue.accountId);
+    const campaign = issue.campaignId === undefined ? undefined : campaigns.get(issue.campaignId);
+    if (issue.accountId !== undefined && !account) {
+      throw scopedReferenceNotFound("account", issue.accountId);
+    }
+    if (issue.campaignId !== undefined && !campaign) {
+      throw scopedReferenceNotFound("campaign", issue.campaignId);
+    }
+    if (account && campaign && campaign.accountId !== account.id) {
+      throw toolError(
+        "ADS_REFERENCE_NOT_FOUND",
+        "measurement issue account and campaign do not share an owner"
+      );
+    }
+    await assertEvidenceReferencesOwned(issue.evidenceIds ?? [], workspaceId, deps, snapshot);
+  }
+  for (const report of pendingReports) {
+    await assertEvidenceReferencesOwned(report.evidenceIds ?? [], workspaceId, deps, snapshot);
+  }
+  // Decision ownership itself was checked before this call; repeat only the
+  // evidence walk here so every caller-supplied or persisted reference is
+  // constrained to the same snapshot.
+  for (const decision of decisions) {
+    await assertEvidenceReferencesOwned(decision.evidenceIds, workspaceId, deps, snapshot);
+  }
+}
+
+async function assertEvidenceReferencesOwned(
+  evidenceIds: readonly string[],
+  workspaceId: string,
+  deps: AgentToolDeps,
+  snapshot?: WorkspaceAdsSnapshot
+): Promise<void> {
+  for (const evidenceId of evidenceIds) {
+    await assertKnownEntityReferenceOwned(evidenceId, workspaceId, deps, snapshot);
+  }
+}
+
+/**
+ * Evidence types such as screenshot:, fact:, observation:, and audit: are
+ * opaque handles owned by other workspace-scoped ledgers, so this layer does
+ * not dereference them. Known ads/kernel entity references are resolved here
+ * and fail closed. This preserves existing evidence strings while preventing
+ * an Agent from smuggling a foreign ads entity into a decision or brief.
+ */
+async function assertKnownEntityReferenceOwned(
+  reference: string,
+  workspaceId: string,
+  deps: AgentToolDeps,
+  snapshot?: WorkspaceAdsSnapshot
+): Promise<void> {
+  const separator = reference.indexOf(":");
+  if (separator < 0) return;
+  const kind = reference.slice(0, separator);
+  if (!["account", "campaign", "creative", "decision", "project"].includes(kind)) return;
+  const id = reference.slice(separator + 1);
+  if (!EntityId.safeParse(id).success) {
+    throw toolError(
+      "ADS_REFERENCE_INVALID",
+      `invalid ${kind} evidence reference`
+    );
+  }
+  if (kind === "project") {
+    await requireProjectOwned(id, workspaceId, deps);
+    return;
+  }
+  if (kind === "account") {
+    if (snapshot !== undefined) {
+      if (!snapshot.accounts.some((account) => account.id === id)) {
+        throw scopedReferenceNotFound(kind, id);
+      }
+      return;
+    }
+    await requireAdAccountForWorkspace(requireAccountStore(deps), workspaceId, id);
+    return;
+  }
+  if (kind === "campaign") {
+    if (snapshot !== undefined) {
+      if (!snapshot.campaigns.some((campaign) => campaign.id === id)) {
+        throw scopedReferenceNotFound(kind, id);
+      }
+      return;
+    }
+    await requireCampaignForWorkspace(requireCampaignStores(deps), workspaceId, id);
+    return;
+  }
+  if (kind === "creative") {
+    if (snapshot !== undefined) {
+      if (!snapshot.creatives.some((creative) => creative.id === id)) {
+        throw scopedReferenceNotFound(kind, id);
+      }
+      return;
+    }
+    await requireCreativeForWorkspace(requireCreativeStores(deps), workspaceId, id);
+    return;
+  }
+  const decision = await deps.ads.decisions.getDecision(id);
+  if (!decision) {
+    throw scopedReferenceNotFound(kind, id);
+  }
+  await requireProjectOwned(decision.projectId, workspaceId, deps);
+  if (decision.campaignId !== undefined) {
+    if (snapshot !== undefined) {
+      if (!snapshot.campaigns.some((campaign) => campaign.id === decision.campaignId)) {
+        throw scopedReferenceNotFound(kind, id);
+      }
+    } else {
+      await requireCampaignForWorkspace(
+        requireCampaignStores(deps),
+        workspaceId,
+        decision.campaignId
+      );
+    }
+  }
+}
+
+function scopedReferenceNotFound(kind: string, id: string): Error {
+  return toolError(
+    "ADS_REFERENCE_NOT_FOUND",
+    `${kind} reference not found in workspace: ${id}`
+  );
 }
