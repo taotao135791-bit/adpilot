@@ -28,7 +28,7 @@ import type { AutonomyProbe } from "./autonomy-mode.js";
  * never waived, in any mode.
  */
 /** General local tools whose write-level calls full access lifts from the approval chain. */
-const FULL_ACCESS_WAIVED_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "bash"]);
+const FULL_ACCESS_WAIVED_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "bash", "computer.close_window"]);
 
 export class ToolPermissionGate {
   constructor(

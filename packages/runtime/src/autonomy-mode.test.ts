@@ -81,16 +81,17 @@ describe("ToolPermissionGate autonomy modes", () => {
     return { workspace, audit, approvals, gate, context };
   }
 
-  it("full access waives the approval reference for write/edit and write-level bash, and audits the waiver", async () => {
+  it("full access waives routine local write references, including closing an observed window, and audits the waiver", async () => {
     const { gate, audit, context } = await makeGate(probe("full_access"));
     expect(await gate.check("write", { path: "notes.md", content: "hi" }, context)).toBeNull();
     expect(await gate.check("edit", { path: "notes.md" }, context)).toBeNull();
     expect(await gate.check("bash", { command: "open https://www.baidu.com" }, context)).toBeNull();
     expect(await gate.check("bash", { command: "echo hi > notes.md" }, context)).toBeNull();
+    expect(await gate.check("computer.close_window", { bundleId: "com.google.Chrome", windowId: 42 }, context)).toBeNull();
     // Read-level calls still flow without any audit record.
     expect(await gate.check("bash", { command: "ls -la" }, context)).toBeNull();
     const events = await audit.list("client-a");
-    expect(events).toHaveLength(4);
+    expect(events).toHaveLength(5);
     for (const event of events) {
       expect(event).toMatchObject({
         action: "tool_gate",

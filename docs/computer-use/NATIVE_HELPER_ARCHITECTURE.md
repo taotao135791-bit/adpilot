@@ -44,10 +44,19 @@ The helper owns:
 - display/window/frontmost metadata;
 - window/display/region capture;
 - app activation and window focus;
+- exact-window close through Accessibility;
 - coordinate conversion at the native surface boundary;
 - atomic pointer, keyboard, scroll, drag and wait operations;
 - Accessibility snapshots and focused-element metadata when authorized;
 - user-input observation used to yield control.
+
+Every agent-facing pointer, keyboard, scroll, drag, or close operation consumes a
+one-time surface lease issued by a fresh window capture. The lease is short-lived
+and binds the Computer Session, PID, bundle identifier, native window id, bounds,
+and capture dimensions. Pointer operations additionally require that exact app and
+window to remain frontmost immediately before posting the event; a foreground
+switch or bounds change fails closed. The model sees only the opaque observation id
+used by the product tool, never the helper lease descriptor itself.
 
 It does not own:
 
@@ -69,4 +78,3 @@ The helper is copied to a deterministic application resource path and is not exp
 as a second user-launched application. Packaging checks must verify that it is
 executable, that its hash is stable within the artifact, and that the `.app` passes
 `codesign --verify --deep --strict`.
-

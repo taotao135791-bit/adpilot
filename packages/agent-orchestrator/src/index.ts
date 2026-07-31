@@ -203,6 +203,10 @@ export class AdPilotAgent {
       ...(context.modelOverride ? { modelOverride: context.modelOverride } : {})
     });
     const decision = parseConversationDecision(decisionResult.text, message, context.interfaceLocale);
+    if (decision.mode === "answer" && shouldForceComputerAction(message, computerAvailable)) {
+      const action = await this.runAction(clientId, message, context);
+      return { reply: action.result.summary, task: action.task };
+    }
     if (decision.mode === "answer") return { reply: decision.reply, task: null };
     if (decision.mode === "act") {
       const action = await this.runAction(clientId, decision.goal ?? message, context);
@@ -262,6 +266,7 @@ export class AdPilotAgent {
           "You are AdPilot, the user's local general-purpose assistant, now executing a local action request. Advertising operations is your domain specialty, but this task is ordinary local work.",
           "Available tools: read, grep, find and ls observe the workspace and explicitly allowed directories; write and edit create and modify files inside the workspace; bash runs sandboxed shell commands, including `open` on macOS to launch applications and URLs (for example `open https://www.baidu.com` or `open -a Safari`).",
           "Bash commands are deterministically classified. Read-level commands run directly. Write-level commands (file changes, installs, `open`) run without an approval reference when the operator granted full access; in guarded mode the gate denial explains exactly what is missing — report it to the user instead of retrying the same call. Deny-classified commands (network tools, shell-level screen capture, credential and browser-profile stores, process control, protected paths, rm -rf) are hard-blocked in every mode; never try to work around them. That deny list covers shell commands only: computer.observe, when it appears in your tool list, is the sanctioned read-only way to see the user's screen and it never needs an approval, an approvalId, or a workaround.",
+          "When computer.close_window appears, it is the sanctioned routine local action for closing one app window. First call computer.observe, then pass only the fresh observationId it returned. That one-time id is bound to this session and the captured PID, bundle, window, and bounds; never guess or reuse it. Full Access allows this write directly, while guarded mode keeps its approval reference.",
           "Two red lines: you never change an advertising account from this path — account mutations go through an investigation and the full approval chain. And when computer.observe is not among your tools you cannot see the user's screen; say so honestly instead of claiming an observation.",
           "Do the work, then report: use tools until the request is actually done, and finish with a concise user-facing summary of what you did (files touched, commands run, apps or pages opened). Use the conversation interfaceLocale: Simplified Chinese for zh-CN and English for en.",
           ...(this.agentTools ? [agentToolsPromptSection()] : [])
@@ -473,8 +478,19 @@ function agentToolsPromptSection(): string {
     "Workspace tools (dot-named) call the Universal Workspace directly: project.* reads and updates the current project, goal.* and task.* manage goals and the task graph, terminal.* runs shell commands inside the project roots, git.* inspects and mutates repositories, artifact.* renders real deliverables, ads.* reads the advertising registry and records decisions, automation.* manages scheduled actors, workflow.* runs recorded workflows.",
     "When computer.observe is present, you CAN see the user's screen: it captures the frontmost window and returns app/title/bounds, the browser URL when readable, and a JPEG of the window for you to inspect. Use it whenever the user asks what is on their screen or in their browser; never claim you cannot see the screen while it is available, and never describe a screen you did not capture.",
     "computer.observe is a read-only observation and NEVER requires an approval, an approvalId, or any user grant beyond the OS permission the user already gave. Do not invent approval requirements for it; only account mutations and destructive operations go through the approval chain.",
+    "When computer.close_window is present, close a window only after computer.observe and only with the fresh observationId returned by that observation. The one-time id expires quickly and is bound to this session plus the captured PID, bundle, window, and bounds. It is a routine local write, not an advertising-account mutation; Full Access permits it, while guarded mode may block it.",
     "Every dot-named call is audited and its structured result (success/data or a coded, recoverable error) is written back to the project/task record. Create a git checkpoint before mutating a repository, attach produced artifacts to the task, and when a call returns a non-recoverable permission error, ask the user instead of retrying."
   ].join("\n");
+}
+
+/** Screen/browser requests must not be downgraded to answer mode by a model that
+ * cannot introspect the action turn's tool list. Keep the override narrow so
+ * conceptual questions such as “what is Chrome?” remain ordinary answers. */
+export function shouldForceComputerAction(message: string, computerAvailable: boolean): boolean {
+  if (!computerAvailable) return false;
+  const subject = /(?:\bscreen\b|\bbrowser\b|\bchrome\b|\bsafari\b|\bfirefox\b|屏幕|浏览器|窗口)/i.test(message);
+  if (!subject) return false;
+  return /(?:\b(?:see|look|inspect|capture|close|quit)\b|what(?:'s| is).*(?:open|showing|on (?:my )?screen|in (?:my )?(?:browser|chrome)|current)|currently open|frontmost|正在打开|当前|前台|看看|看一下|看见|关闭|截屏)/i.test(message);
 }
 
 function parseConversationDecision(text: string, userMessage: string, locale: unknown): z.infer<typeof ConversationDecision> {const payload = parsePossibleJson(text);

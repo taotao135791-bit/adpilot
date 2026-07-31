@@ -13,6 +13,7 @@ export const PACKAGED_NATIVE_HELPER_RELATIVE_PATH =
 const ACTION_METHODS = new Set<NativeMethod>([
   "application.activate",
   "window.focus",
+  "window.close",
   "input.move",
   "input.click",
   "input.drag",
@@ -39,6 +40,7 @@ export const NativeMethodSchema = z.enum([
   "frontmost",
   "application.activate",
   "window.focus",
+  "window.close",
   "accessibility.snapshot",
   "accessibility.focusedElement",
   "capture",
@@ -316,6 +318,17 @@ export const NativeMethodSchemas = {
     }).strict(),
     result: z.object({
       focused: z.literal(true),
+      windowId: z.number().int().positive(),
+      ownerPid: z.number().int().positive(),
+      bundleId: z.string()
+    }).strict()
+  },
+  "window.close": {
+    params: z.object({
+      surfaceLease: NativeWindowSurfaceLeaseSchema
+    }).strict(),
+    result: z.object({
+      closed: z.literal(true),
       windowId: z.number().int().positive(),
       ownerPid: z.number().int().positive(),
       bundleId: z.string()

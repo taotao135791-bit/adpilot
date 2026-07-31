@@ -531,7 +531,7 @@ private func virtualKeyCode(_ raw: String) -> CGKeyCode? {
     return ansi[character]
 }
 
-private func requireInputDeadline(_ deadlineUnixMs: Int64, inputStarted: Bool) throws {
+func requireInputDeadline(_ deadlineUnixMs: Int64, inputStarted: Bool) throws {
     guard unixMilliseconds() <= deadlineUnixMs else {
         if inputStarted {
             throw HelperFailure(

@@ -169,6 +169,13 @@ struct AdPilotNativeHelper {
             return try ApplicationService.activate(request.params)
         case "window.focus":
             return try AccessibilityService.focusWindow(request.params)
+        case "window.close":
+            return try await AccessibilityService.closeWindow(
+                request.params,
+                sessionId: request.sessionId,
+                deadlineUnixMs: request.deadlineUnixMs,
+                surfaceLeaseStore: surfaceLeaseStore
+            )
         case "accessibility.snapshot":
             return try AccessibilityService.snapshot(request.params)
         case "accessibility.focusedElement":

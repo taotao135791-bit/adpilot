@@ -28,7 +28,7 @@ const token = process.env.ADPILOT_NATIVE_HELPER_TOKEN;
 let lastSequence = 0;
 const claimedActions = new Set();
 const actionMethods = new Set([
-  "application.activate", "window.focus", "input.move", "input.click",
+  "application.activate", "window.focus", "window.close", "input.move", "input.click",
   "input.drag", "input.type", "input.keypress", "input.scroll"
 ]);
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -75,7 +75,7 @@ rl.on("line", (line) => {
       protocolVersion: 3, helperVersion: "fake-3", pid: process.pid, platform: "darwin",
       capabilities: [
         "hello", "permissions.status", "permissions.request", "permissions.openSettings",
-        "displays.list", "windows.list", "frontmost", "application.activate", "window.focus",
+        "displays.list", "windows.list", "frontmost", "application.activate", "window.focus", "window.close",
         "accessibility.snapshot", "accessibility.focusedElement", "capture", "input.activity",
         "input.move", "input.click", "input.drag", "input.type", "input.keypress",
         "input.scroll", "wait"

@@ -43,7 +43,9 @@ enum ApplicationService {
 }
 
 enum AccessibilityService {
-    static func focusWindow(_ params: [String: Any]) throws -> [String: Any] {
+    private static func exactWindow(
+        _ params: [String: Any]
+    ) throws -> (windowId: Int, ownerPid: Int, bundleId: String, target: AXUIElement) {
         try strictKeys(params, allowed: ["windowId", "ownerPid", "bundleId"])
         try requireAccessibilityPermission()
         let windowId = try boundedInteger(
@@ -61,7 +63,6 @@ enum AccessibilityService {
               bundleId.utf8.count <= 1_024 else {
             throw HelperFailure("INVALID_PARAMS", "bundleId must be a bounded non-empty string")
         }
-
         let identity = try WindowSurfaceIdentity.current(windowId: windowId)
         guard identity.ownerPid == ownerPid, identity.bundleId == bundleId else {
             throw HelperFailure(
@@ -69,7 +70,6 @@ enum AccessibilityService {
                 "windowId, ownerPid, and bundleId do not identify the same surface"
             )
         }
-
         let application = AXUIElementCreateApplication(pid_t(ownerPid))
         let windows = try axElements(application, attribute: kAXWindowsAttribute as CFString)
         guard let target = windows.first(where: { axWindowMatches($0, identity: identity) }) else {
@@ -80,6 +80,16 @@ enum AccessibilityService {
                 details: ["windowId": windowId]
             )
         }
+        return (windowId, ownerPid, bundleId, target)
+    }
+
+    static func focusWindow(_ params: [String: Any]) throws -> [String: Any] {
+        let exact = try exactWindow(params)
+        let windowId = exact.windowId
+        let ownerPid = exact.ownerPid
+        let bundleId = exact.bundleId
+        let target = exact.target
+        let application = AXUIElementCreateApplication(pid_t(ownerPid))
 
         let frontmostResult = AXUIElementSetAttributeValue(
             application,
@@ -107,6 +117,63 @@ enum AccessibilityService {
             "windowId": windowId,
             "ownerPid": ownerPid,
             "bundleId": bundleId
+        ]
+    }
+
+    static func closeWindow(
+        _ params: [String: Any],
+        sessionId: String,
+        deadlineUnixMs: Int64,
+        surfaceLeaseStore: SurfaceLeaseStore
+    ) async throws -> [String: Any] {
+        try strictKeys(params, allowed: ["surfaceLease"])
+        try requireInputDeadline(deadlineUnixMs, inputStarted: false)
+        let descriptor = try WindowSurfaceLease.parse(params["surfaceLease"])
+        let lease = try await surfaceLeaseStore.resolve(descriptor, sessionId: sessionId)
+        try await surfaceLeaseStore.consume(generation: lease.generation)
+        try requireAccessibilityPermission()
+        let current = try WindowSurfaceIdentity.current(windowId: lease.identity.windowId)
+        guard lease.identity.matches(current) else {
+            throw HelperFailure(
+                "SURFACE_CHANGED",
+                "the target window identity or bounds changed after observation",
+                details: ["windowId": lease.identity.windowId]
+            )
+        }
+        let exact = try exactWindow([
+            "windowId": lease.identity.windowId,
+            "ownerPid": lease.identity.ownerPid,
+            "bundleId": lease.identity.bundleId
+        ])
+        var rawCloseButton: CFTypeRef?
+        let closeButtonResult = AXUIElementCopyAttributeValue(
+            exact.target,
+            kAXCloseButtonAttribute as CFString,
+            &rawCloseButton
+        )
+        guard closeButtonResult == .success,
+              let rawCloseButton,
+              CFGetTypeID(rawCloseButton) == AXUIElementGetTypeID() else {
+            throw axFailure(
+                "WINDOW_CLOSE_UNAVAILABLE",
+                "Accessibility did not expose an exact-window close control",
+                closeButtonResult
+            )
+        }
+        let closeButton = unsafeDowncast(rawCloseButton, to: AXUIElement.self)
+        let pressResult = AXUIElementPerformAction(closeButton, kAXPressAction as CFString)
+        guard pressResult == .success else {
+            throw axFailure(
+                "WINDOW_CLOSE_FAILED",
+                "Accessibility could not press the exact-window close control",
+                pressResult
+            )
+        }
+        return [
+            "closed": true,
+            "windowId": exact.windowId,
+            "ownerPid": exact.ownerPid,
+            "bundleId": exact.bundleId
         ]
     }
 

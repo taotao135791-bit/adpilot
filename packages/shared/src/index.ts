@@ -698,6 +698,7 @@ export const PLAN_MODE_READ_TOOL_NAMES: readonly string[] = [
   "grep",
   "find",
   "ls",
+  "computer.observe",
   "read_workspace",
   "read_visual_table",
   "analyze_campaign_metrics",
@@ -727,6 +728,17 @@ function classifyDispatchSpecialist(args: unknown): ToolPermissionClass {
  * unlisted names fall back to DEFAULT_TOOL_GATE_RULE.
  */
 export const TOOL_GATE_RULES: Readonly<Record<string, ToolGateRule>> = {
+  "computer.observe": {
+    classify: "read",
+    authority: "self_gated",
+    reason: "Captures an exact local window and metadata without changing application state."
+  },
+  "computer.close_window": {
+    classify: "write",
+    authority: "approval_reference",
+    referenceStatuses: ["executed"],
+    reason: "Consumes a one-time, session-bound exact-window observation; guarded mode requires authority and Full Access may waive it."
+  },
   read_workspace: {
     classify: "read",
     authority: "self_gated",

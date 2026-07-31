@@ -23,7 +23,17 @@ import { AccountOperator, SpecialistCoordinator, specialistSchemas, type Special
 import { AdPilotTools } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
 import { AgentToolRegistry, succeed, type AgentToolDeps } from "@adpilot/agent-tools";
-import { AdPilotAgent, WorkspaceSharedFactRepository, conversationSpecialistPermission } from "./index.js";
+import { AdPilotAgent, WorkspaceSharedFactRepository, conversationSpecialistPermission, shouldForceComputerAction } from "./index.js";
+
+describe("computer action routing", () => {
+  it("forces concrete screen/browser operations into the action path only when Computer Use is available", () => {
+    expect(shouldForceComputerAction("What is currently open in my Chrome?", true)).toBe(true);
+    expect(shouldForceComputerAction("看看我的浏览器现在打开了什么，然后关闭这个窗口", true)).toBe(true);
+    expect(shouldForceComputerAction("Please close the current browser window", true)).toBe(true);
+    expect(shouldForceComputerAction("What is Chrome?", true)).toBe(false);
+    expect(shouldForceComputerAction("What is currently open in my Chrome?", false)).toBe(false);
+  });
+});
 
 describe("conversation specialist permissions", () => {
   it("derives the minimum read or scroll permission and refuses mutations", () => {

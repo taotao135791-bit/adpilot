@@ -143,6 +143,14 @@ export function ComputerUseCard({ copy, locale, mode, controlState, computer, co
               : visibleFrame?.browser.url ?? "—"
           }</strong></div>
           <div><span>{copy.controlOwner}</span><strong>{userControl ? copy.userControl : copy.agentControl}</strong></div>
+          <div
+            title={visibleFrame
+              ? `${visibleFrame.application.bundleId} · PID ${visibleFrame.application.pid} · Window ${visibleFrame.window.id}`
+              : undefined}
+          >
+            <span>{copy.actionIsolation}</span>
+            <strong>{visibleFrame ? copy.exactWindowBound : "—"}</strong>
+          </div>
         </div>
         <div className="micro-task">
           <span>{copy.currentMicroTask}</span>

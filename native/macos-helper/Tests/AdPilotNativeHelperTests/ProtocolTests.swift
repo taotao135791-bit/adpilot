@@ -21,6 +21,7 @@ final class ProtocolTests: XCTestCase {
                 "frontmost",
                 "application.activate",
                 "window.focus",
+                "window.close",
                 "accessibility.snapshot",
                 "accessibility.focusedElement",
                 "capture",

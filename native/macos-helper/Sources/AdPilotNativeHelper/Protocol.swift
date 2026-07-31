@@ -16,6 +16,7 @@ let supportedMethods = [
     "frontmost",
     "application.activate",
     "window.focus",
+    "window.close",
     "accessibility.snapshot",
     "accessibility.focusedElement",
     "capture",
@@ -32,6 +33,7 @@ let supportedMethods = [
 let actionMethods: Set<String> = [
     "application.activate",
     "window.focus",
+    "window.close",
     "input.move",
     "input.click",
     "input.drag",

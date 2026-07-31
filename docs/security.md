@@ -40,6 +40,15 @@ Plan mode grants no new authority in either direction. While enabled it contract
 
 AdPilot launches a dedicated browser Profile per client and persists its process id, application id, native window id/bounds and platform. The runtime obtains application, bundle id, PID, title/id, bounds, screen identity and DPR through native macOS APIs, then captures only that bound window. It validates the durable session before and after capture and immediately before native input. A closed/replaced window, changed PID/Profile/application, foreground switch or ambiguous restart is `BROWSER_SESSION_LOST`; it never rebinds automatically.
 
+General desktop Computer Use applies the same native isolation to local windows:
+each pointer/keyboard/scroll/drag action and exact-window close consumes a
+short-lived, one-time capture lease bound to the product Session, PID, bundle id,
+window id, bounds and capture dimensions. Coordinates outside that captured window
+are rejected before native input. Pointer actions also require the same app and
+window to remain frontmost, so a focus switch cannot redirect the mouse into
+another application. Agent-facing window actions use an opaque observation id;
+the model cannot supply or override native identity fields.
+
 Every action is bound to task id, step id, plan id, full surface fingerprint, account fingerprint and allowed region. The policy validates screenshot/window coordinates and DPR, refuses repeated coordinates, executes one action at a time, takes a fresh screenshot after failure, escalates only the third non-mutating attempt, and never retries a mutation or timeout.
 
 `ImageChangeVerifier` is limited to local tests. Production uses a separately invoked visual verifier, either an advanced endpoint or the configured image-capable Deep code model, to check the declared result against before/after ROIs. Any successful native action marks the task's screenshot-derived facts stale; a detected surface change does the same. Starting, resuming, replacing or closing a managed-browser session invalidates that client's prior visual evidence.
