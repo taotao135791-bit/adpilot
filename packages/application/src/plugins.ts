@@ -22,15 +22,16 @@
  *   accepts the exact diff (409 otherwise). Activation consumes a
  *   single-use, process-local approval receipt minted by this service; the
  *   durable receipt ledger rejects replays across restarts.
- * - Capability wiring decision: plugin *tools* never enter AdPilotTools,
- *   SkillRegistry, or the agent tool surface. Read-only declared tools run
- *   through executeTool() with a broker that registers only capabilities the
- *   manifest permissions justify (this round: filesystem.readText confined to
- *   <workspace>/plugin-data). Mutable tools (readOnly: false) are refused
- *   with an audit denial until they can be bridged into the official
- *   plan/guardrail/approval pipeline — the advertisingMutation permission is
- *   therefore never brokered, and any over-permission capability call is
- *   denied by the broker and audited. Plugin *skills* are manifest metadata
+ * - Capability wiring decision: plugin tools never enter AdPilotTools or
+ *   SkillRegistry. A single run-scoped `plugin.invoke_readonly` agent bridge
+ *   exposes only tools from installed, active, signed and reviewed bundles
+ *   whose manifest grants no authority beyond optional filesystem.readText.
+ *   Every invocation still runs through executeTool(), exact active-bundle
+ *   verification, the child-process/VM supervisor and the confined
+ *   <workspace>/plugin-data broker. Mutable, network, secret, browser,
+ *   Computer Use, advertising and storage grants never enter the agent
+ *   surface; over-permission capability calls are denied and audited. Plugin
+ *   *skills* are manifest metadata
  *   (name + description, no body); they are exposed read-only in the catalog
  *   DTOs and deliberately not injected into the advisory knowledge layer or
  *   registered as executable skills — there is nothing executable to
@@ -42,7 +43,11 @@
 import { createPublicKey } from "node:crypto";
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { Type } from "@earendil-works/pi-ai";
+import { z } from "zod";
 import type { AuditLog } from "@adpilot/audit";
+import type { ToolContext } from "@adpilot/tools";
 import type { WorkspaceStore } from "@adpilot/workspace";
 import {
   CapabilityBroker,
@@ -59,6 +64,7 @@ import {
   type PluginApprovalExpectation,
   type PluginApprovalReceipt,
   type PluginLogEvent,
+  type PluginManifest,
   type PluginSupervisorStatus
 } from "@adpilot/plugin-runtime";
 import {
@@ -216,6 +222,46 @@ const PLUGIN_CANDIDATES: readonly PluginCandidateDto[] = [
     },
     metadataReviewedAt: "2026-07-31",
     installable: false
+  },
+  {
+    id: "google-ads-api-connector",
+    name: "Google Ads API Connector",
+    publisher: "Google",
+    description: {
+      en: "Account structure, performance reporting, recommendations, and change history through the official Google Ads API.",
+      zh: "通过 Google Ads 官方 API 读取账户结构、效果报表、优化建议与变更历史。"
+    },
+    sourceUrl: "https://developers.google.com/google-ads/api/docs/get-started/introduction",
+    transport: "remote",
+    maturity: "stable",
+    recommendedMode: "read-only",
+    capabilities: ["account structure", "performance reporting", "recommendations", "change history"],
+    notes: {
+      en: "Candidate only. Begin with reporting scopes, an explicit manager-account binding, and a read-only query allowlist; keep every mutate operation behind a separate reviewed plugin and approval receipt.",
+      zh: "仅为候选。首次接入应只开放报表范围，明确绑定经理账户并使用只读查询白名单；所有 mutate 操作必须拆分到独立审核插件并经过审批回执。"
+    },
+    metadataReviewedAt: "2026-07-31",
+    installable: false
+  },
+  {
+    id: "tiktok-business-api-connector",
+    name: "TikTok API for Business Connector",
+    publisher: "TikTok",
+    description: {
+      en: "Campaign structure, creative performance, reporting, and measurement context through TikTok API for Business.",
+      zh: "通过 TikTok API for Business 读取广告结构、创意表现、效果报表与测量上下文。"
+    },
+    sourceUrl: "https://business-api.tiktok.com/portal",
+    transport: "remote",
+    maturity: "stable",
+    recommendedMode: "read-only",
+    capabilities: ["campaign reporting", "creative insights", "audience reporting", "measurement"],
+    notes: {
+      en: "Candidate only. Start with reporting endpoints and one explicitly bound advertiser ID; campaign, audience, creative, and catalog mutations remain out of scope until separately reviewed.",
+      zh: "仅为候选。首次接入应只开放报表端点并绑定单一 advertiser ID；广告、受众、创意和商品目录写入需另行审核后再开放。"
+    },
+    metadataReviewedAt: "2026-07-31",
+    installable: false
   }
 ];
 
@@ -242,7 +288,15 @@ export interface PluginToolInvocation {
   input: unknown;
   actor: string;
   clientId?: string | undefined;
+  taskId?: string | undefined;
   timeoutMs?: number | undefined;
+  signal?: AbortSignal | undefined;
+}
+
+export interface AgentPluginToolDescriptor {
+  pluginId: string;
+  tool: string;
+  description: string;
 }
 
 export interface PluginServiceDeps {
@@ -258,6 +312,37 @@ interface BufferedAudit {
   status: "attempted" | "succeeded" | "failed" | "denied";
   actor: string;
   details: Record<string, unknown>;
+}
+
+const AgentPluginInvocation = z
+  .object({
+    pluginId: z.string().regex(PLUGIN_ID),
+    tool: z.string().min(3).max(160),
+    input: z.unknown()
+  })
+  .strict();
+
+function singleLine(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+/**
+ * V1 agent bridge permission ceiling. `filesystem.read.text` is the one
+ * broker implemented here; every other manifest grant stays catalog-only.
+ */
+function isAgentSafeManifest(manifest: PluginManifest): boolean {
+  const permissions = manifest.permissions;
+  return Boolean(manifest.signature)
+    && manifest.review.status === "approved"
+    && permissions.capabilities.length === 0
+    && permissions.filesystem.every((permission) => permission === "read.text")
+    && permissions.network.length === 0
+    && permissions.secrets.length === 0
+    && permissions.browser === false
+    && permissions.computerUse === false
+    && permissions.advertisingRead === false
+    && permissions.advertisingMutation === false
+    && permissions.storage === false;
 }
 
 /** Mirrors the curated trust-anchor rules: regular, non-symlink Ed25519 .pem files with safe key ids. */
@@ -609,6 +694,69 @@ export class PluginService {
   }
 
   /**
+   * Builds the only plugin tool that can enter an agent run.
+   *
+   * The returned tool is bound to this exact client/task/actor context. Its
+   * input deliberately has no clientId, taskId, permission, capability or
+   * approval fields, so a model cannot retarget the invocation or ask the
+   * bridge for broader authority. The advertised plugin/tool pairs are an
+   * immutable snapshot for the run and are checked again by executeTool()
+   * against the current active bundle before a child process starts.
+   */
+  async agentTools(context: ToolContext): Promise<AgentTool[]> {
+    await this.#workspace.readClient(context.clientId);
+    const declarations = await this.#agentToolDeclarations();
+    if (declarations.length === 0) return [];
+    const available = new Set(
+      declarations.map((entry) => `${entry.pluginId}\u0000${entry.tool}`)
+    );
+    const description = [
+      "Invoke one installed plugin tool through AdPilot's read-only plugin boundary.",
+      "Only the exact plugin/tool pairs below are available in this run. The bundle is re-verified at execution; no network, secrets, browser, Computer Use, advertising, storage or mutable authority is brokered.",
+      ...declarations.map(
+        (entry) => `- ${entry.pluginId} / ${entry.tool}: ${singleLine(entry.description)}`
+      )
+    ].join("\n");
+    const tool: AgentTool = {
+      name: "plugin.invoke_readonly",
+      label: "Invoke an installed read-only plugin tool",
+      description,
+      parameters: Type.Object(
+        {
+          pluginId: Type.String({ description: "Exact installed plugin id from the allowed pairs in this tool description" }),
+          tool: Type.String({ description: "Exact declared tool name paired with pluginId" }),
+          input: Type.Unknown({ description: "Input accepted by that reviewed plugin tool" })
+        },
+        { additionalProperties: false }
+      ),
+      executionMode: "sequential",
+      execute: async (_toolCallId, raw, signal) => {
+        const input = AgentPluginInvocation.parse(raw);
+        if (!available.has(`${input.pluginId}\u0000${input.tool}`)) {
+          throw new PluginRuntimeError(
+            "PLUGIN_AGENT_TOOL_NOT_AVAILABLE",
+            `${input.tool} is not an active read-only tool advertised for ${input.pluginId} in this run`
+          );
+        }
+        const result = await this.executeTool({
+          pluginId: input.pluginId,
+          tool: input.tool,
+          input: input.input,
+          actor: context.actor,
+          clientId: context.clientId,
+          taskId: context.taskId,
+          ...(signal ? { signal } : {})
+        });
+        return {
+          content: [{ type: "text", text: JSON.stringify(result ?? null) }],
+          details: { pluginId: input.pluginId, tool: input.tool, result }
+        };
+      }
+    };
+    return [tool];
+  }
+
+  /**
    * Service-layer tool invocation path (the isolation boundary). Only
    * declared read-only tools run; the broker registers exactly the
    * capabilities justified by the manifest grant, so over-permission calls
@@ -644,7 +792,8 @@ export class PluginService {
     const startedAt = Date.now();
     try {
       const result = await catalog.runtime.executeTool(pluginId, tool, invocation.input, broker, {
-        timeoutMs: invocation.timeoutMs ?? 5_000
+        timeoutMs: invocation.timeoutMs ?? 5_000,
+        ...(invocation.signal ? { signal: invocation.signal } : {})
       });
       await this.#auditMutation(invocation, "plugin_tool_execute", "succeeded", pluginId, {
         tool,
@@ -687,6 +836,55 @@ export class PluginService {
       }
     }
     return events.slice(-Math.max(1, limit));
+  }
+
+  /**
+   * Exact active-version declarations eligible for the agent bridge.
+   *
+   * Discovery is fail-closed per bundle: catalog unavailability, corrupt
+   * state, failed signature/integrity verification, an unsafe permission
+   * grant, or a mutable declaration simply removes that entry. Ordinary agent
+   * work remains available when the plugin subsystem is degraded.
+   */
+  async #agentToolDeclarations(): Promise<AgentPluginToolDescriptor[]> {
+    const catalog = this.#catalog;
+    if (!catalog) return [];
+    const pluginsRoot = path.join(catalog.store.root, "plugins");
+    const entries = await readdir(pluginsRoot, { withFileTypes: true }).catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return [] as import("node:fs").Dirent[];
+        throw error;
+      }
+    );
+    const declarations: AgentPluginToolDescriptor[] = [];
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      try {
+        const state = await catalog.store.getState(entry.name);
+        if (!state || state.status !== "active") continue;
+        const verification = await this.#verifyInstalled(state);
+        if (!verification.ok) continue;
+        const snapshot = await loadPluginBundle(
+          catalog.store.bundlePath(state.pluginId, state.activeVersion)
+        );
+        if (!isAgentSafeManifest(snapshot.manifest)) continue;
+        for (const tool of snapshot.manifest.tools) {
+          if (!tool.readOnly) continue;
+          declarations.push({
+            pluginId: state.pluginId,
+            tool: tool.name,
+            description: tool.description
+          });
+        }
+      } catch {
+        // One corrupt/tampered plugin must disappear from the agent surface
+        // without taking down ordinary local or advertising work.
+      }
+    }
+    return declarations.sort(
+      (left, right) =>
+        left.pluginId.localeCompare(right.pluginId) || left.tool.localeCompare(right.tool)
+    );
   }
 
   /** Boot-time integrity/signature re-verification of every installed plugin. */
@@ -836,7 +1034,7 @@ export class PluginService {
   }
 
   async #auditMutation(
-    options: { actor: string; clientId?: string | undefined },
+    options: { actor: string; clientId?: string | undefined; taskId?: string | undefined },
     action: string,
     status: BufferedAudit["status"],
     pluginId: string,
@@ -849,6 +1047,7 @@ export class PluginService {
     }
     await this.#audit.append({
       clientId,
+      ...(options.taskId ? { taskId: options.taskId } : {}),
       actor: options.actor,
       action,
       status,

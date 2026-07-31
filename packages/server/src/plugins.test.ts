@@ -118,7 +118,9 @@ describe("plugin REST endpoints", () => {
     expect(body.candidates).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "github-official-mcp", installable: false, recommendedMode: "read-only" }),
       expect.objectContaining({ id: "google-drive-official-mcp", installable: false, maturity: "developer-preview" }),
-      expect.objectContaining({ id: "figma-official-mcp", installable: false, maturity: "beta" })
+      expect.objectContaining({ id: "figma-official-mcp", installable: false, maturity: "beta" }),
+      expect.objectContaining({ id: "google-ads-api-connector", installable: false, maturity: "stable" }),
+      expect.objectContaining({ id: "tiktok-business-api-connector", installable: false, maturity: "stable" })
     ]));
     const plugins = body.plugins as Array<Record<string, unknown>>;
     const csv = plugins.find((plugin) => plugin.id === "com.adpilot.csv-daily-report");

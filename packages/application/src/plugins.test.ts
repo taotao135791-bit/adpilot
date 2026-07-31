@@ -170,7 +170,9 @@ describe("plugin service composition root", () => {
     expect(candidates.map((candidate) => candidate.id)).toEqual([
       "github-official-mcp",
       "google-drive-official-mcp",
-      "figma-official-mcp"
+      "figma-official-mcp",
+      "google-ads-api-connector",
+      "tiktok-business-api-connector"
     ]);
     expect(candidates.every((candidate) => candidate.installable === false && candidate.recommendedMode === "read-only")).toBe(true);
     const csv = plugins.find((plugin) => plugin.id === "com.adpilot.csv-daily-report");
