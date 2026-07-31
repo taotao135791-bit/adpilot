@@ -33,6 +33,10 @@ describe("embedded knowledge loader", () => {
     expect(skills.find((skill) => skill.name === "ads-ops")?.triggers).toEqual(expect.arrayContaining(["patrol", "巡检"]));
     expect(skills.find((skill) => skill.name === "ads-report")?.triggers).toContain("日报");
     expect(skills.find((skill) => skill.name === "ads-audit")?.triggers).toEqual(expect.arrayContaining(["audit", "账户审计"]));
+    expect(skills.find((skill) => skill.name === "ads-create")?.triggers).toEqual(expect.arrayContaining(["create campaign", "广告文案"]));
+    expect(skills.find((skill) => skill.name === "ads-dna")?.triggers).toEqual(expect.arrayContaining(["brand DNA", "品牌画像"]));
+    expect(skills.find((skill) => skill.name === "ads-generate")?.triggers).toEqual(expect.arrayContaining(["generate ads", "生成广告图片"]));
+    expect(skills.find((skill) => skill.name === "ads-photoshoot")?.triggers).toEqual(expect.arrayContaining(["product photo", "产品摄影"]));
   });
 
   it("returns full skill text on demand and null for unknown names", () => {
@@ -98,6 +102,9 @@ describe("embedded knowledge loader", () => {
     expect(matchKnowledgeSkills("audit my ads account")[0]?.name).toBe("ads-audit");
     expect(matchKnowledgeSkills("看看竞对在投什么").map((skill) => skill.name)).toContain("ads-competitor");
     expect(matchKnowledgeSkills("落地页转化率很差帮我看看").map((skill) => skill.name)).toContain("ads-landing");
+    expect(matchKnowledgeSkills("先提取品牌画像，再做广告文案").map((skill) => skill.name)).toEqual(expect.arrayContaining(["ads-dna", "ads-create"]));
+    expect(matchKnowledgeSkills("给这个产品做一组产品棚拍").map((skill) => skill.name)).toContain("ads-photoshoot");
+    expect(matchKnowledgeSkills("根据 brief 生成广告图片").map((skill) => skill.name)).toContain("ads-generate");
     expect(matchKnowledgeSkills("今天天气怎么样")).toEqual([]);
     // Latin triggers require token boundaries: "auditing" must not match "audit".
     expect(matchKnowledgeSkills("auditing")).toEqual([]);

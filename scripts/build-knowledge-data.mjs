@@ -28,6 +28,11 @@ const MAX_TRIGGER_WORDS = 5;
  * This is routing metadata only; it grants no capabilities.
  */
 const CURATED_TRIGGERS = {
+  "ads": ["/ads", "paid ads", "paid advertising", "广告任务", "广告投放", "广告账户"],
+  "ads-create": ["广告创意简报", "广告文案", "广告概念", "创意简报"],
+  "ads-dna": ["品牌DNA", "品牌画像", "提取品牌", "品牌视觉"],
+  "ads-generate": ["生成广告图片", "广告图片", "生成广告素材", "广告视觉"],
+  "ads-photoshoot": ["产品摄影", "产品照片", "产品棚拍", "生活方式图"],
   "ads-ops": ["巡检", "每日巡检", "客户回复", "素材需求", "异常排查"],
   "ads-audit": ["账户审计", "广告审计", "全面审计"],
   "ads-report": ["周报", "月报", "报表"],
@@ -135,7 +140,7 @@ function extractTriggers(description) {
   const triggers = [];
   const clauses = [
     /use when user says\s+([^.]+)\./gi,
-    /triggers?\s+on\s+([^.]+)\./gi,
+    /triggers?\s+on\s*:?\s*([^.]+)\./gi,
     /use for\s+([^.]+)\./gi
   ];
   for (const clause of clauses) {
