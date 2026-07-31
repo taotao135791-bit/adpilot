@@ -254,7 +254,7 @@ const zh = {
   insertCommand: "插入斜杠命令",
   autonomyGuarded: "守护",
   autonomyFull: "完全访问",
-  autonomyHint: "执行权限：守护模式下真实账户修改必须经审批门；完全访问允许直接执行",
+  autonomyHint: "执行权限：完全访问仅免除本机普通写入的逐次审批；真实广告账户修改与破坏性操作始终需要独立审批",
   autonomyError: "切换自主权模式失败",
   modelChipHint: "当前日常模型 · 点击打开模型设置"
 } as const;
@@ -491,7 +491,7 @@ const en: Record<keyof typeof zh, string> = {
   insertCommand: "Insert a slash command",
   autonomyGuarded: "Guarded",
   autonomyFull: "Full access",
-  autonomyHint: "Execution permission: Guarded routes every live account change through the approval gate; Full access allows direct execution",
+  autonomyHint: "Execution permission: Full access waives per-action approval only for ordinary local writes; live ad-account changes and destructive actions always keep independent approval",
   autonomyError: "Could not switch autonomy mode",
   modelChipHint: "Current daily model · click to open model settings"
 };
