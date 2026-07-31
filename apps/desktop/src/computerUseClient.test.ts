@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { computerUseCopy, localizeRuntimeRoute, localizeRuntimeValue } from "./ComputerUseSettings.js";
+import {
+  computerUseCopy,
+  isComputerUseReady,
+  localizeRuntimeRoute,
+  localizeRuntimeValue
+} from "./ComputerUseSettings.js";
 import {
   DesktopApiError,
   closeBrowserSession,
@@ -143,6 +148,23 @@ describe("Computer Use localization", () => {
     expect(localizeRuntimeRoute("Built-in GUI → Fast Vision → Deep Vision", "en")).toBe("Built-in GUI → Fast Vision → Deep Vision");
     expect(localizeRuntimeValue("not configured", "zh-CN")).toBe("未配置");
     expect(localizeRuntimeValue("not configured", "en")).toBe("Not configured");
+  });
+});
+
+describe("Computer Use readiness", () => {
+  const visualRuntime = { guiConfigured: true };
+
+  it("requires a loaded and connected managed-browser session", () => {
+    expect(isComputerUseReady(visualRuntime, "ready", "connected")).toBe(true);
+    expect(isComputerUseReady(visualRuntime, "loading", "connected")).toBe(false);
+    expect(isComputerUseReady(visualRuntime, "ready", "starting")).toBe(false);
+    expect(isComputerUseReady(visualRuntime, "ready", "lost")).toBe(false);
+    expect(isComputerUseReady(visualRuntime, "ready", "closed")).toBe(false);
+    expect(isComputerUseReady(visualRuntime, "ready", null)).toBe(false);
+  });
+
+  it("does not report readiness without a configured visual runtime", () => {
+    expect(isComputerUseReady({ guiConfigured: false }, "ready", "connected")).toBe(false);
   });
 });
 

@@ -619,6 +619,20 @@ export function formatTime(value: string, locale: AppLocale): string {
   return new Intl.DateTimeFormat(locale, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
+export function formatUtcTime(value: string, locale: AppLocale): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const formatted = new Intl.DateTimeFormat(locale, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "UTC"
+  }).format(date);
+  return `${formatted} UTC`;
+}
+
 export function formatDateTime(value: string, locale: AppLocale): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(locale, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
@@ -671,6 +685,7 @@ export function settingsCopy(locale: AppLocale): SettingsCopy {
 const computerZh = {
   ready: "系统就绪", needsSetup: "需要配置", readyTitle: "电脑控制已就绪", setupTitle: "电脑控制尚未就绪",
   visionHint: "无需专门的视觉模型：在模型配置里选一个带「视觉」标记的代码模型（日常或深度，可两个 Provider），保存并重启后即自动启用定位与校验链路。",
+  browserReadinessHint: "视觉运行时已配置；受管浏览器会话加载完成并通过进程、窗口与配置档案校验后才会显示就绪。",
   permission: "当前权限", activePrivacy: "生效中的隐私模式", localOnly: "仅本机", masked: "最小化传输",
   modelRoute: "自动模型路由", modelRouteBody: "系统按任务难度与失败次数自动选择模型。", automatic: "自动",
   dailyModel: "日常对话模型", deepModel: "深度推理模型", groundingModel: "界面定位模型", verificationModel: "独立校验模型",
@@ -689,6 +704,7 @@ const computerZh = {
 const computerEn: Record<keyof typeof computerZh, string> = {
   ready: "System ready", needsSetup: "Setup required", readyTitle: "Computer use is ready", setupTitle: "Computer use is not ready",
   visionHint: "No dedicated vision model needed: pick any code model flagged “vision” in model settings (daily or deep role — two providers are fine), save and restart, and grounding plus verification come up automatically.",
+  browserReadinessHint: "The visual runtime is configured. Readiness requires a loaded managed-browser session whose process, window, and Profile have passed identity checks.",
   permission: "Current permission", activePrivacy: "Active privacy mode", localOnly: "Local only", masked: "Minimized transfer",
   modelRoute: "Automatic model routing", modelRouteBody: "AdPilot selects a model from task complexity and previous failures.", automatic: "Automatic",
   dailyModel: "Daily conversation model", deepModel: "Deep reasoning model", groundingModel: "GUI grounding model", verificationModel: "Independent verifier",
@@ -1324,7 +1340,7 @@ const workspaceZh = {
   artifactInteractive: "交互",
   artifactReport: "报告",
   automationsTitle: "自动化",
-  automationsBody: "定时或事件触发的自动化:真实调度、幂等执行、每日预算与审批门禁。",
+  automationsBody: "当前支持 UTC 定时自动化:真实调度、幂等执行、每日预算与审批门禁。",
   automationsNew: "新建自动化",
   automationsEmpty: "还没有自动化",
   automationsEmptyBody: "创建一个定时简报、周期任务或通知,调度器按 cron(UTC)自动触发;含变更的动作会先停在审批门。",
@@ -1354,14 +1370,15 @@ const workspaceZh = {
   runWaitingApproval: "等待审批",
   automationCreateTitle: "新建自动化",
   automationTitleLabel: "标题",
-  automationTitlePlaceholder: "例如:每天早上投放简报",
+  automationTitlePlaceholder: "例如:每天 09:00 UTC 投放简报",
   automationTriggerLabel: "触发方式",
   triggerSchedule: "定时(cron)",
-  triggerEvent: "事件",
+  triggerEvent: "事件(尚未支持)",
+  automationScheduleOnly: "当前版本仅支持 UTC 定时计划；事件触发尚未接入调度器。",
   automationPresetLabel: "预设",
-  presetDailyMorning: "每天早上 9:00",
-  presetHourly: "每小时整点",
-  presetWeeklyMonday: "每周一 9:00",
+  presetDailyMorning: "每天 09:00 UTC",
+  presetHourly: "每小时整点(UTC)",
+  presetWeeklyMonday: "每周一 09:00 UTC",
   presetCustom: "自定义",
   cronFieldMinute: "分",
   cronFieldHour: "时",
@@ -1381,11 +1398,11 @@ const workspaceZh = {
   automationMaxRunsLabel: "每日最大运行次数",
   automationCreate: "创建自动化",
   automationEventPrefix: "事件 {event}",
-  cronEveryMinute: "每分钟",
-  cronHourly: "每小时第 {minute} 分",
-  cronDaily: "每天 {time}",
-  cronWeekly: "每周{dow} {time}",
-  cronMonthly: "每月 {dom} 日 {time}",
+  cronEveryMinute: "每分钟(UTC)",
+  cronHourly: "每小时第 {minute} 分(UTC)",
+  cronDaily: "每天 {time} UTC",
+  cronWeekly: "每周{dow} {time} UTC",
+  cronMonthly: "每月 {dom} 日 {time} UTC",
   dow0: "日",
   dow1: "一",
   dow2: "二",
@@ -1641,7 +1658,7 @@ const workspaceEn: Record<keyof typeof workspaceZh, string> = {
   artifactInteractive: "Interactive",
   artifactReport: "Report",
   automationsTitle: "Automations",
-  automationsBody: "Scheduled and event-triggered automations: real scheduling, idempotent runs, daily budgets, and approval gates.",
+  automationsBody: "UTC-scheduled automations with real scheduling, idempotent runs, daily budgets, and approval gates.",
   automationsNew: "New automation",
   automationsEmpty: "No automations yet",
   automationsEmptyBody: "Create a scheduled brief, recurring task, or notification; the scheduler fires it on cron (UTC), and mutating actions park at the approval gate.",
@@ -1671,14 +1688,15 @@ const workspaceEn: Record<keyof typeof workspaceZh, string> = {
   runWaitingApproval: "Waiting for approval",
   automationCreateTitle: "New automation",
   automationTitleLabel: "Title",
-  automationTitlePlaceholder: "e.g. Morning ads brief",
+  automationTitlePlaceholder: "e.g. Daily ads brief at 09:00 UTC",
   automationTriggerLabel: "Trigger",
   triggerSchedule: "Schedule (cron)",
-  triggerEvent: "Event",
+  triggerEvent: "Event (not yet supported)",
+  automationScheduleOnly: "This version supports UTC schedules only. Event triggers are not connected to the scheduler yet.",
   automationPresetLabel: "Preset",
-  presetDailyMorning: "Every morning at 09:00",
-  presetHourly: "Hourly on the hour",
-  presetWeeklyMonday: "Mondays at 09:00",
+  presetDailyMorning: "Daily at 09:00 UTC",
+  presetHourly: "Hourly on the hour (UTC)",
+  presetWeeklyMonday: "Mondays at 09:00 UTC",
   presetCustom: "Custom",
   cronFieldMinute: "minute",
   cronFieldHour: "hour",
@@ -1698,11 +1716,11 @@ const workspaceEn: Record<keyof typeof workspaceZh, string> = {
   automationMaxRunsLabel: "Max runs per day",
   automationCreate: "Create automation",
   automationEventPrefix: "event: {event}",
-  cronEveryMinute: "every minute",
-  cronHourly: "hourly at minute {minute}",
-  cronDaily: "daily at {time}",
-  cronWeekly: "weekly on {dow} at {time}",
-  cronMonthly: "monthly on day {dom} at {time}",
+  cronEveryMinute: "every minute (UTC)",
+  cronHourly: "hourly at minute {minute} (UTC)",
+  cronDaily: "daily at {time} UTC",
+  cronWeekly: "weekly on {dow} at {time} UTC",
+  cronMonthly: "monthly on day {dom} at {time} UTC",
   dow0: "Sun",
   dow1: "Mon",
   dow2: "Tue",

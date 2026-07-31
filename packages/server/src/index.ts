@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
 import { join, resolve } from "node:path";
+import packageManifest from "../../../package.json" with { type: "json" };
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import Fastify from "fastify";
@@ -204,7 +205,7 @@ export async function createServer(system: AdPilotSystem, options: {
     return { status: "ok", chatConfigured: system.modelStatus.chatConfigured, guiConfigured: system.modelStatus.guiConfigured, computerUse: runtime };
   });
   app.get("/api/about", async () => ({
-    name: "AdPilot", version: "0.1.1",
+    name: "AdPilot", version: packageManifest.version,
     runtime: { name: "Pi", version: "0.80.10", license: "MIT" },
     computerUse: { name: "UI-TARS", version: "1.2.3", license: "Apache-2.0" },
     advertisingCore: { upstream: "codex-ads", version: "1.9.2", license: "MIT" }

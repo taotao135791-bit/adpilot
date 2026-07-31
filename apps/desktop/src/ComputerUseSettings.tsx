@@ -39,6 +39,16 @@ type Resource<T> =
   | { status: "empty" }
   | { status: "error"; error: unknown };
 
+export function isComputerUseReady(
+  runtime: Pick<ModelStatus, "guiConfigured">,
+  browserStatus: "loading" | "ready" | "empty" | "error",
+  sessionStatus?: BrowserSession["sessionStatus"] | null
+): boolean {
+  return runtime.guiConfigured
+    && browserStatus === "ready"
+    && sessionStatus === "connected";
+}
+
 export function ComputerUseSettings({
   locale,
   clientId,
@@ -111,6 +121,12 @@ export function ComputerUseSettings({
   }, [productSession?.id, productSession?.revision]);
 
   const session = browser.status === "ready" ? browser.value.session : null;
+  const computerReady = isComputerUseReady(runtime, browser.status, session?.sessionStatus);
+  const readinessHint = !runtime.guiConfigured
+    ? copy.visionHint
+    : !computerReady
+      ? copy.browserReadinessHint
+      : undefined;
   const profiles = browser.status === "ready" ? browser.value.profiles : [];
   const profileOption = profiles.find((item) => item.browserProfile === browserProfile);
   const permissionProfiles = useMemo(() => [...new Set([
@@ -182,13 +198,13 @@ export function ComputerUseSettings({
   ], [copy, runtime]);
 
   return <div className="computer-settings-stack">
-    <section className="computer-readiness" data-ready={runtime.guiConfigured}>
+    <section className="computer-readiness" data-ready={computerReady}>
       <div className="computer-readiness-icon"><IconDesktop size={18} /></div>
       <div>
-        <span className="computer-state-label">{runtime.guiConfigured ? copy.ready : copy.needsSetup}</span>
-        <h3>{runtime.guiConfigured ? copy.readyTitle : copy.setupTitle}</h3>
+        <span className="computer-state-label">{computerReady ? copy.ready : copy.needsSetup}</span>
+        <h3>{computerReady ? copy.readyTitle : copy.setupTitle}</h3>
         <p>{route}</p>
-        {!runtime.guiConfigured && <p className="computer-readiness-hint">{copy.visionHint}</p>}
+        {readinessHint && <p className="computer-readiness-hint">{readinessHint}</p>}
       </div>
       <dl>
         <div><dt>{copy.permission}</dt><dd>{permissionLabel(runtime.permission ?? "OBSERVE", locale)}</dd></div>

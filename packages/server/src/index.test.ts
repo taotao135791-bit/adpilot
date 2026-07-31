@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
@@ -420,7 +420,15 @@ describe("product server", () => {
     expect(state.json().clients[0].name).toBe("Example");
     const about = await server.inject({ method: "GET", url: "/api/about" });
     expect(about.statusCode).toBe(200);
-    expect(about.json()).toMatchObject({ name: "AdPilot", runtime: { name: "Pi" }, computerUse: { name: "UI-TARS" } });
+    const packageManifest = JSON.parse(
+      await readFile(new URL("../../../package.json", import.meta.url), "utf8")
+    ) as { version: string };
+    expect(about.json()).toMatchObject({
+      name: "AdPilot",
+      version: packageManifest.version,
+      runtime: { name: "Pi" },
+      computerUse: { name: "UI-TARS" }
+    });
     const settings = await server.inject({ method: "GET", url: "/api/settings" });
     expect(settings.statusCode).toBe(200);
     expect(settings.json().catalog.providers.length).toBeGreaterThanOrEqual(30);

@@ -6,6 +6,7 @@ import {
   automationStateTone,
   automationTriggerText,
   formatTime,
+  formatUtcTime,
   workspaceCopy,
   type AppLocale
 } from "../labels.js";
@@ -39,11 +40,8 @@ type ActionKind = "daily-brief" | "create-task" | "notify";
 
 type Draft = {
   title: string;
-  triggerKind: "schedule" | "event";
   preset: CronPreset;
   cron: CronSpecFields;
-  eventName: string;
-  eventCondition: string;
   actionKind: ActionKind;
   taskTitle: string;
   taskDescription: string;
@@ -53,11 +51,8 @@ type Draft = {
 
 const EMPTY_DRAFT: Draft = {
   title: "",
-  triggerKind: "schedule",
   preset: "daily-morning",
   cron: cronPresetFields("daily-morning"),
-  eventName: "",
-  eventCondition: "",
   actionKind: "daily-brief",
   taskTitle: "",
   taskDescription: "",
@@ -67,8 +62,7 @@ const EMPTY_DRAFT: Draft = {
 
 function draftValid(draft: Draft): boolean {
   if (!draft.title.trim()) return false;
-  if (draft.triggerKind === "schedule" && !cronFieldsComplete(draft.cron)) return false;
-  if (draft.triggerKind === "event" && !draft.eventName.trim()) return false;
+  if (!cronFieldsComplete(draft.cron)) return false;
   if (draft.actionKind === "create-task" && !draft.taskTitle.trim()) return false;
   if (draft.actionKind === "notify" && !draft.message.trim()) return false;
   const maxRuns = Number(draft.maxRunsPerDay);
@@ -76,9 +70,10 @@ function draftValid(draft: Draft): boolean {
 }
 
 /**
- * Automations view: real scheduled / event-triggered automations with their
- * run history, the approval gate for mutating actions, and the notification
- * inbox the notify action writes into. Polls every 30s while mounted.
+ * Automations view: real UTC-scheduled automations with their run history,
+ * the approval gate for mutating actions, and the notification inbox the
+ * notify action writes into. Existing event records remain readable, but the
+ * creation UI stays schedule-only until event dispatch is implemented.
  */
 export function AutomationsView({ locale, clientId }: { locale: AppLocale; clientId: string }) {
   const copy = workspaceCopy(locale);
@@ -261,13 +256,7 @@ export function AutomationsView({ locale, clientId }: { locale: AppLocale; clien
       const payload = {
         workspaceId: clientId,
         title: draft.title.trim(),
-        trigger: draft.triggerKind === "schedule"
-          ? { kind: "schedule", cron: draft.cron }
-          : {
-              kind: "event",
-              event: draft.eventName.trim(),
-              ...(draft.eventCondition.trim() ? { condition: draft.eventCondition.trim() } : {})
-            },
+        trigger: { kind: "schedule", cron: draft.cron },
         action: draft.actionKind === "daily-brief"
           ? { kind: "daily-brief", input: {} }
           : draft.actionKind === "create-task"
@@ -372,7 +361,7 @@ export function AutomationsView({ locale, clientId }: { locale: AppLocale; clien
                     </div>
                     <span className="home-list-meta">
                       {automation.nextFireAt
-                        ? interpolate(copy.automationNextFire, { time: formatTime(automation.nextFireAt, locale) })
+                        ? interpolate(copy.automationNextFire, { time: formatUtcTime(automation.nextFireAt, locale) })
                         : copy.automationNoFire}
                     </span>
                     <span className="home-list-meta">{interpolate(copy.automationRunCount, { count: String(automation.runCount) })}</span>
@@ -438,64 +427,46 @@ export function AutomationsView({ locale, clientId }: { locale: AppLocale; clien
             </label>
             <label className="workspace-field">
               <span>{copy.automationTriggerLabel}</span>
-              <select
-                value={draft.triggerKind}
-                onChange={(event) => setDraft({ ...draft, triggerKind: event.target.value as Draft["triggerKind"] })}
-              >
+              <select value="schedule" disabled aria-describedby="automation-trigger-availability">
                 <option value="schedule">{copy.triggerSchedule}</option>
-                <option value="event">{copy.triggerEvent}</option>
               </select>
             </label>
-            {draft.triggerKind === "schedule" ? (
-              <>
-                <label className="workspace-field">
-                  <span>{copy.automationPresetLabel}</span>
-                  <select
-                    value={draft.preset}
-                    onChange={(event) => {
-                      const preset = event.target.value as CronPreset;
-                      setDraft({
-                        ...draft,
-                        preset,
-                        ...(preset === "custom" ? {} : { cron: cronPresetFields(preset) })
-                      });
-                    }}
-                  >
-                    {CRON_PRESETS.map((preset) => (
-                      <option key={preset} value={preset}>
-                        {preset === "daily-morning" ? copy.presetDailyMorning
-                          : preset === "hourly" ? copy.presetHourly
-                            : preset === "weekly-monday" ? copy.presetWeeklyMonday
-                              : copy.presetCustom}
-                      </option>
-                    ))}
-                  </select>
+            <p id="automation-trigger-availability" className="workbench-quiet">{copy.automationScheduleOnly}</p>
+            <label className="workspace-field">
+              <span>{copy.automationPresetLabel}</span>
+              <select
+                value={draft.preset}
+                onChange={(event) => {
+                  const preset = event.target.value as CronPreset;
+                  setDraft({
+                    ...draft,
+                    preset,
+                    ...(preset === "custom" ? {} : { cron: cronPresetFields(preset) })
+                  });
+                }}
+              >
+                {CRON_PRESETS.map((preset) => (
+                  <option key={preset} value={preset}>
+                    {preset === "daily-morning" ? copy.presetDailyMorning
+                      : preset === "hourly" ? copy.presetHourly
+                        : preset === "weekly-monday" ? copy.presetWeeklyMonday
+                          : copy.presetCustom}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="automation-cron-grid">
+              {(["minute", "hour", "dom", "month", "dow"] as const).map((field) => (
+                <label key={field} className="workspace-field">
+                  <span>{field === "minute" ? copy.cronFieldMinute : field === "hour" ? copy.cronFieldHour : field === "dom" ? copy.cronFieldDom : field === "month" ? copy.cronFieldMonth : copy.cronFieldDow}</span>
+                  <input
+                    value={draft.cron[field]}
+                    onChange={(event) => setDraft({ ...draft, preset: "custom", cron: { ...draft.cron, [field]: event.target.value } })}
+                  />
                 </label>
-                <div className="automation-cron-grid">
-                  {(["minute", "hour", "dom", "month", "dow"] as const).map((field) => (
-                    <label key={field} className="workspace-field">
-                      <span>{field === "minute" ? copy.cronFieldMinute : field === "hour" ? copy.cronFieldHour : field === "dom" ? copy.cronFieldDom : field === "month" ? copy.cronFieldMonth : copy.cronFieldDow}</span>
-                      <input
-                        value={draft.cron[field]}
-                        onChange={(event) => setDraft({ ...draft, preset: "custom", cron: { ...draft.cron, [field]: event.target.value } })}
-                      />
-                    </label>
-                  ))}
-                </div>
-                <p className="workbench-quiet">{copy.automationCronHint}</p>
-              </>
-            ) : (
-              <>
-                <label className="workspace-field">
-                  <span>{copy.automationEventNameLabel}</span>
-                  <input value={draft.eventName} onChange={(event) => setDraft({ ...draft, eventName: event.target.value })} />
-                </label>
-                <label className="workspace-field">
-                  <span>{copy.automationEventConditionLabel}</span>
-                  <input value={draft.eventCondition} onChange={(event) => setDraft({ ...draft, eventCondition: event.target.value })} />
-                </label>
-              </>
-            )}
+              ))}
+            </div>
+            <p className="workbench-quiet">{copy.automationCronHint}</p>
             <label className="workspace-field">
               <span>{copy.automationActionLabel}</span>
               <select
