@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -84,10 +84,12 @@ describe("project → session → message binding", () => {
 
   it("threads the execution context into agent.respond and returns session + projectId", async () => {
     const { server, system } = await boot();
+    const projectRoot = await realpath(await mkdtemp(join(tmpdir(), "adpilot-bound-project-")));
+    roots.push(projectRoot);
     const project = (await server.inject({
       method: "POST",
       url: "/api/kernel/projects",
-      payload: { workspaceId: "personal", name: "Context", rootPaths: ["/tmp/ads"], enabledCapabilityPacks: ["ads"] }
+      payload: { workspaceId: "personal", name: "Context", rootPaths: [projectRoot], enabledCapabilityPacks: ["ads"] }
     })).json();
     const calls: { clientId: string; prompt: string; context: Record<string, unknown> }[] = [];
     system.agent.respond = async (clientId: string, prompt: string, context: Record<string, unknown> = {}) => {
@@ -108,7 +110,7 @@ describe("project → session → message binding", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.context.executionContext).toEqual({
       projectId: project.id,
-      rootPaths: ["/tmp/ads"],
+      rootPaths: [projectRoot],
       enabledCapabilityPacks: ["ads"]
     });
     expect(calls[0]?.context.sessionId).toBe(body.session.id);
