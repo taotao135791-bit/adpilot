@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createModels } from "@earendil-works/pi-ai";
-import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { AuditLog } from "@adpilot/audit";
 import {
   computeBundleIntegrity,
@@ -182,6 +183,181 @@ describe("plugin service composition root", () => {
       signature: { signed: true, keyId: "adpilot-first-party-2026-01" },
       review: { status: "approved" }
     });
+  });
+
+  it("makes an installed read-only plugin reachable through the existing agent action loop", async () => {
+    const faux = fauxProvider({
+      provider: "plugin-agent",
+      models: [{ id: "code", reasoning: true }]
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const workspaceRoot = path.join(root, "agent-workspace");
+    const system = await createAdPilotSystem({
+      workspaceRoot,
+      models,
+      env: {
+        ADPILOT_FAST_PROVIDER: "plugin-agent",
+        ADPILOT_FAST_MODEL: "code",
+        ADPILOT_STRONG_PROVIDER: "plugin-agent",
+        ADPILOT_STRONG_MODEL: "code"
+      }
+    });
+    await system.workspace.initializeClient({
+      profile: { id: "personal", name: "AdPilot", industry: "unknown", timezone: "UTC" },
+      kpi: { primary: "CPA", target: 1, currency: "USD" }
+    });
+    await system.plugins.install("com.adpilot.csv-daily-report", mutation);
+    const csvPath = path.join(await system.plugins.dataRootForClient("personal"), "agent-daily.csv");
+    await writeFile(csvPath, "campaign,spend\nAlpha,12.5\nBeta,7.5\n");
+    faux.setResponses([
+      fauxAssistantMessage(
+        fauxToolCall("plugin.invoke_readonly", {
+          pluginId: "com.adpilot.csv-daily-report",
+          tool: "com.adpilot.csv-daily-report/summarize",
+          input: { path: csvPath }
+        }),
+        { stopReason: "toolUse" }
+      ),
+      fauxAssistantMessage("已通过已安装插件汇总 2 行，花费合计 20。")
+    ]);
+
+    const run = await system.agent.runAction("personal", "用已安装插件汇总 CSV", {
+      conversationId: "plugin-agent-loop",
+      interfaceLocale: "zh-CN"
+    });
+
+    expect(run.result.summary).toContain("花费合计 20");
+    const toolAudit = (await system.audit.list("personal")).find(
+      (event) => event.action === "plugin_tool_execute"
+    );
+    expect(toolAudit).toMatchObject({
+      taskId: run.task.id,
+      actor: "adpilot_agent",
+      status: "succeeded",
+      details: {
+        pluginId: "com.adpilot.csv-daily-report",
+        tool: "com.adpilot.csv-daily-report/summarize"
+      }
+    });
+    expect(await system.audit.verify("personal")).toBe(true);
+    await system.shutdown();
+  });
+
+  it("exposes only active safe read-only plugin declarations and binds the client in code", async () => {
+    const fixture = await createFixture(root);
+    await fixture.workspace.initializeClient({
+      profile: { id: "other-client", name: "Other", industry: "unknown", timezone: "UTC" },
+      kpi: { primary: "CPA", target: 2, currency: "USD" }
+    });
+    const safeId = "com.example.safe-agent";
+    const mutableId = "com.example.mutable-agent";
+    const networkId = "com.example.network-agent";
+    await writeBundle(fixture.curatedRoot, {
+      id: safeId,
+      version: "1.0.0",
+      keyId: fixture.keyId,
+      privateKey: fixture.privateKey,
+      permissions: { ...emptyPermissions, filesystem: ["read.text"] },
+      entrySource: `export const tools = Object.freeze({"${safeId}/run": async (input, runtime) => runtime.capabilities.call("filesystem.readText", { path: input.path })});`
+    });
+    await writeBundle(fixture.curatedRoot, {
+      id: mutableId,
+      version: "1.0.0",
+      keyId: fixture.keyId,
+      privateKey: fixture.privateKey,
+      toolReadOnly: false
+    });
+    await writeBundle(fixture.curatedRoot, {
+      id: networkId,
+      version: "1.0.0",
+      keyId: fixture.keyId,
+      privateKey: fixture.privateKey,
+      permissions: { ...emptyPermissions, network: ["https://api.example.com"] }
+    });
+    const service = await createService(fixture);
+    expect(await service.agentTools({
+      clientId: "personal",
+      taskId: crypto.randomUUID(),
+      actor: "adpilot_agent",
+      permission: "OBSERVE"
+    })).toEqual([]);
+
+    await service.install(safeId, mutation);
+    await service.install(mutableId, mutation);
+    await service.install(networkId, mutation);
+    const taskId = crypto.randomUUID();
+    const [bridge] = await service.agentTools({
+      clientId: "personal",
+      taskId,
+      actor: "adpilot_agent",
+      permission: "OBSERVE"
+    });
+    expect(bridge?.name).toBe("plugin.invoke_readonly");
+    expect(bridge?.description).toContain(`${safeId} / ${safeId}/run`);
+    expect(bridge?.description).not.toContain(mutableId);
+    expect(bridge?.description).not.toContain(networkId);
+    expect((bridge?.parameters as { properties?: Record<string, unknown> }).properties).not.toHaveProperty("clientId");
+    expect((bridge?.parameters as { properties?: Record<string, unknown> }).properties).not.toHaveProperty("taskId");
+
+    const notAdvertised = await bridge
+      ?.execute("not-advertised", {
+        pluginId: mutableId,
+        tool: `${mutableId}/run`,
+        input: {}
+      })
+      .catch((error: unknown) => error);
+    expect((notAdvertised as PluginRuntimeError).code).toBe("PLUGIN_AGENT_TOOL_NOT_AVAILABLE");
+
+    const personalDataRoot = await service.dataRootForClient("personal");
+    const privateInput = path.join(personalDataRoot, "private-input.txt");
+    await writeFile(privateInput, "client-a-only");
+    const [otherBridge] = await service.agentTools({
+      clientId: "other-client",
+      taskId: crypto.randomUUID(),
+      actor: "adpilot_agent",
+      permission: "OBSERVE"
+    });
+    const crossClientFile = await otherBridge
+      ?.execute("cross-client-file", {
+        pluginId: safeId,
+        tool: `${safeId}/run`,
+        input: { path: privateInput }
+      })
+      .catch((error: unknown) => error);
+    expect((crossClientFile as PluginRuntimeError).code).toBe("PATH_DENIED");
+    expect(
+      (await fixture.audit.list("other-client")).find(
+        (event) => event.action === "plugin_tool_execute"
+      )
+    ).toMatchObject({ status: "denied", details: { code: "PATH_DENIED" } });
+
+    const crossClient = await bridge?.execute("cross-client", {
+      pluginId: safeId,
+      tool: `${safeId}/run`,
+      input: {},
+      clientId: "other-client"
+    } as never).catch((error: unknown) => error);
+    expect(crossClient).toBeInstanceOf(z.ZodError);
+    expect(
+      (await fixture.audit.list("other-client")).filter(
+        (event) => event.action === "plugin_tool_execute" && event.status === "succeeded"
+      )
+    ).toEqual([]);
+
+    await service.disable(safeId, mutation);
+    expect(await service.agentTools({
+      clientId: "personal",
+      taskId,
+      actor: "adpilot_agent",
+      permission: "OBSERVE"
+    })).toEqual([]);
+    await expect(service.agentTools({
+      clientId: "missing-client",
+      taskId,
+      actor: "adpilot_agent",
+      permission: "OBSERVE"
+    })).rejects.toThrow();
   });
 
   it("runs the install/disable/enable/uninstall lifecycle with audit and SSE", async () => {
@@ -375,7 +551,7 @@ describe("plugin service composition root", () => {
     const service = await createPluginService({ workspace, audit, events: new ProductEventBus(), roots: { repositoryRoot } });
     await service.install("com.adpilot.csv-daily-report", mutation);
 
-    const pluginDataRoot = service.status().pluginDataRoot;
+    const pluginDataRoot = await service.dataRootForClient("personal");
     const csvPath = path.join(pluginDataRoot, "daily.csv");
     await writeFile(csvPath, "campaign,spend,clicks\nAlpha,12.5,4\nBeta,7.5,6\n");
     const result = await service.executeTool({
@@ -424,11 +600,25 @@ describe("plugin service composition root", () => {
     const service = await createService(fixture);
     await service.install(id, mutation);
 
-    const error = await service.executeTool({ pluginId: id, tool: `${id}/run`, input: {}, ...mutation }).catch((caught: unknown) => caught);
+    const taskId = crypto.randomUUID();
+    const [bridge] = await service.agentTools({
+      clientId: "personal",
+      taskId,
+      actor: "adpilot_agent",
+      permission: "OBSERVE"
+    });
+    expect(bridge?.description).toContain(`${id} / ${id}/run`);
+    const error = await bridge
+      ?.execute("undeclared-capability", { pluginId: id, tool: `${id}/run`, input: {} })
+      .catch((caught: unknown) => caught);
     expect((error as PluginRuntimeError).code).toBe("CAPABILITY_DENIED");
 
     const denial = (await fixture.audit.list("personal")).find((event) => event.action === "plugin_tool_execute" && event.status === "denied");
-    expect(denial).toMatchObject({ details: { pluginId: id, code: "CAPABILITY_DENIED" } });
+    expect(denial).toMatchObject({
+      taskId,
+      actor: "adpilot_agent",
+      details: { pluginId: id, code: "CAPABILITY_DENIED" }
+    });
   });
 
   it("keeps the host process healthy when isolated plugin code crashes or hangs", async () => {

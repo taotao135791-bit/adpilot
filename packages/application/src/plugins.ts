@@ -28,7 +28,8 @@
  *   whose manifest grants no authority beyond optional filesystem.readText.
  *   Every invocation still runs through executeTool(), exact active-bundle
  *   verification, the child-process/VM supervisor and the confined
- *   <workspace>/plugin-data broker. Mutable, network, secret, browser,
+ *   per-client <workspace>/clients/<client>/plugin-data broker. Mutable,
+ *   network, secret, browser,
  *   Computer Use, advertising and storage grants never enter the agent
  *   surface; over-permission capability calls are denied and audited. Plugin
  *   *skills* are manifest metadata
@@ -41,7 +42,7 @@
  * published as a `plugin` product event to every workspace client.
  */
 import { createPublicKey } from "node:crypto";
-import { mkdir, readdir, readFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
@@ -530,6 +531,15 @@ export class PluginService {
     return { ...this.#status };
   }
 
+  /** Canonical private file-broker root for one existing workspace client. */
+  async dataRootForClient(clientId: string): Promise<string> {
+    await this.#workspace.readClient(clientId);
+    const root = path.join(this.#workspace.clientRoot(clientId), "plugin-data");
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    await chmod(root, 0o700);
+    return root;
+  }
+
   /** Drains boot-time audit/SSE findings once at least one client exists. Idempotent. */
   async flushStartup(): Promise<void> {
     if (this.#pendingStartupAudit.length === 0 && this.#pendingStartupEvents.length === 0) return;
@@ -765,6 +775,9 @@ export class PluginService {
   async executeTool(invocation: PluginToolInvocation): Promise<unknown> {
     const catalog = this.#requireCatalog();
     const { pluginId, tool } = invocation;
+    const clientDataRoot = invocation.clientId
+      ? await this.dataRootForClient(invocation.clientId)
+      : this.#status.pluginDataRoot;
     const state = await catalog.store.getState(pluginId);
     if (!state) throw new PluginRuntimeError("NOT_INSTALLED", `${pluginId} is not installed`);
     if (state.status !== "active") {
@@ -787,7 +800,7 @@ export class PluginService {
       );
     }
     const broker: CapabilityBroker = snapshot.manifest.permissions.filesystem.includes("read.text")
-      ? createReadOnlyFileBroker([this.#status.pluginDataRoot])
+      ? createReadOnlyFileBroker([clientDataRoot])
       : new CapabilityBroker();
     const startedAt = Date.now();
     try {

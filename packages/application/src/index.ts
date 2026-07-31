@@ -112,6 +112,7 @@ export { createPluginService, PluginPermissionReviewError, PluginService } from 
 export { resolvePluginResourceLayout } from "./plugin-roots.js";
 export type { PluginResourceLayout, PluginResourceRootsOverride } from "./plugin-roots.js";
 export type {
+  AgentPluginToolDescriptor,
   PluginCatalogResponse,
   PluginCandidateDto,
   PluginDetailsResponse,
@@ -543,6 +544,9 @@ export async function createAdPilotSystem(options: CreateAdPilotSystemOptions = 
     events,
     env,
     ...(options.pluginCatalog ? { roots: options.pluginCatalog } : {})
+  });
+  agent.setPluginToolProvider({
+    tools: (context) => plugins.agentTools(context)
   });
   const connectedSessions = (await browserSessions.list()).filter((session) => session.sessionStatus === "connected");
   return {

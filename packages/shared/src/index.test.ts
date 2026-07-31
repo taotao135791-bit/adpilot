@@ -221,7 +221,7 @@ describe("tool permission gate table", () => {
   });
 
   it("classifies the vendored general read-only tools as read, never defaulted", () => {
-    for (const name of ["read", "grep", "find", "ls", "computer.observe"]) {
+    for (const name of ["read", "grep", "find", "ls", "computer.observe", "plugin.invoke_readonly"]) {
       const classification = classifyToolCall(name, {});
       expect(classification.class, name).toBe("read");
       expect(classification.defaulted, name).toBe(false);
@@ -280,6 +280,7 @@ describe("tool permission gate table", () => {
     for (const name of ["read_workspace", "analyze_campaign_metrics", "evaluate_change_guardrail", "read_visual_table",
       "read", "grep", "find", "ls", "write", "edit", "bash",
       "computer.observe", "computer.close_window",
+      "plugin.invoke_readonly",
       "dispatch_specialist", "prepare_approval", "execute_skill", "commit_approved_action"]) {
       expect(TOOL_GATE_RULES[name]?.reason.length, name).toBeGreaterThan(0);
     }

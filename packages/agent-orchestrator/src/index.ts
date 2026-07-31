@@ -26,7 +26,7 @@ import {
   type TaskState as Task
 } from "@adpilot/shared";
 import { WorkspaceStore } from "@adpilot/workspace";
-import { AdPilotTools, ApprovalGuardrailEvidenceInput, VisualApprovalPlanInput } from "@adpilot/tools";
+import { AdPilotTools, ApprovalGuardrailEvidenceInput, VisualApprovalPlanInput, type ToolContext } from "@adpilot/tools";
 
 const InvestigationNode = z.object({ question: z.string().min(1), specialist: SpecialistRole, status: z.enum(["pending", "complete", "blocked"]), conclusion: z.string().optional() });
 const MainAgentOutput = z.object({
@@ -67,6 +67,19 @@ export interface AgentConversationContext extends Record<string, unknown> {
 export interface AdPilotAgentTools {
   registry: AgentToolRegistry;
   deps: AgentToolDeps;
+}
+
+/**
+ * Late-bound bridge for curated plugin tools.
+ *
+ * The application owns plugin installation, signature verification and the
+ * capability broker, so the orchestrator deliberately knows only that it can
+ * request a run-scoped AgentTool list. The provider must bind every returned
+ * tool to the supplied client/task context; the model never receives either
+ * identifier as a mutable tool argument.
+ */
+export interface AdPilotPluginToolProvider {
+  tools(context: ToolContext): Promise<AgentTool[]>;
 }
 const ConversationDecision = z.object({
   mode: z.enum(["answer", "act", "investigate"]),
@@ -115,7 +128,8 @@ export class AdPilotAgent {
     private readonly onTaskState: (task: Task) => void | Promise<void> = () => undefined,
     sharedFacts?: SharedFactLedger,
     private readonly knowledge: AgentKnowledge = embeddedAgentKnowledge,
-    private agentTools?: AdPilotAgentTools
+    private agentTools?: AdPilotAgentTools,
+    private pluginToolProvider?: AdPilotPluginToolProvider
   ) {
     this.sharedFacts = sharedFacts ?? new SharedFactLedger(new WorkspaceSharedFactRepository(workspace));
   }
@@ -132,6 +146,11 @@ export class AdPilotAgent {
   /** Introspection seam for acceptance tooling and tests. */
   getAgentTools(): AdPilotAgentTools | undefined {
     return this.agentTools;
+  }
+
+  /** Late-bind the verified plugin runtime after application composition. */
+  setPluginToolProvider(provider: AdPilotPluginToolProvider): void {
+    this.pluginToolProvider = provider;
   }
 
   /**
@@ -262,6 +281,7 @@ export class AdPilotAgent {
     const projectRoot = executionContext.rootPaths[0];
     let summary: string;
     try {
+      const pluginTools = this.pluginToolProvider ? await this.pluginToolProvider.tools(runContext) : [];
       const run = await this.runtime.run({
         context: { ...runContext, sessionId: conversationId, conversationId, role: "adpilot_agent" },
         systemPrompt: [
@@ -275,7 +295,7 @@ export class AdPilotAgent {
         ].join("\n"),
         prompt: JSON.stringify({ goal, client: clientContext, conversation: sanitizeConversationContext(context) }),
         signals: { task: "conversation" },
-        tools: [...this.tools.generalAgentTools(runContext, projectRoot), ...registryTools],
+        tools: [...this.tools.generalAgentTools(runContext, projectRoot), ...registryTools, ...pluginTools],
         ...(context.modelOverride ? { modelOverride: context.modelOverride } : {})
       });
       summary = run.text.trim();
@@ -398,6 +418,7 @@ export class AdPilotAgent {
         permission: "OBSERVE" as const,
         adPilotSessionId: context.sessionId ?? conversationId
       };
+      const pluginTools = this.pluginToolProvider ? await this.pluginToolProvider.tools(runContext) : [];
       modelResult = await this.runtime.runStructured({
         context: { ...runContext, sessionId: conversationId, conversationId, role: "adpilot_agent" },
         systemPrompt: [
@@ -418,7 +439,7 @@ export class AdPilotAgent {
           ...(knowledgeContext ? [knowledgeContext] : [])
         ].join("\n"),
         prompt: JSON.stringify({ goal, projectContext, currentTask: task }),
-        signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool, ...this.tools.generalAgentTools(runContext, projectRoot), ...registryTools],
+        signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool, ...this.tools.generalAgentTools(runContext, projectRoot), ...registryTools, ...pluginTools],
         ...(context.modelOverride ? { modelOverride: context.modelOverride } : {})
       }, MainAgentOutput);
     } catch (error) {

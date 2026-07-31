@@ -699,6 +699,7 @@ export const PLAN_MODE_READ_TOOL_NAMES: readonly string[] = [
   "find",
   "ls",
   "computer.observe",
+  "plugin.invoke_readonly",
   "read_workspace",
   "read_visual_table",
   "analyze_campaign_metrics",
@@ -846,6 +847,11 @@ export const TOOL_GATE_RULES: Readonly<Record<string, ToolGateRule>> = {
     authority: "approval_reference",
     referenceStatuses: ["executed"],
     reason: "Consumes a one-time, session-bound exact-window observation; guarded mode requires authority and Full Access may waive it."
+  },
+  "plugin.invoke_readonly": {
+    classify: "read",
+    authority: "self_gated",
+    reason: "Invokes only an installed, active, signed and reviewed plugin tool declared read-only; the product re-verifies the bundle and exposes only the confined read-text capability broker."
   },
   read_workspace: {
     classify: "read",

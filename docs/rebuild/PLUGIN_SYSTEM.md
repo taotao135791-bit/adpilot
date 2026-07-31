@@ -75,6 +75,38 @@ Unsigned bundles are rejected by default. Developer mode is explicit, visually p
 - Advertising mutation capability invokes the official plan/guardrail/approval pipeline; it is never a raw mutation function.
 - Logs are size-capped and redact tokens, credentials, cookies, and authorization headers.
 
+## Agent reachability
+
+Installed plugins do not add arbitrary tool names to the model. For each agent
+run, the application builds one `plugin.invoke_readonly` tool from the exact
+active-version manifests that pass all of these checks:
+
+- installed and active;
+- integrity/signature re-verification succeeds and review status is approved;
+- the selected declaration is `readOnly: true`;
+- the manifest grants no network, secret, browser, Computer Use, advertising,
+  storage, or mutable capability; optional `filesystem.read.text` is the only
+  current grant.
+
+The call path is:
+
+```text
+AdPilotAgent
+→ PiAgentRuntime + read-classified ToolPermissionGate
+→ plugin.invoke_readonly (client/task captured outside model arguments)
+→ PluginService.executeTool
+→ exact active-bundle verification
+→ CuratedPluginRuntime
+→ supervised child process + VM
+→ client-bound `<workspace>/clients/<client>/plugin-data` capability broker
+→ task-scoped audit result
+```
+
+Disable/uninstall takes the tool out of the next run. A state change between
+discovery and invocation is checked again before execution. Plugin manifest
+`skills` remain catalog metadata only because they contain no executable body
+or validated input/output contract.
+
 ## Lifecycle
 
 States:
@@ -102,4 +134,3 @@ The product may display unavailable planned integrations only as “not yet avai
 - migration success/failure rollback;
 - plugin attempts to bypass advertising approval;
 - restart recovery and installed-version inventory.
-
