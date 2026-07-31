@@ -738,7 +738,8 @@ const permissionCenterZh = {
   previewAlt: "屏幕录制权限测试的新鲜窗口截图",
   restart: "授权已生效，但需要重启 AdPilot 后才能安全使用。",
   testPassed: "测试通过",
-  testFailed: "测试未通过"
+  testFailed: "测试未通过",
+  technicalDetails: "技术细节"
 } as const;
 
 const permissionCenterEn: Record<keyof typeof permissionCenterZh, string> = {
@@ -769,7 +770,8 @@ const permissionCenterEn: Record<keyof typeof permissionCenterZh, string> = {
   previewAlt: "Fresh window screenshot from the Screen Recording permission test",
   restart: "Permission is enabled, but AdPilot must restart before it can be used safely.",
   testPassed: "Test passed",
-  testFailed: "Test did not pass"
+  testFailed: "Test did not pass",
+  technicalDetails: "Technical details"
 };
 
 export type PermissionCenterCopy = { readonly [K in keyof typeof permissionCenterZh]: string };

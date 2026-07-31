@@ -33,6 +33,13 @@ Last updated: 2026-07-29
 
 ## Resolved
 
+- ~~Agent terminal IDs and cwd were only checked at creation~~ — terminal IDs
+  are now workspace/Session-bound; every model command is one-shot under the
+  same fail-closed Seatbelt sandbox as `bash`, cwd cannot persist outside the
+  project root, output is capped, and Git writes checkpoint first.
+- ~~Agent tool cancellation stopped at the Pi adapter~~ — AbortSignal now
+  reaches tool implementations; cancellation is non-retryable, and a
+  mutation whose audit append fails returns `AUDIT_OUTCOME_UNKNOWN`.
 - ~~Project missions degenerated into plain chat~~ — project-bound sessions,
   mission heuristic, and a real project chat in ProjectView.
 - ~~0.3 modules were REST-only~~ — 57 registry tools with a unified

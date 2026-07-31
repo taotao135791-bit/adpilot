@@ -260,7 +260,10 @@ export class SettingsStore {
       appearance: data.appearance,
       models: {
         fast: { provider: env.ADPILOT_FAST_PROVIDER ?? "openai", model: env.ADPILOT_FAST_MODEL ?? "gpt-5-mini" },
-        strong: { provider: env.ADPILOT_STRONG_PROVIDER ?? env.ADPILOT_FAST_PROVIDER ?? "openai", model: env.ADPILOT_STRONG_MODEL ?? env.ADPILOT_FAST_MODEL ?? "gpt-5.2" },
+        strong: {
+          provider: env.ADPILOT_STRONG_PROVIDER ?? env.ADPILOT_FAST_PROVIDER ?? "openai",
+          model: env.ADPILOT_STRONG_MODEL ?? env.ADPILOT_FAST_MODEL ?? "gpt-5-mini"
+        },
         strongConfigured
       },
       reasoning: { effort: data.reasoning.effort, scope: data.reasoning.scope },

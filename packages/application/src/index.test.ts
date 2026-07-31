@@ -142,6 +142,7 @@ describe("application visual table assembly", () => {
     expect(system.modelStatus.fast).toBe("openai/gpt-5");
     expect(system.modelStatus.strong).toBe("openai/gpt-5");
     expect(system.modelStatus.chatConfigured).toBe(true);
+    expect(system.modelStatus.strongConfigured).toBe(true);
     expect(system.modelStatus.guiConfigured).toBe(true);
     expect(system.modelStatus.route).toBe("Fast Vision → Deep Vision");
   });
@@ -160,6 +161,7 @@ describe("application visual table assembly", () => {
     expect(system.modelStatus.fast).toBe("deepseek/deepseek-v4-pro");
     expect(system.modelStatus.strong).toBe("deepseek/deepseek-v4-pro");
     expect(system.modelStatus.chatConfigured).toBe(true);
+    expect(system.modelStatus.strongConfigured).toBe(true);
     expect(system.modelStatus.guiConfigured).toBe(false);
     expect(system.modelStatus.route).toBe("not configured");
   });

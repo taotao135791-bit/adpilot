@@ -93,6 +93,33 @@ describe("AgentToolRegistry", () => {
     expect(auditEvents.map((event) => event.action)).toEqual(["agent_tool:project.ping"]);
   });
 
+  it("passes the Pi abort signal through the lifecycle to long-running tools", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-agent-tools-abort-"));
+    const { deps } = makeTestDeps(root);
+    const registry = new AgentToolRegistry();
+    let received: AbortSignal | undefined;
+    registry.register(dummy({
+      execute: async (_params, ctx, _deps, signal) => {
+        received = signal;
+        if (signal?.aborted) throw new Error("Operation aborted");
+        return succeed("project.ping", ctx, { pong: true });
+      }
+    }));
+    const controller = new AbortController();
+    controller.abort();
+    const outcome = await registry.toPiTools(makeCtx(), deps)[0]!
+      .execute("call-aborted", {}, controller.signal);
+    expect(received).toBe(controller.signal);
+    expect(outcome.details).toMatchObject({
+      success: false,
+      error: {
+        code: "OPERATION_ABORTED",
+        message: "operation was cancelled; do not retry unless the user starts it again",
+        recoverable: false
+      }
+    });
+  });
+
   it("the full registry registers every 0.3 capability group without name conflicts", () => {
     const registry = buildAgentToolRegistry();
     const names = registry.names();

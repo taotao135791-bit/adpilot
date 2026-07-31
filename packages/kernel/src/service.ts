@@ -52,7 +52,7 @@ export interface CreateProjectInput {
 export interface CreateGoalInput {
   projectId: string;
   title: string;
-  objective: string;
+  objective?: string;
   successCriteria?: readonly string[];
   constraints?: readonly string[];
   verificationPlan?: readonly string[];
@@ -115,7 +115,7 @@ export class KernelService {
       id: randomUUID(),
       projectId: project.id,
       title: input.title,
-      objective: input.objective,
+      objective: input.objective?.trim() ?? "",
       successCriteria: [...(input.successCriteria ?? [])],
       constraints: [...(input.constraints ?? [])],
       verificationPlan: [...(input.verificationPlan ?? [])],

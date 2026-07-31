@@ -51,6 +51,7 @@ export const EXECUTION_FAILED = "EXECUTION_FAILED";
 export function recoverableForCode(code: string): boolean {
   if (code === PERMISSION_DENIED || code.endsWith("_DENIED")) return false;
   if (code === "COMMAND_APPROVAL_REQUIRED") return false;
+  if (code.endsWith("_ABORTED")) return false;
   return true;
 }
 

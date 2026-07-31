@@ -27,7 +27,12 @@ temp+rename writes, symlink fail-closed, and schema re-parse on read.
   `.adpilot-worktrees`, checkpoints with reset+replay restore and divergence
   detection. `/api/terminals/*`: interactive zsh sessions over process
   groups, incremental output, stdin, interrupt, one-shot exec with a
-  classifier-gated approval requirement for destructive commands.
+  classifier-gated approval requirement for destructive commands. Agent
+  terminal ids are additionally bound to the workspace and product Session;
+  model-initiated commands always run as one-shot processes in the
+  fail-closed no-network Seatbelt sandbox, cannot persist an escaped cwd,
+  receive a scrubbed environment and capped output, and checkpoint a Git
+  repository before writes.
 - **Artifacts** (`packages/artifacts`, `/api/kernel/artifacts*`):
   pptxgenjs/docx/xlsx renderers from versioned specs; previews (SVG
   thumbnails, preview.txt, preview.json) and binary output with version

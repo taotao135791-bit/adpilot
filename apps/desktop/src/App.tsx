@@ -409,7 +409,7 @@ export function App() {
     const session = await sessionMutation(`/api/clients/${encodeURIComponent(clientId)}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: "{}"
+      body: JSON.stringify({ title: copy.untitledSession })
     });
     if (!session) return;
     setSessions((current) => applySessionSnapshot(current, session));
@@ -964,4 +964,3 @@ export function App() {
     </div>
   );
 }
-

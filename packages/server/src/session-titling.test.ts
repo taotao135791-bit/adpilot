@@ -50,6 +50,20 @@ describe("session auto-titling on first exchange", () => {
     });
     expect((await system.sessions.get(custom.id))?.title).toBe("Northwind 周会");
   });
+
+  it("re-titles a localized placeholder after a deterministic slash command", async () => {
+    const { system, server } = await setup();
+    const session = await system.sessions.create({ clientId: "personal", title: "未命名会话" });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/messages",
+      payload: { clientId: "personal", sessionId: session.id, message: "/help", locale: "zh-CN" }
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({ command: "help", session: { title: "/help" } });
+    expect((await system.sessions.get(session.id))?.title).toBe("/help");
+  });
 });
 
 async function setup() {

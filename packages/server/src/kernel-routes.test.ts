@@ -118,6 +118,24 @@ describe("kernel REST routes", () => {
     expect(crossWorkspace.statusCode).toBe(400);
   });
 
+  it("creates a goal when the optional success measure is omitted or empty", async () => {
+    const { server } = await boot();
+    const project = (await server.inject({
+      method: "POST",
+      url: "/api/kernel/projects",
+      payload: { workspaceId: "personal", name: "Optional objective", type: "general" }
+    })).json();
+
+    for (const payload of [
+      { projectId: project.id, title: "省略衡量标准" },
+      { projectId: project.id, title: "空衡量标准", objective: "" }
+    ]) {
+      const response = await server.inject({ method: "POST", url: "/api/kernel/goals", payload });
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toMatchObject({ title: payload.title, objective: "" });
+    }
+  });
+
   it("rejects invalid specs and missing parents with coded errors", async () => {
     const { server } = await boot();
     const project = (await server.inject({

@@ -21,7 +21,12 @@ export interface AgentToolDefinition {
   capabilityPack: string;
   permission: AgentToolPermission;
   parameters: z.ZodType<unknown>;
-  execute(params: unknown, ctx: AgentExecutionContext, deps: AgentToolDeps): Promise<AgentToolResult>;
+  execute(
+    params: unknown,
+    ctx: AgentExecutionContext,
+    deps: AgentToolDeps,
+    signal?: AbortSignal
+  ): Promise<AgentToolResult>;
 }
 
 /** Packs every execution context may use without explicit enablement. */
@@ -80,8 +85,8 @@ export class AgentToolRegistry {
       parameters: zodToJsonSchema(definition.parameters) as unknown as TSchema,
       // Registry tools mutate shared stores and audit per call; keep them sequential.
       executionMode: "sequential",
-      execute: async (_toolCallId, rawParams) => {
-        const result = await runAgentToolCall(definition, rawParams, ctx, deps);
+      execute: async (_toolCallId, rawParams, signal) => {
+        const result = await runAgentToolCall(definition, rawParams, ctx, deps, signal);
         return {
           content: [
             { type: "text", text: JSON.stringify(result) },

@@ -25,6 +25,7 @@ export type SettingsData = {
     gui: string;
     guiStrong: string;
     chatConfigured: boolean;
+    strongConfigured?: boolean;
     guiConfigured: boolean;
     browserSession?: string;
     route?: string;
@@ -313,7 +314,7 @@ function RuntimeRoutes({ runtime, locale }: { runtime: SettingsData["runtimeMode
   const computerText = computerUseCopy(locale);
   const routes = [
     { label: computerText.dailyModel, value: runtime.fast, configured: runtime.chatConfigured },
-    { label: computerText.deepModel, value: runtime.strong, configured: Boolean(runtime.strong) },
+    { label: computerText.deepModel, value: runtime.strong, configured: runtime.strongConfigured ?? runtime.chatConfigured },
     { label: computerText.groundingModel, value: runtime.gui, configured: runtime.guiConfigured },
     { label: computerText.verificationModel, value: runtime.guiStrong, configured: runtime.guiConfigured }
   ];

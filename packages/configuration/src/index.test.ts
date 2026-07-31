@@ -16,6 +16,9 @@ describe("SettingsStore", () => {
     expect(catalog.providers.find((provider) => provider.id === "openai")?.models.length).toBeGreaterThan(10);
     const initial = await store.publicView();
     expect(initial.configured.OPENAI_API_KEY).toBe(true);
+    expect(initial.models.fast).toEqual({ provider: "openai", model: "gpt-5-mini" });
+    expect(initial.models.strong).toEqual(initial.models.fast);
+    expect(initial.models.strongConfigured).toBe(false);
     expect(JSON.stringify(initial)).not.toContain("ambient-secret");
 
     await store.save({

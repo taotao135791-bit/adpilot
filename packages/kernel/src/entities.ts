@@ -58,7 +58,10 @@ export const Goal = z.object({
   ...EntityBase,
   projectId: Uuid,
   title: z.string().min(1),
-  objective: z.string().min(1),
+  // A success measure is useful but intentionally optional in the desktop
+  // goal form and HTTP contract. Keep the persisted shape stable as a string
+  // while allowing the empty-string sentinel used by those callers.
+  objective: z.string().default(""),
   successCriteria: z.array(z.string().min(1)).default([]),
   constraints: z.array(z.string().min(1)).default([]),
   verificationPlan: z.array(z.string().min(1)).default([]),

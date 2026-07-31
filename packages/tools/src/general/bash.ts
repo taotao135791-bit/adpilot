@@ -75,6 +75,14 @@ export interface BashToolOptions {
   spawnImpl?: typeof spawn;
 }
 
+export interface SandboxedBashResult {
+  readonly exitCode: number | null;
+  readonly output: string;
+  readonly classification: BashClassification;
+  readonly truncated: boolean;
+  readonly durationMs: number;
+}
+
 function resolveTimeoutSeconds(timeout: number | undefined): number {
   if (timeout === undefined) return DEFAULT_TIMEOUT_SECONDS;
   if (!Number.isFinite(timeout) || timeout <= 0 || timeout > MAX_TIMEOUT_SECONDS) {
@@ -83,7 +91,17 @@ function resolveTimeoutSeconds(timeout: number | undefined): number {
   return timeout;
 }
 
-export function createBashTool(options: BashToolOptions): AgentTool {
+/**
+ * Structured execution primitive shared by the ordinary `bash` tool and the
+ * Universal Workspace terminal adapter. Keeping the sandbox here prevents a
+ * second shell surface from silently drifting away from the classifier,
+ * environment scrubber, output cap, and Seatbelt confinement contract.
+ */
+export async function executeSandboxedBash(
+  options: BashToolOptions,
+  raw: unknown,
+  signal?: AbortSignal
+): Promise<SandboxedBashResult> {
   const spawnImpl = options.spawnImpl ?? spawn;
   const protect = createProtectedPathMatcher({ workspaceRoot: options.workspaceRoot });
   const sandboxPath = options.sandboxExecPath === null ? null : (options.sandboxExecPath ?? "/usr/bin/sandbox-exec");
@@ -132,7 +150,52 @@ export function createBashTool(options: BashToolOptions): AgentTool {
       });
     });
   };
+  const { command, timeout } = bashInput.parse(raw);
+  if (signal?.aborted) throw new Error("Operation aborted");
 
+  // Layer 1: deterministic classification. The tool re-runs it with the
+  // workspace root so absolute redirect targets are confinement-checked.
+  const classification = classifyBashCommand(command, { workspaceRoot: options.workspaceRoot });
+
+  // Layer 2 availability: fail closed when the sandbox is missing.
+  const sandbox = options.sandboxExecPath === null
+    ? { available: false, path: null, reason: "sandbox disabled by configuration" } as const
+    : resolveSandboxExec(sandboxPath ?? "/usr/bin/sandbox-exec");
+  if (!sandbox.available && classification.verdict !== "deny") {
+    await options.onClassified?.({ classification, commandPreview: command.slice(0, 200), sandboxPath: null, executed: false });
+    throw new Error(`${SANDBOX_UNAVAILABLE_MESSAGE} (${sandbox.reason ?? "unknown reason"})`);
+  }
+
+  if (classification.verdict === "deny") {
+    await options.onClassified?.({ classification, commandPreview: command.slice(0, 200), sandboxPath: sandbox.path, executed: false });
+    const denied = classification.commands.filter((item) => item.verdict === "deny");
+    const detail = denied.map((item) => `${item.command} [${item.rule}]`).join("; ") || classification.reason;
+    throw new Error(`${BASH_DENY_MESSAGE}: ${classification.reason}. Denied segment(s): ${detail}. This refusal is absolute: no approval can authorize these commands.`);
+  }
+
+  const timeoutSeconds = resolveTimeoutSeconds(timeout);
+  const profile = buildSeatbeltProfile({ workspaceRoot: options.workspaceRoot, protect });
+  await options.onClassified?.({ classification, commandPreview: command.slice(0, 200), sandboxPath: sandbox.path, executed: true });
+  const startedAt = Date.now();
+  const { exitCode, output } = await execSandboxed(command, timeoutSeconds, profile, signal);
+
+  const text = output.toString("utf-8");
+  const truncation = truncateTail(text);
+  let outputText = truncation.content.trim().length > 0 ? truncation.content : "(no output)";
+  if (truncation.truncated) {
+    const startLine = truncation.totalLines - truncation.outputLines + 1;
+    outputText += `\n\n[Showing lines ${startLine}-${truncation.totalLines} of ${truncation.totalLines}${truncation.truncatedBy === "bytes" ? ` (${formatSize(DEFAULT_MAX_BYTES)} limit)` : ""}]`;
+  }
+  return {
+    exitCode,
+    output: outputText,
+    classification,
+    truncated: truncation.truncated,
+    durationMs: Date.now() - startedAt
+  };
+}
+
+export function createBashTool(options: BashToolOptions): AgentTool {
   return {
     name: "bash",
     label: "Run a sandboxed bash command",
@@ -140,47 +203,20 @@ export function createBashTool(options: BashToolOptions): AgentTool {
     parameters: bashParameters,
     executionMode: "sequential",
     execute: async (_toolCallId, raw, signal) => {
-      const { command, timeout } = bashInput.parse(raw);
-      if (signal?.aborted) throw new Error("Operation aborted");
-
-      // Layer 1: deterministic classification. The tool re-runs it with the
-      // workspace root so absolute redirect targets are confinement-checked.
-      const classification = classifyBashCommand(command, { workspaceRoot: options.workspaceRoot });
-
-      // Layer 2 availability: fail closed when the sandbox is missing.
-      const sandbox = options.sandboxExecPath === null
-        ? { available: false, path: null, reason: "sandbox disabled by configuration" } as const
-        : resolveSandboxExec(sandboxPath ?? "/usr/bin/sandbox-exec");
-      if (!sandbox.available && classification.verdict !== "deny") {
-        await options.onClassified?.({ classification, commandPreview: command.slice(0, 200), sandboxPath: null, executed: false });
-        throw new Error(`${SANDBOX_UNAVAILABLE_MESSAGE} (${sandbox.reason ?? "unknown reason"})`);
-      }
-
-      if (classification.verdict === "deny") {
-        await options.onClassified?.({ classification, commandPreview: command.slice(0, 200), sandboxPath: sandbox.path, executed: false });
-        const denied = classification.commands.filter((item) => item.verdict === "deny");
-        const detail = denied.map((item) => `${item.command} [${item.rule}]`).join("; ") || classification.reason;
-        throw new Error(`${BASH_DENY_MESSAGE}: ${classification.reason}. Denied segment(s): ${detail}. This refusal is absolute: no approval can authorize these commands.`);
-      }
-
-      const timeoutSeconds = resolveTimeoutSeconds(timeout);
-      const profile = buildSeatbeltProfile({ workspaceRoot: options.workspaceRoot, protect });
-      await options.onClassified?.({ classification, commandPreview: command.slice(0, 200), sandboxPath: sandbox.path, executed: true });
-      const { exitCode, output } = await execSandboxed(command, timeoutSeconds, profile, signal);
-
-      const text = output.toString("utf-8");
-      const truncation = truncateTail(text);
-      let outputText = truncation.content.trim().length > 0 ? truncation.content : "(no output)";
-      if (truncation.truncated) {
-        const startLine = truncation.totalLines - truncation.outputLines + 1;
-        outputText += `\n\n[Showing lines ${startLine}-${truncation.totalLines} of ${truncation.totalLines}${truncation.truncatedBy === "bytes" ? ` (${formatSize(DEFAULT_MAX_BYTES)} limit)` : ""}]`;
-      }
-      if (exitCode !== 0 && exitCode !== null) {
-        throw new Error(`${outputText}\n\nCommand exited with code ${exitCode}`);
+      const result = await executeSandboxedBash(options, raw, signal);
+      if (result.exitCode !== 0 && result.exitCode !== null) {
+        throw new Error(`${result.output}\n\nCommand exited with code ${result.exitCode}`);
       }
       return {
-        content: [{ type: "text" as const, text: outputText }],
-        details: { exitCode, classification: { verdict: classification.verdict, parseable: classification.parseable }, truncated: truncation.truncated }
+        content: [{ type: "text" as const, text: result.output }],
+        details: {
+          exitCode: result.exitCode,
+          classification: {
+            verdict: result.classification.verdict,
+            parseable: result.classification.parseable
+          },
+          truncated: result.truncated
+        }
       };
     }
   };

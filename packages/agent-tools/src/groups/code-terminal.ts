@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { classifyBashCommand } from "@adpilot/shared";
+import { executeSandboxedBash } from "@adpilot/tools";
+import type { AgentExecutionContext } from "../context.js";
+import type { AgentToolDeps } from "../deps.js";
 import type { AgentToolDefinition } from "../registry.js";
 import { assertWithinRoots } from "../paths.js";
 import { succeed } from "../result.js";
@@ -7,18 +10,83 @@ import { toolError } from "../errors.js";
 
 const CreateParams = z.object({
   cwd: z.string().min(1),
-  title: z.string().min(1).optional(),
-  env: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional()
+  title: z.string().min(1).optional()
 });
 
 const ExecuteParams = z.object({
   terminalId: z.string().min(1).optional(),
   cwd: z.string().min(1).optional(),
   command: z.string().min(1),
-  timeoutMs: z.number().int().positive().optional()
+  timeoutMs: z.number().int().positive().max(600_000).optional()
 });
 
 const SessionParams = z.object({ terminalId: z.string().min(1) });
+
+type OwnedTerminal = {
+  workspaceId: string;
+  sessionId: string;
+  root: string;
+  lastExitCode: number | null;
+  chunks: Array<{
+    seq: number;
+    ts: number;
+    stream: "stdout" | "stderr";
+    data: string;
+  }>;
+};
+
+async function requireOwnedTerminal(
+  terminals: ReadonlyMap<string, OwnedTerminal>,
+  terminalId: string,
+  ctx: AgentExecutionContext,
+  deps: AgentToolDeps
+): Promise<{ owned: OwnedTerminal; cwd: string; running: boolean; exitCode: number | null }> {
+  const owned = terminals.get(terminalId);
+  if (
+    !owned
+    || owned.workspaceId !== ctx.workspaceId
+    || owned.sessionId !== ctx.sessionId
+  ) {
+    throw toolError(
+      "TERMINAL_NOT_FOUND",
+      "terminal session is unavailable or belongs to a different workspace/session"
+    );
+  }
+  const session = deps.terminal.list().find((candidate) => candidate.id === terminalId);
+  if (!session) throw toolError("TERMINAL_NOT_FOUND", `terminal session not found: ${terminalId}`);
+  // A user may also interact with the same terminal through the desktop. If
+  // that moved its cwd, re-check it at every tool call instead of trusting the
+  // creation-time root.
+  const cwd = await assertWithinRoots(session.cwd, [owned.root]);
+  return { owned, cwd, running: session.running, exitCode: session.exitCode };
+}
+
+async function checkpointRepositoryMutation(
+  cwd: string,
+  command: string,
+  ctx: AgentExecutionContext,
+  deps: AgentToolDeps
+): Promise<string | undefined> {
+  for (const candidate of ctx.rootPaths) {
+    let repositoryRoot: string;
+    try {
+      repositoryRoot = await assertWithinRoots(candidate, ctx.rootPaths);
+      await assertWithinRoots(cwd, [repositoryRoot]);
+      // repository() deliberately rejects subdirectories, so use the
+      // explicit project root after proving cwd belongs to it.
+      deps.git.repository(repositoryRoot);
+    } catch {
+      continue;
+    }
+    const checkpoint = await deps.git.checkpoints(repositoryRoot).create({
+      repoRoot: repositoryRoot,
+      label: `before-terminal: ${command.replace(/\s+/g, " ").slice(0, 64)}`,
+      ...(ctx.taskId !== undefined ? { taskId: ctx.taskId } : {})
+    });
+    return checkpoint.id;
+  }
+  return undefined;
+}
 
 /**
  * Terminal tools (capability pack "code"): persistent shell sessions and
@@ -30,10 +98,12 @@ const SessionParams = z.object({ terminalId: z.string().min(1) });
  * the agent asks the user instead of retrying), deny-level commands never run.
  */
 export function createCodeTerminalTools(): AgentToolDefinition[] {
+  const terminals = new Map<string, OwnedTerminal>();
+
   return [
     {
       name: "terminal.create",
-      description: "Open a persistent terminal session rooted at a directory inside the project's rootPaths. Use for multi-step shell work; cwd persists across terminal.execute calls on the session.",
+      description: "Create a session-bound coding terminal rooted at a directory inside the project's rootPaths. Every terminal.execute remains pinned to this root and runs in the same fail-closed macOS Seatbelt sandbox as bash; terminal ids cannot cross product sessions.",
       capabilityPack: "code",
       permission: "write",
       parameters: CreateParams,
@@ -42,25 +112,36 @@ export function createCodeTerminalTools(): AgentToolDefinition[] {
         const cwd = await assertWithinRoots(params.cwd, ctx.rootPaths);
         const session = await deps.terminal.create({
           cwd,
-          ...(params.title !== undefined ? { title: params.title } : {}),
-          ...(params.env !== undefined ? { env: params.env } : {})
+          ...(params.title !== undefined ? { title: params.title } : {})
+        });
+        terminals.set(session.id, {
+          workspaceId: ctx.workspaceId,
+          sessionId: ctx.sessionId,
+          root: cwd,
+          lastExitCode: null,
+          chunks: []
         });
         return succeed("terminal.create", ctx, { session }, { evidenceIds: [`terminal:${session.id}`] });
       }
     },
     {
       name: "terminal.execute",
-      description: "Run a shell command in an existing terminal session (terminalId) or as a one-shot (cwd). Read-level commands run directly; write-level commands need the destructive permission; deny-level commands are refused. Returns exit code, stdout, stderr.",
+      description: "Run one shell command in a session-bound terminalId or a one-shot cwd. Exactly one target is required. Commands are deterministically classified, run with a scrubbed environment under macOS Seatbelt, cannot write outside the bound project root or use network access, and return capped output plus exit status.",
       capabilityPack: "code",
       permission: "write",
       parameters: ExecuteParams,
-      execute: async (raw, ctx, deps) => {
+      execute: async (raw, ctx, deps, signal) => {
         const params = ExecuteParams.parse(raw);
-        if (params.terminalId === undefined && params.cwd === undefined) {
-          throw toolError("INVALID", "pass terminalId (session command) or cwd (one-shot command)");
+        if ((params.terminalId === undefined) === (params.cwd === undefined)) {
+          throw toolError("INVALID", "pass exactly one of terminalId (session command) or cwd (one-shot command)");
         }
+        const sessionTarget = params.terminalId !== undefined
+          ? await requireOwnedTerminal(terminals, params.terminalId, ctx, deps)
+          : undefined;
+        const cwd = sessionTarget?.cwd
+          ?? await assertWithinRoots(params.cwd!, ctx.rootPaths);
         const classification = classifyBashCommand(params.command, {
-          ...(params.cwd !== undefined ? { workspaceRoot: params.cwd } : {})
+          workspaceRoot: cwd
         });
         if (classification.verdict === "deny") {
           throw toolError(
@@ -74,33 +155,58 @@ export function createCodeTerminalTools(): AgentToolDefinition[] {
             `command is ${classification.verdict}-classified (${classification.reason}) and this context lacks the destructive permission; ask the user to run it or to grant the permission`
           );
         }
-        const target = params.terminalId !== undefined
-          ? params.terminalId
-          : { cwd: await assertWithinRoots(params.cwd!, ctx.rootPaths) };
-        const result = await deps.terminal.exec(target, params.command, {
-          ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
-          approved: classification.verdict !== "read"
-        });
+        const checkpointId = classification.verdict === "read"
+          ? undefined
+          : await checkpointRepositoryMutation(cwd, params.command, ctx, deps);
+        const result = await executeSandboxedBash(
+          { workspaceRoot: cwd },
+          {
+            command: params.command,
+            ...(params.timeoutMs !== undefined ? { timeout: params.timeoutMs / 1_000 } : {})
+          },
+          signal
+        );
+        if (sessionTarget) {
+          sessionTarget.owned.lastExitCode = result.exitCode;
+          sessionTarget.owned.chunks.push({
+            seq: (sessionTarget.owned.chunks.at(-1)?.seq ?? 0) + 1,
+            ts: Date.now(),
+            stream: result.exitCode === 0 ? "stdout" : "stderr",
+            data: result.output
+          });
+          if (sessionTarget.owned.chunks.length > 200) {
+            sessionTarget.owned.chunks.splice(0, sessionTarget.owned.chunks.length - 200);
+          }
+        }
         return succeed("terminal.execute", ctx, {
-          classification: { verdict: classification.verdict, reason: classification.reason },
+          classification: {
+            verdict: result.classification.verdict,
+            reason: result.classification.reason
+          },
           exitCode: result.exitCode,
-          stdout: result.stdout,
-          stderr: result.stderr,
+          stdout: result.exitCode === 0 ? result.output : "",
+          stderr: result.exitCode === 0 ? "" : result.output,
           durationMs: result.durationMs,
-          timedOut: result.timedOut
-        });
+          timedOut: false,
+          truncated: result.truncated,
+          sandboxed: true,
+          ...(checkpointId ? { checkpointId } : {})
+        }, checkpointId ? { evidenceIds: [`git-checkpoint:${checkpointId}`] } : {});
       }
     },
     {
       name: "terminal.get_output",
-      description: "Read a terminal session's buffered stdout/stderr chunks, optionally only after a sequence number. Use to poll a long-running command's progress.",
+      description: "Read capped results from prior terminal.execute calls in this exact product session, optionally only after a sequence number.",
       capabilityPack: "code",
       permission: "read",
       parameters: SessionParams.extend({ sinceSeq: z.number().int().nonnegative().optional() }),
       execute: async (raw, ctx, deps) => {
         const params = SessionParams.extend({ sinceSeq: z.number().int().nonnegative().optional() }).parse(raw);
-        const output = deps.terminal.output(params.terminalId, params.sinceSeq);
-        return succeed("terminal.get_output", ctx, output);
+        const { owned, running } = await requireOwnedTerminal(terminals, params.terminalId, ctx, deps);
+        const chunks = params.sinceSeq === undefined
+          ? [...owned.chunks]
+          : owned.chunks.filter((chunk) => chunk.seq > params.sinceSeq!);
+        return succeed("terminal.get_output", ctx, { chunks, running });
       }
     },
     {
@@ -111,12 +217,11 @@ export function createCodeTerminalTools(): AgentToolDefinition[] {
       parameters: SessionParams,
       execute: async (raw, ctx, deps) => {
         const params = SessionParams.parse(raw);
-        const session = deps.terminal.list().find((candidate) => candidate.id === params.terminalId);
-        if (!session) throw toolError("TERMINAL_NOT_FOUND", `terminal session not found: ${params.terminalId}`);
+        const session = await requireOwnedTerminal(terminals, params.terminalId, ctx, deps);
         return succeed("terminal.get_exit_status", ctx, {
-          terminalId: session.id,
+          terminalId: params.terminalId,
           running: session.running,
-          exitCode: session.exitCode
+          exitCode: session.owned.lastExitCode ?? session.exitCode
         });
       }
     },
@@ -128,6 +233,7 @@ export function createCodeTerminalTools(): AgentToolDefinition[] {
       parameters: SessionParams,
       execute: async (raw, ctx, deps) => {
         const params = SessionParams.parse(raw);
+        await requireOwnedTerminal(terminals, params.terminalId, ctx, deps);
         deps.terminal.interrupt(params.terminalId);
         return succeed("terminal.interrupt", ctx, { terminalId: params.terminalId, interrupted: true });
       }
@@ -140,7 +246,9 @@ export function createCodeTerminalTools(): AgentToolDefinition[] {
       parameters: SessionParams,
       execute: async (raw, ctx, deps) => {
         const params = SessionParams.parse(raw);
+        await requireOwnedTerminal(terminals, params.terminalId, ctx, deps);
         await deps.terminal.kill(params.terminalId);
+        terminals.delete(params.terminalId);
         return succeed("terminal.close", ctx, { terminalId: params.terminalId, closed: true });
       }
     }

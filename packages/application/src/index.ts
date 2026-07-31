@@ -226,6 +226,7 @@ export interface AdPilotSystem {
     gui: string;
     guiStrong: string;
     chatConfigured: boolean;
+    strongConfigured: boolean;
     guiConfigured: boolean;
     browserSession: string;
     route: string;
@@ -299,7 +300,7 @@ export async function createAdPilotSystem(options: CreateAdPilotSystemOptions = 
   const models = options.models ?? createPiModels(env, credentials);
   const fastRef = { provider: env.ADPILOT_FAST_PROVIDER ?? "openai", model: env.ADPILOT_FAST_MODEL ?? "gpt-5-mini" };
   // Single-model semantics: an unconfigured strong role follows the fast one.
-  const strongRef = { provider: env.ADPILOT_STRONG_PROVIDER ?? fastRef.provider, model: env.ADPILOT_STRONG_MODEL ?? env.ADPILOT_FAST_MODEL ?? "gpt-5.2" };
+  const strongRef = { provider: env.ADPILOT_STRONG_PROVIDER ?? fastRef.provider, model: env.ADPILOT_STRONG_MODEL ?? fastRef.model };
   const fastModel = resolvePiModel(models, fastRef);
   const strongModel = resolvePiModel(models, strongRef);
   const fastAuth = Boolean(await models.checkAuth(fastModel.provider).catch(() => undefined));
@@ -564,6 +565,7 @@ export async function createAdPilotSystem(options: CreateAdPilotSystemOptions = 
       gui: dedicatedGrounding ? `UI-TARS/${env.ADPILOT_GUI_MODEL}` : primaryVisionCandidate ? `${primaryVisionCandidate.provider}/${primaryVisionCandidate.id}` : "not configured",
       guiStrong: canUseDedicatedVerifier ? `Verifier/${verifierModel}` : strongVisionCandidate ? `${strongVisionCandidate.provider}/${strongVisionCandidate.id}` : "not configured",
       chatConfigured: fastAuth,
+      strongConfigured: strongAuth,
       guiConfigured,
       browserSession: connectedSessions.length === 1 ? "connected" : connectedSessions.length > 1 ? `${connectedSessions.length} connected` : "not connected",
       route: dedicatedGrounding && piGrounding ? "Built-in GUI → Fast Vision → Deep Vision" : dedicatedGrounding ? "Built-in GUI → Deep Vision" : piGrounding ? "Fast Vision → Deep Vision" : "not configured",

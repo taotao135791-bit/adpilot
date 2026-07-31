@@ -126,6 +126,7 @@ describe("terminal tools (real TerminalService)", () => {
     const executed = await call("terminal.execute", { terminalId, command: "echo hello-adpilot" }, ctx, deps);
     expect((executed.data as { stdout: string; exitCode: number }).stdout).toContain("hello-adpilot");
     expect((executed.data as { exitCode: number }).exitCode).toBe(0);
+    expect((executed.data as { sandboxed: boolean }).sandboxed).toBe(true);
 
     const oneShot = await call("terminal.execute", { cwd: root, command: "echo one-shot" }, ctx, deps);
     expect((oneShot.data as { stdout: string }).stdout).toContain("one-shot");
@@ -135,6 +136,7 @@ describe("terminal tools (real TerminalService)", () => {
 
     const output = await call("terminal.get_output", { terminalId }, ctx, deps);
     expect(output.success).toBe(true);
+    expect((output.data as { chunks: Array<{ data: string }> }).chunks.at(-1)?.data).toContain("hello-adpilot");
 
     await call("terminal.interrupt", { terminalId }, ctx, deps);
     const closed = await call("terminal.close", { terminalId }, ctx, deps);
@@ -161,6 +163,69 @@ describe("terminal tools (real TerminalService)", () => {
       deps
     );
     expect(denyCommand.error).toMatchObject({ code: "PERMISSION_DENIED", recoverable: false });
+  });
+
+  it("pins terminal ids to one product session and never persists an escaped cwd", async () => {
+    const { root, deps } = await workspace();
+    const canonical = await realpath(root);
+    const context = makeCtx({ rootPaths: [canonical], sessionId: "coding-session-a" });
+    const created = await call("terminal.create", { cwd: canonical }, context, deps);
+    const terminalId = (created.data as { session: { id: string } }).session.id;
+
+    const crossSession = await call(
+      "terminal.get_output",
+      { terminalId },
+      makeCtx({ rootPaths: [canonical], sessionId: "coding-session-b" }),
+      deps
+    );
+    expect(crossSession.error).toMatchObject({ code: "TERMINAL_NOT_FOUND" });
+
+    const ambiguous = await call(
+      "terminal.execute",
+      { terminalId, cwd: canonical, command: "pwd" },
+      context,
+      deps
+    );
+    expect(ambiguous.error).toMatchObject({ code: "INVALID" });
+
+    const escaped = await call(
+      "terminal.execute",
+      { terminalId, command: "cd / && pwd" },
+      context,
+      deps
+    );
+    expect((escaped.data as { stdout: string }).stdout.trim()).toBe("/");
+    const next = await call("terminal.execute", { terminalId, command: "pwd" }, context, deps);
+    expect((next.data as { stdout: string }).stdout.trim()).toBe(canonical);
+
+    await call("terminal.close", { terminalId }, context, deps);
+  });
+
+  it("takes a restorable git checkpoint before a sandboxed write command", async () => {
+    const { deps } = await workspace();
+    const repo = await realpath(await mkdtemp(join(tmpdir(), "adpilot-terminal-checkpoint-")));
+    await exec("git", ["init", "-q", repo]);
+    await exec("git", ["-C", repo, "config", "user.email", "test@adpilot.local"]);
+    await exec("git", ["-C", repo, "config", "user.name", "AdPilot Test"]);
+    await writeFile(join(repo, "README.md"), "# before\n", "utf8");
+    await exec("git", ["-C", repo, "add", "README.md"]);
+    await exec("git", ["-C", repo, "commit", "-q", "-m", "initial"]);
+    const context = makeCtx({ rootPaths: [repo], sessionId: "checkpoint-session" });
+    const created = await call("terminal.create", { cwd: repo }, context, deps);
+    const terminalId = (created.data as { session: { id: string } }).session.id;
+
+    const changed = await call(
+      "terminal.execute",
+      { terminalId, command: "printf 'after\\n' > README.md" },
+      context,
+      deps
+    );
+    const data = changed.data as { checkpointId: string; sandboxed: boolean };
+    expect(data.sandboxed).toBe(true);
+    expect(data.checkpointId).toBeTruthy();
+    expect(changed.evidenceIds).toContain(`git-checkpoint:${data.checkpointId}`);
+
+    await call("terminal.close", { terminalId }, context, deps);
   });
 });
 

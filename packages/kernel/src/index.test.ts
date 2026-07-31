@@ -127,6 +127,12 @@ describe("entity schemas", () => {
     expect(() => Goal.parse({ ...base, revision: 0 })).toThrow();
   });
 
+  it("allows an empty success measure to persist as an empty objective", () => {
+    expect(goalFixture(randomUUID(), { objective: "" }).objective).toBe("");
+    const { objective: _objective, ...withoutObjective } = goalFixture(randomUUID());
+    expect(Goal.parse(withoutObjective).objective).toBe("");
+  });
+
   it("rejects malformed ids and empty required strings", () => {
     expect(() => Project.parse({ ...projectFixture(), id: "not-a-uuid" })).toThrow();
     expect(() => Project.parse({ ...projectFixture(), workspaceId: "" })).toThrow();
@@ -353,11 +359,11 @@ describe("KernelService", () => {
     const goal = await service.createGoal({
       projectId: project.id,
       title: "Ship it",
-      objective: "Kernel green",
       successCriteria: ["tests pass"]
     });
     expect(goal.status).toBe("draft");
     expect(goal.progress).toBe(0);
+    expect(goal.objective).toBe("");
     const goals = new FileGoalStore(root);
     expect(await goals.list({ projectId: project.id })).toEqual([goal]);
 

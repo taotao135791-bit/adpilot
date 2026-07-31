@@ -33,6 +33,12 @@ type Resource =
   | { status: "ready"; value: DesktopPermissionCenter }
   | { status: "error"; error: unknown };
 
+type PublicActionError = {
+  summary: string;
+  code?: string;
+  detail?: string;
+};
+
 export function PermissionCenter({ locale, clientId, productSessionId, browserSessionId }: {
   locale: AppLocale;
   clientId?: string;
@@ -43,14 +49,14 @@ export function PermissionCenter({ locale, clientId, productSessionId, browserSe
   const [resource, setResource] = useState<Resource>({ status: "loading" });
   const [busy, setBusy] = useState<DesktopPermissionId>();
   const [tests, setTests] = useState<Partial<Record<DesktopPermissionId, DesktopPermissionTestResult>>>({});
-  const [actionError, setActionError] = useState("");
+  const [actionError, setActionError] = useState<PublicActionError>();
 
   const load = useCallback(async (signal?: AbortSignal, quiet = false) => {
     if (!quiet) setResource((current) => current.status === "ready" ? current : { status: "loading" });
     try {
       const value = await getDesktopPermissions(clientId, productSessionId, browserSessionId, signal);
       setResource({ status: "ready", value });
-      setActionError("");
+      setActionError(undefined);
     } catch (error) {
       if (!isAbortError(error) && !quiet) setResource({ status: "error", error });
     }
@@ -69,11 +75,11 @@ export function PermissionCenter({ locale, clientId, productSessionId, browserSe
   async function request(permission: DesktopPermissionId) {
     if (permission !== "screen-recording" && permission !== "accessibility") return;
     setBusy(permission);
-    setActionError("");
+    setActionError(undefined);
     try {
       setResource({ status: "ready", value: await requestDesktopPermissions([permission], clientId, productSessionId, browserSessionId) });
     } catch (error) {
-      setActionError(errorMessage(error, copy.loadFailed));
+      setActionError(publicError(error, copy.loadFailed));
     } finally {
       setBusy(undefined);
     }
@@ -81,11 +87,11 @@ export function PermissionCenter({ locale, clientId, productSessionId, browserSe
 
   async function open(permission: DesktopPermissionId) {
     setBusy(permission);
-    setActionError("");
+    setActionError(undefined);
     try {
       await openDesktopPermissionSettings(permission);
     } catch (error) {
-      setActionError(errorMessage(error, copy.loadFailed));
+      setActionError(publicError(error, copy.loadFailed));
     } finally {
       setBusy(undefined);
     }
@@ -93,13 +99,13 @@ export function PermissionCenter({ locale, clientId, productSessionId, browserSe
 
   async function test(permission: DesktopPermissionId) {
     setBusy(permission);
-    setActionError("");
+    setActionError(undefined);
     try {
       const result = await testDesktopPermission(permission, clientId, productSessionId, browserSessionId);
       setTests((current) => ({ ...current, [permission]: result }));
       await load(undefined, true);
     } catch (error) {
-      setActionError(errorMessage(error, copy.loadFailed));
+      setActionError(publicError(error, copy.testFailed));
     } finally {
       setBusy(undefined);
     }
@@ -160,7 +166,14 @@ export function PermissionCenter({ locale, clientId, productSessionId, browserSe
       </Button>
     </header>
 
-    {actionError && <div className="permission-action-error" role="alert">{actionError}</div>}
+    {actionError && <div className="permission-action-error" role="alert">
+      <strong>{actionError.summary}</strong>
+      {actionError.code && <code>{actionError.code}</code>}
+      {actionError.detail && <details>
+        <summary>{copy.technicalDetails}</summary>
+        <p>{actionError.detail}</p>
+      </details>}
+    </div>}
 
     <div className="permission-list">
       {center.permissions.map((permission) => {
@@ -185,7 +198,10 @@ export function PermissionCenter({ locale, clientId, productSessionId, browserSe
             {permission.requiresRestart && <p className="permission-restart">{copy.restart}</p>}
             {result && <div className="permission-test-result" data-ok={result.ok}>
               <strong>{result.ok ? copy.testPassed : copy.testFailed}</strong>
-              <span>{result.message}</span>
+              {result.message && <details>
+                <summary>{copy.technicalDetails}</summary>
+                <span>{result.message}</span>
+              </details>}
               {result.preview && <img
                 src={result.preview.dataUrl}
                 width={result.preview.width}
@@ -228,7 +244,12 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
-function errorMessage(error: unknown, fallback: string): string {
-  if (error instanceof DesktopApiError) return error.message || fallback;
-  return error instanceof Error ? error.message : fallback;
+function publicError(error: unknown, fallback: string): PublicActionError {
+  const code = error instanceof DesktopApiError ? error.code : undefined;
+  const message = error instanceof Error ? error.message.trim().slice(0, 500) : "";
+  return {
+    summary: fallback,
+    ...(code ? { code } : {}),
+    ...(message && message !== fallback ? { detail: message } : {})
+  };
 }

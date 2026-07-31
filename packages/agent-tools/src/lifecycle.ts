@@ -33,7 +33,8 @@ export async function runAgentToolCall(
   definition: AgentToolDefinition,
   rawParams: unknown,
   ctx: AgentExecutionContext,
-  deps: AgentToolDeps
+  deps: AgentToolDeps,
+  signal?: AbortSignal
 ): Promise<AgentToolResult> {
   const toolCallId = randomUUID();
   const startedAt = deps.now().toISOString();
@@ -59,7 +60,7 @@ export async function runAgentToolCall(
       result = fail(definition, ctx, toolCallId, startedAt, INVALID_PARAMS, `invalid parameters: ${issues}`, true, deps);
     } else {
       try {
-        const draft = await definition.execute(parsed.data, ctx, deps);
+        const draft = await definition.execute(parsed.data, ctx, deps, signal);
         result = {
           ...draft,
           success: true,
@@ -68,8 +69,11 @@ export async function runAgentToolCall(
           completedAt: deps.now().toISOString()
         };
       } catch (error) {
-        const code = errorCodeOf(error);
-        result = fail(definition, ctx, toolCallId, startedAt, code, errorMessageOf(error), recoverableForCode(code), deps);
+        const code = signal?.aborted ? "OPERATION_ABORTED" : errorCodeOf(error);
+        const message = signal?.aborted
+          ? "operation was cancelled; do not retry unless the user starts it again"
+          : errorMessageOf(error);
+        result = fail(definition, ctx, toolCallId, startedAt, code, message, recoverableForCode(code), deps);
       }
     }
   }
@@ -89,7 +93,23 @@ export async function runAgentToolCall(
       ...(result.error ? { error: result.error } : {})
     });
   } catch {
-    // Auditing must never break a tool call; auditEventId stays undefined.
+    // Reads may still return when the audit sink is temporarily unavailable.
+    // A mutation is different: the side effect may already have happened, so
+    // reporting ordinary success would create an unaudited authority gap,
+    // while a recoverable failure could make the model retry it. Surface an
+    // explicit non-retryable unknown outcome instead.
+    if (result.success && definition.permission !== "read") {
+      result = {
+        ...result,
+        success: false,
+        error: {
+          code: "AUDIT_OUTCOME_UNKNOWN",
+          message: `tool ${definition.name} may have completed, but its audit record could not be persisted; do not retry automatically`,
+          recoverable: false
+        },
+        completedAt: deps.now().toISOString()
+      };
+    }
   }
 
   if (

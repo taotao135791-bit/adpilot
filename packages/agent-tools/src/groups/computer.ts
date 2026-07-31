@@ -61,12 +61,13 @@ async function visibleWindowForBundle(
   host: ReturnType<typeof requireHost>,
   bundleId: string,
   sessionId: string,
-  windowId?: number
+  windowId?: number,
+  signal?: AbortSignal
 ): Promise<NativeWindow> {
   const windows = await host.request(
     "windows.list",
     { includeOffscreen: false },
-    { sessionId }
+    { sessionId, ...(signal ? { signal } : {}) }
   ) as NativeWindow[];
   const candidates = windows
     .filter((window) => window.bundleId === bundleId && window.layer === 0 && window.onScreen && window.alpha > 0)
@@ -164,7 +165,7 @@ export function createComputerTools(): AgentToolDefinition[] {
         bundleId: z.string().min(1).max(1_024).optional(),
         includeImage: z.boolean().optional()
       }),
-      execute: async (raw, ctx, deps) => {
+      execute: async (raw, ctx, deps, signal) => {
         const params = z.object({
           bundleId: z.string().min(1).max(1_024).optional(),
           includeImage: z.boolean().optional()
@@ -172,9 +173,12 @@ export function createComputerTools(): AgentToolDefinition[] {
         const host = requireHost(deps);
         const frontmost = params.bundleId
           ? null
-          : await host.request("frontmost", {}, { sessionId: ctx.sessionId }) as FrontmostResult;
+          : await host.request("frontmost", {}, {
+              sessionId: ctx.sessionId,
+              ...(signal ? { signal } : {})
+            }) as FrontmostResult;
         const selected = params.bundleId
-          ? await visibleWindowForBundle(host, params.bundleId, ctx.sessionId)
+          ? await visibleWindowForBundle(host, params.bundleId, ctx.sessionId, undefined, signal)
           : frontmost?.window;
         if (!selected) {
           throw toolError("WINDOW_NOT_FOUND", `the frontmost application ${frontmost?.ownerName ?? "unknown"} has no capturable window`);
@@ -214,7 +218,11 @@ export function createComputerTools(): AgentToolDefinition[] {
           windowId: selected.windowId,
           includeCursor: false,
           leaseDurationMs: OBSERVATION_LEASE_MS
-        }, { sessionId: ctx.sessionId, timeoutMs: 30_000 }) as CaptureResult;
+        }, {
+          sessionId: ctx.sessionId,
+          timeoutMs: 30_000,
+          ...(signal ? { signal } : {})
+        }) as CaptureResult;
         if (
           capture.source.target !== "window"
           || capture.source.windowId !== selected.windowId
@@ -259,7 +267,7 @@ export function createComputerTools(): AgentToolDefinition[] {
       parameters: z.object({
         observationId: z.string().uuid()
       }),
-      execute: async (raw, ctx, deps) => {
+      execute: async (raw, ctx, deps, signal) => {
         const params = z.object({
           observationId: z.string().uuid()
         }).parse(raw);
@@ -268,14 +276,23 @@ export function createComputerTools(): AgentToolDefinition[] {
         const selected = observation.window;
         await host.request("window.close", {
           surfaceLease: observation.surfaceLease
-        }, { sessionId: ctx.sessionId });
+        }, {
+          sessionId: ctx.sessionId,
+          ...(signal ? { signal } : {})
+        });
         let closed = false;
         for (const durationMs of [250, 500, 750, 1_000]) {
-          await host.request("wait", { durationMs }, { sessionId: ctx.sessionId });
+          await host.request("wait", { durationMs }, {
+            sessionId: ctx.sessionId,
+            ...(signal ? { signal } : {})
+          });
           const remaining = await host.request(
             "windows.list",
             { includeOffscreen: true },
-            { sessionId: ctx.sessionId }
+            {
+              sessionId: ctx.sessionId,
+              ...(signal ? { signal } : {})
+            }
           ) as NativeWindow[];
           if (!remaining.some((window) => window.windowId === selected.windowId && window.ownerPid === selected.ownerPid)) {
             closed = true;

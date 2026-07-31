@@ -504,7 +504,7 @@ function GoalsTab({ locale, goals, projectId, onChanged, onError }: {
         body: JSON.stringify({ projectId, title: title.trim(), objective: objective.trim() })
       });
       const body = await response.json().catch(() => undefined) as { error?: string } | undefined;
-      if (!response.ok) throw new Error(body?.error ?? String(response.status));
+      if (!response.ok) throw new Error(publicWorkspaceError(body?.error, copy.goalCreateFailed));
       setTitle("");
       setObjective("");
       onChanged();
@@ -547,6 +547,15 @@ function GoalsTab({ locale, goals, projectId, onChanged, onError }: {
       </div>
     </div>
   );
+}
+
+function publicWorkspaceError(detail: string | undefined, fallback: string): string {
+  if (!detail) return fallback;
+  // Zod's default stringified issue array is an implementation detail, not
+  // actionable product copy. Keep ordinary domain errors visible while
+  // replacing validation internals with localized guidance.
+  if (detail.trimStart().startsWith("[") || detail.includes('"code"')) return fallback;
+  return detail;
 }
 
 function FilesTab({ locale, rootPaths }: { locale: AppLocale; rootPaths: string[] }) {

@@ -1785,6 +1785,11 @@ select {
 .permission-test-result strong { color: var(--danger); }
 .permission-test-result[data-ok="true"] strong { color: var(--success); }
 .permission-test-result span { color: var(--ink-2); line-height: 1.45; }
+.permission-test-result details,
+.permission-action-error details { margin-top: 4px; font-size: var(--text-xs); }
+.permission-test-result summary,
+.permission-action-error summary { cursor: pointer; color: var(--ink-2); }
+.permission-action-error code { margin-left: 8px; font-size: var(--text-xs); }
 .permission-test-result img { display: block; width: min(100%, 340px); height: auto; margin-top: 4px; border: 1px solid var(--line); border-radius: var(--r-sm); }
 
 /* --------------------------------------------------------------------------
@@ -2487,11 +2492,12 @@ select {
 
 .automation-cron-grid {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
 }
 
-.automation-cron-grid input { font-family: var(--font-mono); text-align: center; }
+.automation-cron-grid .workspace-field { min-width: 0; }
+.automation-cron-grid input { width: 100%; min-width: 0; font-family: var(--font-mono); text-align: center; }
 
 
 /* ------------------------------------------------------------------ */

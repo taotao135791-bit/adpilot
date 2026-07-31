@@ -15,6 +15,7 @@ AdPilot 是一个可本地运行、可审批、可审计的原生广告优化 Ag
 - 11 个 typed skill 覆盖转化检查、改动评估、创意疲劳、发布检查、归因、报告与实验账本；`execute_skill` 向模型暴露由 zod 派生的输入/输出契约，每次执行校验两侧契约并把 denied/failed/succeeded 及输入输出指纹写入审计链。创建实验必须引用同客户同任务的已执行审批。
 - Runtime 写操作拦截门：模型发起的每次工具调用按声明式规则分为 read/write/destructive，统一在 `beforeToolCall` 拦截；写/破坏性调用必须携带同客户同任务的有效审批引用或令牌，未分类工具 fail-closed 按审批写处理；`commit_approved_action` 对模型保持硬阻断，最终验签仍在 `ApprovalService.consume`。
 - 通用工具与 bash：主 Agent 配备 vendored read/grep/find/ls（path-guard 限定可读根，`.adpilot` 私有子树与凭据路径拒读）、write/edit（限工作区内且过审批门）、bash（确定性命令分类器 + macOS sandbox-exec 无网络 seatbelt 沙箱，不可用即 fail-closed；网络外发、截屏、凭据、进程控制、持久化与 `rm -rf` 一律硬拒，每次分类写入审计链）。
+- Coding terminal 与普通 bash 共用同一安全底座：terminalId 绑定 Workspace + Session，模型命令始终以一次性进程运行在无网络 Seatbelt 沙箱中，环境变量经过白名单清洗、输出有上限、cwd 不能逃逸；Git 仓库写命令在执行前自动创建可恢复 checkpoint。取消信号会传到工具，写操作若无法持久化审计则返回不可自动重试的 `AUDIT_OUTCOME_UNKNOWN`。
 - 计划模式：会话级只读开关，主 Agent 工具集收缩到只读面并要求产出编号计划；desktop composer 有克制开关，开启后提示"计划模式 · 只读"，切换经 server 端点持久化并留痕审计，关闭后写操作仍走正常审批链。
 - 27 篇广告知识 playbook 在构建期内嵌进产物（`scripts/build-knowledge-data.mjs`），决策轮注入压缩目录与触发匹配、规划轮按需注入全文；它们只是参考知识，不授予任何工具、权限或执行权。
 - 用户扩展层：`~/.adpilot/skills|prompts` 与工作区 `.adpilot/skills|prompts` 下的 markdown 技能与 prompt 模板（自定义斜杠命令）；同名时工作区覆盖用户级、内置命令始终优先，全部只是建议性文本，不授予任何权限。

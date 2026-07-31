@@ -519,9 +519,16 @@ export async function createServer(system: AdPilotSystem, options: {
     const directAnswer = async (markdown: string, commandName: string) => {
       const systemMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId, ...(session ? { sessionId: session.id } : {}), role: "system", content: markdown, status: "complete", at: new Date().toISOString() });
       await system.workspace.appendJsonl(clientId, "conversation.jsonl", systemMessage);
+      if (session && isUntitledSession(session.title)) {
+        const renamed = await system.sessions.rename(session.id, sessionTitleFromMessage(body.message)).catch(() => undefined);
+        if (renamed) {
+          session = renamed;
+          publishSession(system, session, "renamed");
+        }
+      }
       system.events.publish({ type: "task", clientId, status: "completed", message: markdown });
       reply.code(201);
-      return { message: systemMessage, task: null, command: commandName };
+      return { message: systemMessage, task: null, command: commandName, ...(session ? { session } : {}) };
     };
     // Shared tail of this route: publish + model call + persistence, so
     // built-in and user-template expansions take the identical path.
@@ -536,7 +543,7 @@ export async function createServer(system: AdPilotSystem, options: {
           if (isUntitledSession(session.title)) {
             // Name the session from its first real exchange instead of leaving a
             // bare "New session" or raw UUID in the list forever.
-            const renamed = await system.sessions.rename(session.id, sessionTitleFromMessage(prompt)).catch(() => undefined);
+            const renamed = await system.sessions.rename(session.id, sessionTitleFromMessage(body.message)).catch(() => undefined);
             if (renamed) session = renamed;
           }
           const sessionId = session.id;
@@ -1232,7 +1239,7 @@ export async function createServer(system: AdPilotSystem, options: {
   return app;
 }
 
-const UNTITLED_SESSION_PATTERN = /^(?:new session|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}.*)$/i;
+const UNTITLED_SESSION_PATTERN = /^(?:new session|untitled session|未命名会话|新建会话|新建对话|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}.*)$/i;
 
 function isUntitledSession(title: string): boolean {
   return UNTITLED_SESSION_PATTERN.test(title.trim());

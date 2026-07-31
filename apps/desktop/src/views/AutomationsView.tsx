@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   automationRunStatusLabel,
   automationRunStatusTone,
@@ -93,6 +93,57 @@ export function AutomationsView({ locale, clientId }: { locale: AppLocale; clien
   const [runsByAutomation, setRunsByAutomation] = useState<Record<string, AutomationRun[]>>({});
   const [deleteTarget, setDeleteTarget] = useState<Automation | null>(null);
   const [busy, setBusy] = useState("");
+  const createDialogRef = useRef<HTMLDivElement>(null);
+  const deleteDialogRef = useRef<HTMLDivElement>(null);
+  const dialogOpenerRef = useRef<HTMLElement | undefined>(undefined);
+  const dialogLockedRef = useRef(false);
+  dialogLockedRef.current = saving || busy !== "";
+
+  function openCreateDialog() {
+    dialogOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    setDialogOpen(true);
+  }
+
+  function openDeleteDialog(automation: Automation) {
+    dialogOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    setDeleteTarget(automation);
+  }
+
+  useEffect(() => {
+    const dialog = dialogOpen ? createDialogRef.current : deleteTarget ? deleteDialogRef.current : null;
+    if (!dialog) return;
+    const focusableSelector = 'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
+    const focusTimer = window.setTimeout(() => {
+      if (!dialog.contains(document.activeElement)) dialog.querySelector<HTMLElement>(focusableSelector)?.focus();
+    }, 0);
+    const handleKeys = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (dialogLockedRef.current) return;
+        if (dialogOpen) setDialogOpen(false);
+        else setDeleteTarget(null);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = [...dialog.querySelectorAll<HTMLElement>(focusableSelector)];
+      if (!focusable.length) return;
+      const first = focusable[0]!;
+      const last = focusable.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeys);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.removeEventListener("keydown", handleKeys);
+      dialogOpenerRef.current?.focus();
+    };
+  }, [dialogOpen, deleteTarget]);
 
   const load = useCallback(async () => {
     if (!clientId) return;
@@ -247,7 +298,7 @@ export function AutomationsView({ locale, clientId }: { locale: AppLocale; clien
         </div>
         <div className="automation-head-actions">
           <Button size="sm" variant="subtle" className="icon-button" icon={<IconRefresh size={14} />} aria-label={copy.refresh} onClick={() => void load()} />
-          <Button size="sm" variant="primary" icon={<IconPlus size={13} />} onClick={() => setDialogOpen(true)} disabled={!clientId}>
+          <Button size="sm" variant="primary" icon={<IconPlus size={13} />} onClick={openCreateDialog} disabled={!clientId}>
             {copy.automationsNew}
           </Button>
         </div>
@@ -290,7 +341,7 @@ export function AutomationsView({ locale, clientId }: { locale: AppLocale; clien
         <div className="empty-block">
           <strong>{copy.automationsEmpty}</strong>
           <p>{copy.automationsEmptyBody}</p>
-          <Button size="sm" variant="primary" icon={<IconPlus size={13} />} onClick={() => setDialogOpen(true)}>{copy.automationsNew}</Button>
+          <Button size="sm" variant="primary" icon={<IconPlus size={13} />} onClick={openCreateDialog}>{copy.automationsNew}</Button>
         </div>
       ) : (
         <section className="home-section">
@@ -340,7 +391,7 @@ export function AutomationsView({ locale, clientId }: { locale: AppLocale; clien
                         <Button size="sm" variant="subtle" className="icon-button" icon={<IconPlay size={13} />} aria-label={copy.automationResume} disabled={busy !== ""} onClick={() => void act(automation, "resume")} />
                       )}
                       <Button size="sm" variant="subtle" className="icon-button" icon={<IconBolt size={13} />} aria-label={copy.automationRunNow} disabled={busy !== ""} onClick={() => void act(automation, "run-now")} />
-                      <Button size="sm" variant="subtle" className="icon-button" icon={<IconArchive size={13} />} aria-label={copy.automationDelete} disabled={busy !== ""} onClick={() => setDeleteTarget(automation)} />
+                      <Button size="sm" variant="subtle" className="icon-button" icon={<IconArchive size={13} />} aria-label={copy.automationDelete} disabled={busy !== ""} onClick={() => openDeleteDialog(automation)} />
                     </div>
                   </div>
                   {expanded && (
@@ -376,8 +427,10 @@ export function AutomationsView({ locale, clientId }: { locale: AppLocale; clien
       )}
 
       {dialogOpen && (
-        <div className="plugin-confirm-overlay" role="presentation" onClick={() => setDialogOpen(false)}>
-          <div className="plugin-confirm" role="dialog" aria-modal="true" aria-label={copy.automationCreateTitle} onClick={(event) => event.stopPropagation()}>
+        <div className="plugin-confirm-overlay" role="presentation" onClick={() => {
+          if (!dialogLockedRef.current) setDialogOpen(false);
+        }}>
+          <div ref={createDialogRef} className="plugin-confirm" role="dialog" aria-modal="true" aria-label={copy.automationCreateTitle} onClick={(event) => event.stopPropagation()}>
             <h2>{copy.automationCreateTitle}</h2>
             <label className="workspace-field">
               <span>{copy.automationTitleLabel}</span>
@@ -485,8 +538,10 @@ export function AutomationsView({ locale, clientId }: { locale: AppLocale; clien
       )}
 
       {deleteTarget && (
-        <div className="plugin-confirm-overlay" role="presentation" onClick={() => setDeleteTarget(null)}>
-          <div className="plugin-confirm" role="alertdialog" aria-modal="true" aria-label={copy.automationDeleteTitle} onClick={(event) => event.stopPropagation()}>
+        <div className="plugin-confirm-overlay" role="presentation" onClick={() => {
+          if (!dialogLockedRef.current) setDeleteTarget(null);
+        }}>
+          <div ref={deleteDialogRef} className="plugin-confirm" role="alertdialog" aria-modal="true" aria-label={copy.automationDeleteTitle} onClick={(event) => event.stopPropagation()}>
             <h2>{copy.automationDeleteTitle}</h2>
             <p><strong>{deleteTarget.title}</strong></p>
             <p>{copy.automationDeleteBody}</p>

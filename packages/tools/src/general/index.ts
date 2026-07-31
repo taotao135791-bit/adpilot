@@ -27,8 +27,8 @@ export { PATH_ESCAPE_MESSAGE, createReadPathGuard, workspaceReadPolicy, workspac
 export type { ReadAccessPolicy, ReadPathGuard } from "./path-guard.js";
 export { PROTECTED_PATH_MESSAGE, createProtectedPathMatcher } from "./protected-paths.js";
 export type { ProtectedPathMatcher } from "./protected-paths.js";
-export { BASH_DENY_MESSAGE, createBashTool } from "./bash.js";
-export type { BashToolAuditEntry, BashToolOptions } from "./bash.js";
+export { BASH_DENY_MESSAGE, createBashTool, executeSandboxedBash } from "./bash.js";
+export type { BashToolAuditEntry, BashToolOptions, SandboxedBashResult } from "./bash.js";
 export { buildSeatbeltProfile, resolveSandboxExec, sandboxedEnv, SANDBOX_EXEC_PATH, SANDBOX_UNAVAILABLE_MESSAGE } from "./sandbox.js";
 export type { SandboxAvailability, SeatbeltProfileOptions } from "./sandbox.js";
 export { globToRegExp } from "./walk.js";

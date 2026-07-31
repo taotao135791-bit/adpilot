@@ -71,13 +71,20 @@ describe("agent tool lifecycle", () => {
     const { deps, auditEvents } = makeTestDeps(root);
     await runAgentToolCall(
       definition(),
-      { value: "visible", text: "free-form user content", password: "hunter2", nested: { token: "tok_secret" } },
+      {
+        value: "visible",
+        text: "free-form user content",
+        command: "echo private-customer-value",
+        password: "hunter2",
+        nested: { token: "tok_secret" }
+      },
       makeCtx(),
       deps
     );
     const params = auditEvents[0]!.details.params as Record<string, unknown>;
     expect(params.value).toBe("visible");
     expect(params.text).toBe("[redacted]");
+    expect(params.command).toBe("[redacted]");
     expect(params.password).toBe("[redacted]");
     expect((params.nested as Record<string, unknown>).token).toBe("[redacted]");
   });
@@ -192,5 +199,29 @@ describe("agent tool lifecycle", () => {
     const result = await runAgentToolCall(definition(), {}, makeCtx(), deps);
     expect(result.success).toBe(true);
     expect(result.auditEventId).toBeUndefined();
+  });
+
+  it("marks a successful mutation outcome unknown when its audit cannot persist", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-lifecycle-write-auditfail-"));
+    const { deps } = makeTestDeps(root);
+    deps.audit = async () => {
+      throw new Error("audit store full");
+    };
+    const result = await runAgentToolCall(
+      definition({
+        permission: "write",
+        execute: async (_params, ctx) => succeed("git.dummy", ctx, { changed: true })
+      }),
+      {},
+      makeCtx(),
+      deps
+    );
+    expect(result.success).toBe(false);
+    expect(result.data).toEqual({ changed: true });
+    expect(result.error).toMatchObject({
+      code: "AUDIT_OUTCOME_UNKNOWN",
+      recoverable: false
+    });
+    expect(result.error?.message).toContain("do not retry");
   });
 });

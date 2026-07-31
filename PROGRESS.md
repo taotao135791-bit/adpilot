@@ -1,6 +1,6 @@
 # Rebuild progress
 
-Last updated: 2026-07-29
+Last updated: 2026-07-31
 
 Maturity ladder: Implemented → Unit Tested → Integration Tested →
 Packaged Tested → Mock E2E Verified → Real Account Verified. Blocked means
@@ -13,7 +13,7 @@ an external prerequisite is missing; it is never reported as passed.
 | AgentExecutionContext through /api/messages → agent | Integration Tested | `project-session-binding.test.ts` (5) |
 | Project find-or-create Session binding | Integration Tested | same suite; shadow project in session-service |
 | Mission → Goal/Task heuristic | Integration Tested | same suite (short/keyword/long cases) |
-| Agent Tool Registry (57 tools) + lifecycle | Integration Tested | agent-tools 23 tests + groups tests |
+| Agent Tool Registry (61 tools) + lifecycle | Integration Tested | session-bound sandboxed terminal, cancellation propagation, non-retryable audit-unknown semantics, lifecycle + groups tests |
 | Registry bound into the live composition root | Integration Tested | server boots with shared terminal/scheduler deps |
 | Unified approval (automation/server-minted) | Integration Tested | forgery/replay/stale suites in automation-routes |
 | Plugin mutable-tool approval gate | Integration Tested | `mutable-tool-approval.test.ts` |
@@ -26,7 +26,7 @@ an external prerequisite is missing; it is never reported as passed.
 | Real Google Ads account run | Blocked | needs user-named test account + managed profile |
 | Developer ID notarization | Blocked | no certificate authority in repo |
 
-Full gates: `pnpm typecheck` clean; root suite **905/905**; desktop **127/127**;
+Full gates: `pnpm typecheck` clean; root suite **918/918**; desktop **128/128**;
 Python engine **410/410** (untouched).
 
 ## AdPilot 0.3 — Universal Workspace
