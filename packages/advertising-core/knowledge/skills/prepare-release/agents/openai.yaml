@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prepare Release"
+  short_description: "Verify release privacy and readiness"
+  default_prompt: "Use $prepare-release to produce an evidence-backed go or no-go decision for this release."

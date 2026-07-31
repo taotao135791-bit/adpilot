@@ -5,7 +5,7 @@ import {
 } from "./knowledge-data.generated.js";
 
 /**
- * Runtime access to the embedded advertising knowledge base.
+ * Runtime access to the embedded AdPilot knowledge base.
  *
  * The knowledge is pure reference material: it helps the main agent understand
  * intent, explain capabilities, and organize investigation plans. It never
@@ -107,7 +107,7 @@ export function formatKnowledgeCatalogForPrompt(skills: KnowledgeSkillSummary[] 
     const triggers = skill.triggers.length ? ` [triggers: ${skill.triggers.slice(0, CATALOG_TRIGGER_LIMIT).join(", ")}]` : "";
     return `- ${skill.name}: ${description}${triggers}`;
   });
-  return ["Advertising playbook catalog (reference knowledge only):", ...lines].join("\n");
+  return ["AdPilot skill catalog (reference knowledge only):", ...lines].join("\n");
 }
 
 const KNOWLEDGE_CONTEXT_CHAR_BUDGET = 24_000;

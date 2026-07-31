@@ -27,6 +27,7 @@ import {
   truncateFingerprint,
   type PluginAction,
   type PluginActionBlock,
+  type PluginCandidate,
   type PluginCatalogItem,
   type PluginCatalogResponse,
   type PluginDetailsResponse,
@@ -65,7 +66,7 @@ export function PluginsView({ locale, clientId, pluginTick }: {
       const response = await fetch("/api/plugins");
       const body = await response.json().catch(() => undefined) as (PluginCatalogResponse & { error?: string }) | undefined;
       if (!response.ok || !body) {
-        if (isCatalogUnavailable(response.status, body)) setCatalog({ plugins: [], runtime: { available: false, developerMode: false, catalogError: { code: "PLUGIN_CATALOG_UNAVAILABLE", message: body?.error ?? "" } } });
+        if (isCatalogUnavailable(response.status, body)) setCatalog({ plugins: [], candidates: [], runtime: { available: false, developerMode: false, catalogError: { code: "PLUGIN_CATALOG_UNAVAILABLE", message: body?.error ?? "" } } });
         else setLoadError(body?.error ?? copy.loadFailed);
       } else {
         setCatalog(body);
@@ -182,7 +183,7 @@ export function PluginsView({ locale, clientId, pluginTick }: {
         />
       ) : (
         <>
-          {!runtime?.catalogError && groups.installed.length === 0 && groups.curated.length === 0 && !loadError && (
+          {!runtime?.catalogError && groups.installed.length === 0 && groups.curated.length === 0 && (catalog?.candidates.length ?? 0) === 0 && !loadError && (
             <div className="plugins-empty">
               <strong>{copy.empty}</strong>
               <p>{copy.emptyBody}</p>
@@ -201,6 +202,15 @@ export function PluginsView({ locale, clientId, pluginTick }: {
               <span className="section-kicker">{copy.curatedGroup}</span>
               <div className="plugin-grid">{groups.curated.map((item) => (
                 <PluginCard key={item.id} copy={copy} locale={locale} item={item} onOpen={() => { setDetailId(item.id); setDetail(null); setActionError(""); }} />
+              ))}</div>
+            </section>
+          )}
+          {(catalog?.candidates.length ?? 0) > 0 && (
+            <section className="plugin-group">
+              <span className="section-kicker">{copy.candidateGroup}</span>
+              <p className="plugin-quiet">{copy.candidateGroupBody}</p>
+              <div className="plugin-grid">{catalog!.candidates.map((candidate) => (
+                <PluginCandidateCard key={candidate.id} copy={copy} locale={locale} candidate={candidate} />
               ))}</div>
             </section>
           )}
@@ -229,6 +239,32 @@ export function PluginsView({ locale, clientId, pluginTick }: {
         </div>
       )}
     </div>
+  );
+}
+
+function PluginCandidateCard({ copy, locale, candidate }: {
+  copy: PluginsCopy;
+  locale: AppLocale;
+  candidate: PluginCandidate;
+}) {
+  const localized = locale === "zh-CN" ? "zh" : "en";
+  return (
+    <article className="plugin-card plugin-candidate-card">
+      <div className="plugin-card-head">
+        <strong>{candidate.name}</strong>
+        <Badge tone="neutral" variant="outline">{copy.candidateOnly}</Badge>
+      </div>
+      <p>{candidate.description[localized]}</p>
+      <div className="plugin-card-meta">
+        <Badge tone="neutral" variant="soft">{candidate.publisher}</Badge>
+        <Badge tone="neutral" variant="outline">{copy.candidateReadOnly}</Badge>
+        <Badge tone="neutral" variant="outline">{candidate.maturity}</Badge>
+      </div>
+      <p className="plugin-quiet">{candidate.notes[localized]}</p>
+      <a href={candidate.sourceUrl} target="_blank" rel="noreferrer">
+        {copy.candidateSource} ↗
+      </a>
+    </article>
   );
 }
 

@@ -165,8 +165,14 @@ describe("plugin service composition root", () => {
       }
     });
     expect(system.plugins).toBeDefined();
-    const { plugins, runtime } = await system.plugins.catalog();
+    const { plugins, candidates, runtime } = await system.plugins.catalog();
     expect(runtime).toMatchObject({ available: true, developerMode: false, isolation: "child_process+vm" });
+    expect(candidates.map((candidate) => candidate.id)).toEqual([
+      "github-official-mcp",
+      "google-drive-official-mcp",
+      "figma-official-mcp"
+    ]);
+    expect(candidates.every((candidate) => candidate.installable === false && candidate.recommendedMode === "read-only")).toBe(true);
     const csv = plugins.find((plugin) => plugin.id === "com.adpilot.csv-daily-report");
     expect(csv).toMatchObject({
       latestVersion: "1.0.0",

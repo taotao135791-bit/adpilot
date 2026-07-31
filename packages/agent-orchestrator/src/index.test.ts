@@ -339,7 +339,7 @@ describe("AdPilotAgent integration", () => {
     expect(outcome.task).not.toBeNull();
     expect(outcome.reply).toContain("日报");
     // The decision turn sees the compact catalog and the deterministic trigger match, never full text.
-    expect(contexts[0]).toContain("Advertising playbook catalog");
+    expect(contexts[0]).toContain("AdPilot skill catalog");
     expect(contexts[0]).toContain("- ads-report:");
     expect(contexts[0]).toContain('\\"matchedKnowledge\\":[\\"ads-report\\"]');
     expect(contexts[0]).toContain("never grants tools, permissions, or execution authority");

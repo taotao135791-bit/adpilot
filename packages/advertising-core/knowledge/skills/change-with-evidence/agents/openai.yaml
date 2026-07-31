@@ -1,0 +1,4 @@
+interface:
+  display_name: "Change with Evidence"
+  short_description: "Implement scoped changes with validation"
+  default_prompt: "Use $change-with-evidence to implement this repository change with bounded scope and validation evidence."

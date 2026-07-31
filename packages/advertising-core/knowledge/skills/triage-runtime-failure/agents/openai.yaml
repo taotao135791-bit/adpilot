@@ -1,0 +1,4 @@
+interface:
+  display_name: "Triage Runtime Failure"
+  short_description: "Diagnose failures from evidence first"
+  default_prompt: "Use $triage-runtime-failure to diagnose this failure from logs and reproducible evidence."

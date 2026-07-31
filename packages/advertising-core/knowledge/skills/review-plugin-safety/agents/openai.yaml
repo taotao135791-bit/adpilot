@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Plugin Safety"
+  short_description: "Audit extension provenance and permissions"
+  default_prompt: "Use $review-plugin-safety to assess this plugin or MCP integration before it is adopted."

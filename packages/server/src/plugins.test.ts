@@ -115,6 +115,11 @@ describe("plugin REST endpoints", () => {
     const { status, body } = await inject(app, "GET", "/api/plugins");
     expect(status).toBe(200);
     expect(body.runtime).toMatchObject({ available: true, developerMode: false, isolation: "child_process+vm" });
+    expect(body.candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "github-official-mcp", installable: false, recommendedMode: "read-only" }),
+      expect.objectContaining({ id: "google-drive-official-mcp", installable: false, maturity: "developer-preview" }),
+      expect.objectContaining({ id: "figma-official-mcp", installable: false, maturity: "beta" })
+    ]));
     const plugins = body.plugins as Array<Record<string, unknown>>;
     const csv = plugins.find((plugin) => plugin.id === "com.adpilot.csv-daily-report");
     expect(csv).toMatchObject({
@@ -128,6 +133,12 @@ describe("plugin REST endpoints", () => {
     expect(csv?.permissions).toEqual([
       expect.objectContaining({ key: "filesystem:read.text", category: "filesystem", requiresReviewWhenAdded: true })
     ]);
+
+    const candidateInstall = await inject(app, "POST", "/api/plugins/github-official-mcp/install", {});
+    expect(candidateInstall).toMatchObject({
+      status: 404,
+      body: { code: "PLUGIN_NOT_FOUND" }
+    });
   });
 
   it("runs the full lifecycle over REST with details, verification, SSE, and audit", async () => {

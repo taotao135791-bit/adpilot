@@ -189,7 +189,7 @@ describe("merged agent knowledge", () => {
     expect(context).toContain("按客户字段顺序输出。");
     const catalog = await knowledge.catalog();
     expect(catalog).toContain("client-template");
-    expect(catalog).toContain("Advertising playbook catalog (reference knowledge only):");
+    expect(catalog).toContain("AdPilot skill catalog (reference knowledge only):");
   });
 
   it("user skills override embedded playbooks of the same name, body included", async () => {

@@ -46,7 +46,7 @@ interface FsTreeEntry {
  * 512KB or containing NUL bytes.
  *
  * The module also carries `GET /api/skills` — the desktop Skills view needs
- * the real user-skill catalog and this is the one new route module the
+ * the merged built-in + user skill catalog and this is the one new route module the
  * workbench ships with, so the small read-only catalog lives here instead of
  * growing a second registration in index.ts.
  */
@@ -74,13 +74,20 @@ export function registerFsRoutes(app: FastifyInstance, system: AdPilotSystem): v
   });
 
   app.get("/api/skills", async () => {
-    const [skills, warnings] = await Promise.all([system.userSkills.list(), system.userSkills.warnings()]);
+    const [skills, userSkills, warnings] = await Promise.all([
+      system.knowledge.list(),
+      system.userSkills.list(),
+      system.userSkills.warnings()
+    ]);
+    const userByName = new Map(userSkills.map((skill) => [skill.name, skill]));
     return {
       skills: skills.map((skill) => ({
         name: skill.name,
         description: skill.description,
         triggers: skill.triggers,
-        source: skill.source
+        source: userByName.get(skill.name)?.source ?? "built-in",
+        publisher: userByName.has(skill.name) ? undefined : "AdPilot",
+        license: userByName.has(skill.name) ? undefined : "MIT"
       })),
       warnings
     };

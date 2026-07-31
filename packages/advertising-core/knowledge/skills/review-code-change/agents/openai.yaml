@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Code Change"
+  short_description: "Review diffs for risks and regressions"
+  default_prompt: "Use $review-code-change to review this diff for correctness, security, privacy, and missing tests."

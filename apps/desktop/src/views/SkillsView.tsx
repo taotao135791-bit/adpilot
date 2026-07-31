@@ -5,11 +5,11 @@ import { Badge, Button } from "../ui.js";
 import { IconAlert, IconBook, IconRefresh } from "../icons.js";
 
 /**
- * Skills view: the real user-skill catalog served by GET /api/skills
- * (user-global ~/.adpilot/skills plus per-workspace .adpilot/skills, with the
- * store's override semantics already applied server-side). Validation
- * warnings surface as a banner; the list itself is read-only reference
- * knowledge — it grants no tools or permissions.
+ * Skills view: the merged built-in and user skill catalog served by
+ * GET /api/skills. User-global ~/.adpilot/skills and per-workspace
+ * .adpilot/skills retain their override semantics. Validation warnings surface
+ * as a banner; every item is read-only reference knowledge — it grants no
+ * tools or permissions.
  */
 export function SkillsView({ locale }: { locale: AppLocale }) {
   const copy = workspaceCopy(locale);
@@ -72,7 +72,19 @@ export function SkillsView({ locale }: { locale: AppLocale }) {
             <div key={skill.name} className="skill-card">
               <div className="project-card-head">
                 <strong className="mono">{skill.name}</strong>
-                <Badge tone="neutral" variant="outline">{interpolate(copy.skillSource, { source: skill.source })}</Badge>
+                <div className="project-card-meta">
+                  <Badge tone="neutral" variant="outline">
+                    {interpolate(copy.skillSource, {
+                      source: skill.source === "built-in"
+                        ? copy.skillSourceBuiltIn
+                        : skill.source === "workspace"
+                          ? copy.skillSourceWorkspace
+                          : copy.skillSourceUser
+                    })}
+                  </Badge>
+                  {skill.publisher && <Badge tone="neutral" variant="soft">{skill.publisher}</Badge>}
+                  {skill.license && <Badge tone="neutral" variant="outline">{interpolate(copy.skillLicense, { license: skill.license })}</Badge>}
+                </div>
               </div>
               <p>{skill.description}</p>
               {skill.triggers.length > 0 && (

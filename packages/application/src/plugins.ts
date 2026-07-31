@@ -111,6 +111,21 @@ export interface PluginVerificationDto {
   error: { code: string; message: string } | null;
 }
 
+export interface PluginCandidateDto {
+  id: string;
+  name: string;
+  publisher: string;
+  description: { en: string; zh: string };
+  sourceUrl: string;
+  transport: "local" | "remote" | "local-or-remote";
+  maturity: "stable" | "beta" | "developer-preview";
+  recommendedMode: "read-only";
+  capabilities: string[];
+  notes: { en: string; zh: string };
+  metadataReviewedAt: string;
+  installable: false;
+}
+
 export interface PluginDetailsResponse {
   plugin: PluginDetailsDto;
   installed: {
@@ -130,7 +145,87 @@ export interface PluginDetailsResponse {
 
 export interface PluginCatalogResponse {
   plugins: PluginCatalogItemDto[];
+  candidates: PluginCandidateDto[];
   runtime: PluginServiceStatus;
+}
+
+/**
+ * Discovery-only integrations researched from publisher documentation.
+ * These entries are deliberately not PluginManifest values, never enter the
+ * signed registry, and expose no install or execute action. A candidate must
+ * be packaged, pinned, permission-reviewed, signed, and tested before it can
+ * move into plugins/curated.
+ */
+const PLUGIN_CANDIDATES: readonly PluginCandidateDto[] = [
+  {
+    id: "github-official-mcp",
+    name: "GitHub MCP Server",
+    publisher: "GitHub",
+    description: {
+      en: "Repository, issue, pull-request, Actions, and code-security context from GitHub's official MCP server.",
+      zh: "通过 GitHub 官方 MCP Server 读取仓库、Issue、Pull Request、Actions 与代码安全上下文。"
+    },
+    sourceUrl: "https://github.com/github/github-mcp-server",
+    transport: "local-or-remote",
+    maturity: "stable",
+    recommendedMode: "read-only",
+    capabilities: ["repositories", "issues", "pull requests", "actions", "code security"],
+    notes: {
+      en: "Candidate only. Start with --read-only, a minimal toolset, lockdown mode, and a fine-grained short-lived credential.",
+      zh: "仅为候选。接入时应默认启用 --read-only、最小工具集与 lockdown mode，并使用细粒度短期凭据。"
+    },
+    metadataReviewedAt: "2026-07-31",
+    installable: false
+  },
+  {
+    id: "google-drive-official-mcp",
+    name: "Google Drive MCP",
+    publisher: "Google",
+    description: {
+      en: "Search, metadata, and file-content access through Google's hosted Drive MCP endpoint.",
+      zh: "通过 Google 托管的 Drive MCP 端点搜索文件、读取元数据与文件内容。"
+    },
+    sourceUrl: "https://developers.google.com/workspace/drive/api/reference/mcp",
+    transport: "remote",
+    maturity: "developer-preview",
+    recommendedMode: "read-only",
+    capabilities: ["file search", "metadata", "file content"],
+    notes: {
+      en: "Candidate only. Developer Preview requires project/OAuth setup; start with read tools and verify Workspace DLP and file-eligibility behavior.",
+      zh: "仅为候选。该服务仍处开发者预览，需配置项目与 OAuth；应先开放只读工具，并核验 Workspace DLP 与文件可用性规则。"
+    },
+    metadataReviewedAt: "2026-07-31",
+    installable: false
+  },
+  {
+    id: "figma-official-mcp",
+    name: "Figma MCP Server",
+    publisher: "Figma",
+    description: {
+      en: "Structured design context, variables, components, and Code Connect data from Figma's official MCP server.",
+      zh: "通过 Figma 官方 MCP Server 获取结构化设计上下文、变量、组件与 Code Connect 数据。"
+    },
+    sourceUrl: "https://developers.figma.com/docs/figma-mcp-server/",
+    transport: "local-or-remote",
+    maturity: "beta",
+    recommendedMode: "read-only",
+    capabilities: ["design context", "variables", "components", "Code Connect"],
+    notes: {
+      en: "Candidate only. Client access is restricted and write-to-canvas is broader authority; begin with context-reading tools only.",
+      zh: "仅为候选。客户端接入仍受限制，写入画布属于更高权限；初次接入只应开放设计上下文读取工具。"
+    },
+    metadataReviewedAt: "2026-07-31",
+    installable: false
+  }
+];
+
+export function listPluginCandidates(): PluginCandidateDto[] {
+  return PLUGIN_CANDIDATES.map((candidate) => ({
+    ...candidate,
+    description: { ...candidate.description },
+    capabilities: [...candidate.capabilities],
+    notes: { ...candidate.notes }
+  }));
 }
 
 export interface PluginMutationOptions {
@@ -372,7 +467,11 @@ export class PluginService {
   }
 
   async catalog(): Promise<PluginCatalogResponse> {
-    return { plugins: await this.#requireCatalog().listCatalog(), runtime: this.status() };
+    return {
+      plugins: await this.#requireCatalog().listCatalog(),
+      candidates: listPluginCandidates(),
+      runtime: this.status()
+    };
   }
 
   async details(pluginId: string, version?: string): Promise<PluginDetailsResponse> {

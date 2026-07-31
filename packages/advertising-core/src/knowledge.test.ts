@@ -20,7 +20,7 @@ const knowledgeRoot = `${repoRoot}packages/advertising-core/knowledge`;
 describe("embedded knowledge loader", () => {
   it("embeds every knowledge skill exactly once with metadata and triggers", () => {
     const skills = listKnowledgeSkills();
-    expect(skills).toHaveLength(27);
+    expect(skills).toHaveLength(33);
     expect(new Set(skills.map((skill) => skill.name)).size).toBe(skills.length);
     for (const skill of skills) {
       expect(skill.name).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
@@ -105,7 +105,7 @@ describe("embedded knowledge loader", () => {
 
   it("formats a compact catalog without full bodies", () => {
     const catalog = formatKnowledgeCatalogForPrompt();
-    expect(catalog).toContain("Advertising playbook catalog");
+    expect(catalog).toContain("AdPilot skill catalog");
     expect(catalog).toContain("- ads-ops:");
     expect(catalog).toContain("[triggers:");
     expect(catalog).not.toContain("# Ads Ops: Daily Agency Operations");

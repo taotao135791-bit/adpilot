@@ -62,7 +62,7 @@ describe("fs REST routes", () => {
     expect(missing.statusCode).toBe(404);
   });
 
-  it("exposes the user skill catalog for the Skills view", async () => {
+  it("exposes the merged built-in and user skill catalog for the Skills view", async () => {
     const { server, homeRoot } = await boot();
     await mkdir(join(homeRoot, "skills", "demo"), { recursive: true });
     await writeFile(
@@ -71,9 +71,14 @@ describe("fs REST routes", () => {
     );
     const response = await server.inject({ method: "GET", url: "/api/skills" });
     expect(response.statusCode).toBe(200);
-    const body = response.json() as { skills: Array<{ name: string; source: string }>; warnings: unknown[] };
+    const body = response.json() as { skills: Array<{ name: string; source: string; publisher?: string; license?: string }>; warnings: unknown[] };
+    expect(body.skills.find((skill) => skill.name === "ads-audit")).toMatchObject({
+      source: "built-in",
+      publisher: "AdPilot",
+      license: "MIT"
+    });
     const found = body.skills.find((skill) => skill.name === "demo-skill");
-    expect(found).toBeDefined();
+    expect(found).toMatchObject({ source: "user" });
     expect(body.warnings).toEqual([]);
   });
 });

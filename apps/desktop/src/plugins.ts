@@ -67,7 +67,23 @@ export type PluginRuntimeStatus = {
 
 export type PluginCatalogResponse = {
   plugins: PluginCatalogItem[];
+  candidates: PluginCandidate[];
   runtime: PluginRuntimeStatus;
+};
+
+export type PluginCandidate = {
+  id: string;
+  name: string;
+  publisher: string;
+  description: { en: string; zh: string };
+  sourceUrl: string;
+  transport: "local" | "remote" | "local-or-remote";
+  maturity: "stable" | "beta" | "developer-preview";
+  recommendedMode: "read-only";
+  capabilities: string[];
+  notes: { en: string; zh: string };
+  metadataReviewedAt: string;
+  installable: false;
 };
 
 export type PluginLogEvent = {

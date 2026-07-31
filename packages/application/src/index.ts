@@ -113,6 +113,7 @@ export { resolvePluginResourceLayout } from "./plugin-roots.js";
 export type { PluginResourceLayout, PluginResourceRootsOverride } from "./plugin-roots.js";
 export type {
   PluginCatalogResponse,
+  PluginCandidateDto,
   PluginDetailsResponse,
   PluginMutationOptions,
   PluginServiceDeps,
@@ -120,6 +121,7 @@ export type {
   PluginToolInvocation,
   PluginVerificationDto
 } from "./plugins.js";
+export { listPluginCandidates } from "./plugins.js";
 export { PluginRuntimeError } from "@adpilot/plugin-runtime";
 
 export interface PublicVisualRuntimeEvent {

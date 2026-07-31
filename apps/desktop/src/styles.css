@@ -1831,6 +1831,10 @@ select {
 .plugin-card-head strong { font-size: var(--text-sm); font-weight: 600; }
 .plugin-card > p { font-size: var(--text-xs); color: var(--ink-2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .plugin-card-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.plugin-candidate-card:active { transform: none; }
+.plugin-candidate-card > .plugin-quiet { display: block; -webkit-line-clamp: initial; }
+.plugin-candidate-card > a { align-self: flex-start; color: var(--accent); font-size: var(--text-xs); text-decoration: none; }
+.plugin-candidate-card > a:hover { text-decoration: underline; }
 
 .plugins-empty { padding: 40px 0; text-align: center; color: var(--ink-3); }
 .plugins-empty strong { font-size: var(--text-md); color: var(--ink-2); }

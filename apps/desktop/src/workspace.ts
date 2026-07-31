@@ -82,7 +82,14 @@ export type FsTreeEntry = {
 export type FsTreeResponse = { root: string; truncated: boolean; entries: FsTreeEntry[] };
 export type FsFileResponse = { path: string; size: number; content: string };
 
-export type SkillSummary = { name: string; description: string; triggers: string[]; source: string };
+export type SkillSummary = {
+  name: string;
+  description: string;
+  triggers: string[];
+  source: string;
+  publisher?: string;
+  license?: string;
+};
 export type SkillWarning = { path: string; source: string; reason: string };
 
 export type TerminalSessionInfo = {

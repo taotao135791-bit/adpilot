@@ -41,7 +41,13 @@ const CURATED_TRIGGERS = {
   "ads-server-side-tracking": ["服务端回传", "服务端跟踪"],
   "ads-plan": ["投放计划", "投放策略"],
   "ads-levers": ["KPI受限"],
-  "ads-math": ["盈亏平衡", "广告计算"]
+  "ads-math": ["盈亏平衡", "广告计算"],
+  "change-with-evidence": ["implement", "refactor", "修改代码", "实现功能", "修复代码"],
+  "review-code-change": ["code review", "review diff", "review pull request", "代码审查", "审查代码"],
+  "triage-runtime-failure": ["diagnose failure", "runtime failure", "tool failure", "排查故障", "运行失败", "工具失败"],
+  "design-agent-tool": ["agent harness", "tool calling", "MCP adapter", "工具调用", "智能体工具", "computer use boundary"],
+  "review-plugin-safety": ["plugin review", "MCP server", "connector review", "插件审查", "技能安全", "扩展安全"],
+  "prepare-release": ["release readiness", "prepare release", "发布检查", "发布准备", "打包发布"]
 };
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));

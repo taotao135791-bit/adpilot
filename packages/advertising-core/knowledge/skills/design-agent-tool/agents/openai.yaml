@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design Agent Tool"
+  short_description: "Harden agent tools and harness contracts"
+  default_prompt: "Use $design-agent-tool to design this tool with explicit authority, isolation, cancellation, and audit semantics."
