@@ -3,6 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import {
+  AGENT_REGISTRY_TOOL_PERMISSIONS,
+  classifyToolCall
+} from "@adpilot/shared";
 import { AgentToolRegistry, type AgentToolDefinition } from "./registry.js";
 import { succeed } from "./result.js";
 import { buildAgentToolRegistry } from "./index.js";
@@ -22,6 +26,24 @@ function dummy(overrides: Partial<AgentToolDefinition> = {}): AgentToolDefinitio
 }
 
 describe("AgentToolRegistry", () => {
+  it("keeps every registered tool explicitly classified by the runtime gate", () => {
+    const registry = buildAgentToolRegistry();
+    expect(registry.names()).toEqual([
+      ...Object.keys(AGENT_REGISTRY_TOOL_PERMISSIONS),
+      "computer.observe",
+      "computer.close_window"
+    ].sort());
+    for (const name of registry.names()) {
+      const definition = registry.get(name)!;
+      const classification = classifyToolCall(name, {});
+      expect(classification.defaulted, name).toBe(false);
+      const expected = definition.permission === "computer-use"
+        ? (name === "computer.observe" ? "read" : "write")
+        : definition.permission;
+      expect(classification.class, name).toBe(expected);
+    }
+  });
+
   it("rejects duplicate registrations", () => {
     const registry = new AgentToolRegistry();
     registry.register(dummy());

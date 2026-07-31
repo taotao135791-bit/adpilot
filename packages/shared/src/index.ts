@@ -704,7 +704,28 @@ export const PLAN_MODE_READ_TOOL_NAMES: readonly string[] = [
   "analyze_campaign_metrics",
   "evaluate_change_guardrail",
   "dispatch_specialist",
-  "execute_skill"
+  "execute_skill",
+  "project.get_context",
+  "project.list",
+  "goal.get",
+  "task.list",
+  "terminal.get_output",
+  "terminal.get_exit_status",
+  "git.status",
+  "git.diff",
+  "git.log",
+  "artifact.get",
+  "artifact.list",
+  "artifact.preview",
+  "artifact.export",
+  "ads.list_accounts",
+  "ads.list_campaigns",
+  "ads.run_uac_analysis",
+  "ads.generate_daily_brief",
+  "automation.list",
+  "automation.get_runs",
+  "workflow.list",
+  "workflow.get"
 ];
 
 function classifyExecuteSkill(args: unknown): ToolPermissionClass {
@@ -721,6 +742,92 @@ function classifyDispatchSpecialist(args: unknown): ToolPermissionClass {
 }
 
 /**
+ * Permission classification for the typed Agent Tool Registry. Registry
+ * writes are self-gated: visibility and execution both re-check the immutable
+ * AgentExecutionContext, and each implementation additionally confines
+ * workspace/project/session ownership. Destructive tools remain token-gated.
+ *
+ * The registry package has an invariant test against this map, so adding a new
+ * dot-namespaced tool without a gate classification fails CI instead of
+ * silently falling through to DEFAULT_TOOL_GATE_RULE.
+ */
+export const AGENT_REGISTRY_TOOL_PERMISSIONS = {
+  "project.get_context": "read",
+  "project.list": "read",
+  "project.open": "write",
+  "project.add_root": "write",
+  "goal.create": "write",
+  "goal.get": "read",
+  "goal.update": "write",
+  "goal.set_progress": "write",
+  "goal.complete": "write",
+  "goal.block": "write",
+  "task.create": "write",
+  "task.create_many": "write",
+  "task.list": "read",
+  "task.start": "write",
+  "task.block": "write",
+  "task.complete": "write",
+  "task.fail": "write",
+  "task.add_dependency": "write",
+  "task.attach_evidence": "write",
+  "terminal.create": "write",
+  "terminal.execute": "write",
+  "terminal.get_output": "read",
+  "terminal.get_exit_status": "read",
+  "terminal.interrupt": "write",
+  "terminal.close": "write",
+  "git.status": "read",
+  "git.diff": "read",
+  "git.log": "read",
+  "git.create_branch": "write",
+  "git.switch": "write",
+  "git.stage": "write",
+  "git.unstage": "write",
+  "git.create_worktree": "write",
+  "git.checkpoint": "write",
+  "git.commit": "write",
+  "git.restore_checkpoint": "destructive",
+  "git.discard": "destructive",
+  "artifact.create": "write",
+  "artifact.get": "read",
+  "artifact.list": "read",
+  "artifact.preview": "read",
+  "artifact.revise": "write",
+  "artifact.export": "read",
+  "artifact.attach_to_task": "write",
+  "ads.list_accounts": "read",
+  "ads.list_campaigns": "read",
+  "ads.run_uac_analysis": "read",
+  "ads.create_decision": "write",
+  "ads.generate_daily_brief": "read",
+  "ads.record_observation": "write",
+  "automation.create": "write",
+  "automation.list": "read",
+  "automation.pause": "write",
+  "automation.resume": "write",
+  "automation.run_now": "write",
+  "automation.get_runs": "read",
+  "workflow.list": "read",
+  "workflow.get": "read",
+  "workflow.run": "write"
+} as const satisfies Readonly<Record<string, ToolPermissionClass>>;
+
+const AGENT_REGISTRY_TOOL_GATE_RULES: Readonly<Record<string, ToolGateRule>> =
+  Object.fromEntries(
+    Object.entries(AGENT_REGISTRY_TOOL_PERMISSIONS).map(([name, classification]) => [
+      name,
+      {
+        classify: classification,
+        authority: classification === "destructive" ? "approval_token" : "self_gated",
+        reason: classification === "destructive"
+          ? `${name} is a destructive registry operation and requires a task-bound, single-use approval token.`
+          : `${name} is confined by the typed AgentExecutionContext and re-checks its ${classification} permission in the registry lifecycle.`
+      } satisfies ToolGateRule
+    ])
+  );
+
+/**
  * Every tool a model can invoke through PiAgentRuntime, classified.
  * Names must stay in sync with AdPilotTools.toPiTools (including the vendored
  * general read-only set read/grep/find/ls), the main-agent-only general
@@ -728,6 +835,7 @@ function classifyDispatchSpecialist(args: unknown): ToolPermissionClass {
  * unlisted names fall back to DEFAULT_TOOL_GATE_RULE.
  */
 export const TOOL_GATE_RULES: Readonly<Record<string, ToolGateRule>> = {
+  ...AGENT_REGISTRY_TOOL_GATE_RULES,
   "computer.observe": {
     classify: "read",
     authority: "self_gated",

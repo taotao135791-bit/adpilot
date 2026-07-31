@@ -5,9 +5,9 @@ import { toolError } from "../errors.js";
 
 /**
  * Workflow tools: list/get published Record & Replay workflows and run them
- * through the real WorkflowRunner. workflow.run stays visible in read-only
- * contexts so it can refuse explicitly: a workflow with mutation steps
- * requires the write permission, and the runner itself enforces approvals.
+ * through the real WorkflowRunner. Starting a run always creates durable
+ * state, so workflow.run is a write tool even when every recorded step is
+ * observational; mutation steps additionally require their normal approval.
  */
 export function createWorkflowTools(): AgentToolDefinition[] {
   return [
@@ -45,7 +45,7 @@ export function createWorkflowTools(): AgentToolDefinition[] {
       name: "workflow.run",
       description: "Run a published workflow with its declared parameters and get the finished run record (per-step outcomes and evidence ids). Workflows with mutation steps need the write permission and an approvalId.",
       capabilityPack: "workflow",
-      permission: "read",
+      permission: "write",
       parameters: z.object({
         workflowId: z.string().min(1),
         parameters: z.record(z.string(), z.string()).optional(),
