@@ -6,7 +6,7 @@ import type { AutonomyMode } from "../autonomy.js";
 import type { Client } from "../types.js";
 import type { SettingsData } from "../SettingsPanel.js";
 import { Button, Textarea, Tooltip } from "../ui.js";
-import { IconBolt, IconChevronDown, IconPlan, IconPlus, IconSend, IconShieldCheck } from "../icons.js";
+import { IconBolt, IconChevronDown, IconPlan, IconPlus, IconSend, IconShieldCheck, IconStop } from "../icons.js";
 import { ModelPicker } from "./ModelPicker.js";
 
 /** Auto-resize ceiling: eight 14px/1.55 lines ≈ 174px, rounded up. */
@@ -27,14 +27,17 @@ const MAX_TEXTAREA_HEIGHT = 176;
  * call their endpoints and render the state; enforcement always lives in
  * the runtime, never in these controls.
  */
-export function Composer({ copy, locale, goal, onGoalChange, chatConfigured, submitting, onSubmit, onConfigureModel, planMode = false, planModeDisabled = false, onTogglePlanMode, clients, clientId, onSelectClient, autonomy = "guarded", autonomyDisabled = false, onToggleAutonomy, onModelSaved, onOpenModelSettings }: {
+export function Composer({ copy, locale, goal, onGoalChange, chatConfigured, submitting, stopping = false, onSubmit, onStop, onConfigureModel, planMode = false, planModeDisabled = false, onTogglePlanMode, clients, clientId, onSelectClient, autonomy = "guarded", autonomyDisabled = false, onToggleAutonomy, onModelSaved, onOpenModelSettings }: {
   copy: ConsoleCopy;
   locale: AppLocale;
   goal: string;
   onGoalChange: (value: string) => void;
   chatConfigured: boolean;
   submitting: boolean;
+  stopping?: boolean;
   onSubmit: () => void;
+  /** Stops the exact client + conversation currently owned by the App run lock. */
+  onStop?: () => void;
   /** Invoked when the user hits send with no chat model configured: opens the models settings tab. */
   onConfigureModel: () => void;
   planMode?: boolean;
@@ -114,11 +117,15 @@ export function Composer({ copy, locale, goal, onGoalChange, chatConfigured, sub
    * runs (the App submit path answers local commands without a model).
    */
   function handleSend() {
+    if (submitting) return;
     if (!chatConfigured && empty) { onConfigureModel(); return; }
     onSubmit();
   }
 
-  const sendLabel = !chatConfigured ? copy.configureModel : submitting ? copy.investigatingShort : copy.send;
+  const canStop = submitting && onStop !== undefined;
+  const sendLabel = canStop
+    ? stopping ? copy.stoppingRun : copy.stopRun
+    : !chatConfigured ? copy.configureModel : submitting ? copy.investigatingShort : copy.send;
 
   return (
     <div className="composer-shell">
@@ -216,9 +223,9 @@ export function Composer({ copy, locale, goal, onGoalChange, chatConfigured, sub
             <Button
               variant="primary"
               className="launch-button"
-              icon={<IconSend size={13} />}
-              disabled={chatConfigured && (empty || submitting)}
-              onClick={handleSend}
+              icon={canStop ? <IconStop size={13} /> : <IconSend size={13} />}
+              disabled={canStop ? stopping : chatConfigured && (empty || submitting)}
+              onClick={canStop ? onStop : handleSend}
             >
               {sendLabel}
             </Button>

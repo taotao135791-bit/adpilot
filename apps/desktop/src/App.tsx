@@ -69,6 +69,8 @@ export function App() {
   const [insights, setInsights] = useState<TimelineInsight[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [activeRunTarget, setActiveRunTarget] = useState<{ clientId: string; conversationId: string } | null>(null);
   const [error, setError] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
@@ -93,6 +95,10 @@ export function App() {
 
   /** One-time adoption of the server-selected (or most recent) session per client. */
   const sessionBootstrap = useRef(false);
+  /** Synchronous lock prevents Enter and click from launching overlapping runs before React re-renders. */
+  const submitLock = useRef(false);
+  /** Stop always targets the run that was launched, even if the user switches sessions while it is active. */
+  const activeRunTargetRef = useRef<{ clientId: string; conversationId: string } | null>(null);
 
   const loadState = useCallback(async (requestedClientId?: string, requestedConversationId?: string) => {
     try {
@@ -493,7 +499,7 @@ export function App() {
 
   async function submitGoal(override?: string) {
     const message = (override ?? goal).trim();
-    if (!message) return;
+    if (!message || submitLock.current) return;
     const insightKind = localInsightCommand(message);
     if (insightKind) {
       setGoal("");
@@ -502,32 +508,64 @@ export function App() {
     }
     const isSlashCommand = message.startsWith("/");
     if (!state.models.chatConfigured && !isSlashCommand) { setSettingsTab("models"); setSettingsOpen(true); return; }
+    submitLock.current = true;
     setSubmitting(true); setError("");
     setGoal("");
-    // Resolve the target session: the selected one, or a freshly created one
-    // so the very first message of a workspace already lives in a Session.
-    let session = selectedSession;
-    if (!session && clientId) {
-      const created = await sessionMutation(`/api/clients/${encodeURIComponent(clientId)}/sessions`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: "{}"
-      });
-      if (created) {
-        session = created;
-        setSessions((current) => applySessionSnapshot(current, created));
-        setSelectedSessionId(created.id);
-        setConversationId(created.runtimeConversationId);
-      }
-    }
-    const targetConversationId = session ? session.runtimeConversationId : conversationId;
-    setState((current) => ({ ...current, messages: [...current.messages, { id: `local-${Date.now()}`, clientId: clientId || "personal", conversationId: targetConversationId, role: "user", content: message, status: "complete", at: new Date().toISOString() }] }));
+    let targetConversationId = conversationId;
     try {
+      // Resolve the target session: the selected one, or a freshly created one
+      // so the very first message of a workspace already lives in a Session.
+      let session = selectedSession;
+      if (!session && clientId) {
+        const created = await sessionMutation(`/api/clients/${encodeURIComponent(clientId)}/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}"
+        });
+        if (created) {
+          session = created;
+          setSessions((current) => applySessionSnapshot(current, created));
+          setSelectedSessionId(created.id);
+          setConversationId(created.runtimeConversationId);
+        }
+      }
+      targetConversationId = session ? session.runtimeConversationId : conversationId;
+      const target = { clientId: clientId || "personal", conversationId: targetConversationId };
+      activeRunTargetRef.current = target;
+      setActiveRunTarget(target);
+      setState((current) => ({ ...current, messages: [...current.messages, { id: `local-${Date.now()}`, clientId: target.clientId, conversationId: targetConversationId, role: "user", content: message, status: "complete", at: new Date().toISOString() }] }));
       const response = await fetch("/api/messages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...(clientId ? { clientId } : {}), ...(session ? { sessionId: session.id } : { conversationId: targetConversationId }), message, locale }) });
       const body = await response.json(); if (!response.ok) throw new Error(copy.taskError);
       await loadState(clientId || body.message?.clientId, targetConversationId);
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); await loadState(clientId, targetConversationId); }
-    finally { setSubmitting(false); }
+    finally {
+      submitLock.current = false;
+      activeRunTargetRef.current = null;
+      setActiveRunTarget(null);
+      setStopping(false);
+      setSubmitting(false);
+    }
+  }
+
+  async function stopActiveRun() {
+    const target = activeRunTargetRef.current;
+    if (!target || stopping) return;
+    setStopping(true);
+    setError("");
+    try {
+      const response = await fetch(
+        `/api/clients/${encodeURIComponent(target.clientId)}/conversations/${encodeURIComponent(target.conversationId)}/stop`,
+        { method: "POST" }
+      );
+      const body = await response.json().catch(() => undefined) as { stopped?: boolean; error?: string } | undefined;
+      if (!response.ok) throw new Error(body?.error ?? copy.stopRunError);
+      // Keep the control in its "Stopping" state until the original message
+      // request observes the abort and releases the run lock.
+      if (body?.stopped !== true) setStopping(false);
+    } catch (cause) {
+      setStopping(false);
+      setError(cause instanceof Error ? cause.message : copy.stopRunError);
+    }
   }
 
   async function forkMessage(messageId: string) {
@@ -890,7 +928,9 @@ export function App() {
             onGoalChange={setGoal}
             chatConfigured={state.models.chatConfigured}
             submitting={submitting}
+            stopping={stopping}
             onSubmit={() => void submitGoal()}
+            {...(isNativeDesktop && activeRunTarget ? { onStop: () => void stopActiveRun() } : {})}
             onConfigureModel={() => openSettings("models")}
             planMode={state.planMode?.enabled === true}
             planModeDisabled={!clientId}
