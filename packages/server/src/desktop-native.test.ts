@@ -31,6 +31,9 @@ describe("desktop native REST boundary", () => {
       headers: { cookie, "sec-fetch-site": "same-origin" }
     });
     expect(settingsWithCookie.statusCode).toBe(200);
+    const eventsWithoutCookie = await server.inject({ method: "GET", url: "/events" });
+    expect(eventsWithoutCookie.statusCode).toBe(403);
+    expect(eventsWithoutCookie.json()).toMatchObject({ code: "DESKTOP_NATIVE_FORBIDDEN" });
     const missing = await server.inject({ method: "GET", url: "/api/desktop-native/permissions" });
     expect(missing.statusCode).toBe(403);
     const crossSite = await server.inject({
