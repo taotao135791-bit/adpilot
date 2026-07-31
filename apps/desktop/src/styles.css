@@ -748,6 +748,20 @@ select {
 
 /* Conversation feed. */
 .conversation { display: grid; gap: 2px; }
+.conversation-latest-host {
+  position: sticky;
+  top: var(--conversation-latest-top, calc(100dvh - 160px));
+  z-index: var(--z-topbar);
+  display: flex;
+  justify-content: center;
+  height: 0;
+  pointer-events: none;
+}
+.conversation-latest-button {
+  pointer-events: auto;
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
 
 .message {
   display: flex;
@@ -800,6 +814,8 @@ select {
 .message-body ul li { list-style: disc; }
 .message-body ol li { list-style: decimal; }
 .message-body h4 { font-size: var(--text-md); font-weight: 700; }
+.message-body a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.message-body :not(pre) > code { font-family: var(--font-mono); }
 .message-body pre {
   padding: 10px 12px;
   background: var(--surface-2);
@@ -808,6 +824,23 @@ select {
   font-size: var(--text-sm);
   line-height: 1.55;
   overflow-x: auto;
+}
+.message-code-block { min-width: 0; }
+.message-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: var(--r-md) var(--r-md) 0 0;
+  font-family: var(--font-mono);
+}
+.message-code-block pre {
+  margin: 0;
+  border-radius: 0 0 var(--r-md) var(--r-md);
 }
 
 .thinking { display: flex; align-items: center; gap: 9px; padding: 10px 12px; font-size: var(--text-sm); color: var(--ink-2); }
