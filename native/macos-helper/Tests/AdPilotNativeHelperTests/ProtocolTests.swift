@@ -521,6 +521,83 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(after, before + 1)
     }
 
+    func testProcessScopedInputPosterUsesTheExactOwnerPidWithoutPosting() throws {
+        let event = try XCTUnwrap(
+            CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
+        )
+        var observedPid: pid_t?
+
+        try postInputEvent(event, ownerPid: 42_424) { ownerPid, _ in
+            observedPid = ownerPid
+        }
+
+        XCTAssertEqual(observedPid, pid_t(42_424))
+    }
+
+    func testProcessScopedInputPosterRejectsInvalidPidsBeforePosting() throws {
+        let event = try XCTUnwrap(
+            CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
+        )
+        var didPost = false
+
+        XCTAssertThrowsError(
+            try postInputEvent(event, ownerPid: 0) { _, _ in
+                didPost = true
+            }
+        ) { error in
+            XCTAssertEqual((error as? HelperFailure)?.code, "INPUT_EVENT_FAILED")
+        }
+        XCTAssertFalse(didPost)
+    }
+
+    func testProductionInputDispatchIsBoundToTheLeaseOwnerPid() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let inputSource = try String(
+            contentsOf: packageRoot
+                .appendingPathComponent("Sources")
+                .appendingPathComponent("AdPilotNativeHelper")
+                .appendingPathComponent("Input.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(inputSource.contains(".post(tap:"))
+        XCTAssertFalse(inputSource.contains("CGEventPost("))
+        XCTAssertTrue(inputSource.contains("event.postToPid(ownerPid)"))
+
+        let dispatchLines = inputSource
+            .split(separator: "\n")
+            .filter {
+                $0.contains("postInputEvent(")
+                    && !$0.contains("func postInputEvent(")
+            }
+        XCTAssertEqual(dispatchLines.count, 11)
+        for line in dispatchLines {
+            XCTAssertTrue(
+                line.contains("ownerPid: lease.identity.ownerPid"),
+                "input dispatch must use the exact PID from its surface lease: \(line)"
+            )
+        }
+
+        for operation in ["move", "click", "typeText", "drag", "keypress", "scroll"] {
+            let marker = "static func \(operation)("
+            let start = try XCTUnwrap(inputSource.range(of: marker))
+            let remainder = inputSource[start.lowerBound...]
+            let nextOperation = remainder.dropFirst(marker.count).range(of: "\n    static func ")
+            let nextHelper = remainder.dropFirst(marker.count).range(of: "\n    private static func ")
+            let end = [nextOperation?.lowerBound, nextHelper?.lowerBound]
+                .compactMap { $0 }
+                .min() ?? inputSource.endIndex
+            let body = inputSource[start.lowerBound..<end]
+            XCTAssertTrue(
+                body.contains("postInputEvent("),
+                "\(operation) must dispatch through the process-scoped input poster"
+            )
+        }
+    }
+
     func testSurfaceIdentityRequiresWindowPidBundleAndBoundsToRemainStable() {
         let identity = WindowSurfaceIdentity(
             windowId: 77,

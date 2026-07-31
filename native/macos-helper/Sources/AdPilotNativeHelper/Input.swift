@@ -32,7 +32,7 @@ enum InputService {
         ) else {
             throw HelperFailure("INPUT_EVENT_FAILED", "could not create a mouse movement event")
         }
-        event.post(tap: .cghidEventTap)
+        try postInputEvent(event, ownerPid: lease.identity.ownerPid)
         InputActivityTracker.shared.record(.mouseMoved)
         return ["posted": true, "eventCount": 1]
     }
@@ -121,8 +121,8 @@ enum InputService {
             }
             // Never leave a mouse-down half posted: a pair is deliberately
             // emitted without an interruptible await or deadline check.
-            down.post(tap: .cghidEventTap)
-            up.post(tap: .cghidEventTap)
+            try postInputEvent(down, ownerPid: lease.identity.ownerPid)
+            try postInputEvent(up, ownerPid: lease.identity.ownerPid)
             InputActivityTracker.shared.record(downType)
             InputActivityTracker.shared.record(upType)
             eventCount += 2
@@ -179,8 +179,8 @@ enum InputService {
                 down.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
                 up.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
                 // As with clicks, keep each key down/up pair indivisible.
-                down.post(tap: .cghidEventTap)
-                up.post(tap: .cghidEventTap)
+                try postInputEvent(down, ownerPid: lease.identity.ownerPid)
+                try postInputEvent(up, ownerPid: lease.identity.ownerPid)
                 InputActivityTracker.shared.record(.keyDown)
                 InputActivityTracker.shared.record(.keyUp)
                 eventCount += 2
@@ -289,15 +289,15 @@ enum InputService {
         // Once mouse-down is posted, finish the bounded drag without an
         // interruptible await so the helper can never strand the system in a
         // pressed-button state. A timeout after this point is outcome-unknown.
-        down.post(tap: .cghidEventTap)
+        try postInputEvent(down, ownerPid: lease.identity.ownerPid)
         let delayMicroseconds = stepCount > 0 ? (durationMs * 1_000) / stepCount : 0
         for event in dragEvents {
-            event.post(tap: .cghidEventTap)
+            try postInputEvent(event, ownerPid: lease.identity.ownerPid)
             if delayMicroseconds > 0 {
                 usleep(useconds_t(delayMicroseconds))
             }
         }
-        up.post(tap: .cghidEventTap)
+        try postInputEvent(up, ownerPid: lease.identity.ownerPid)
         InputActivityTracker.shared.record(downType)
         InputActivityTracker.shared.record(draggedType, count: dragEvents.count)
         InputActivityTracker.shared.record(upType)
@@ -346,8 +346,8 @@ enum InputService {
         }
         down.flags = flags
         up.flags = flags
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
+        try postInputEvent(down, ownerPid: lease.identity.ownerPid)
+        try postInputEvent(up, ownerPid: lease.identity.ownerPid)
         InputActivityTracker.shared.record(.keyDown)
         InputActivityTracker.shared.record(.keyUp)
         return ["posted": true, "eventCount": 2]
@@ -424,7 +424,7 @@ enum InputService {
 
         try lease.identity.requireStillCurrent()
         try requireInputDeadline(deadlineUnixMs, inputStarted: false)
-        event.post(tap: .cghidEventTap)
+        try postInputEvent(event, ownerPid: lease.identity.ownerPid)
         InputActivityTracker.shared.record(.scrollWheel)
         return ["posted": true, "eventCount": 1]
     }
@@ -439,6 +439,27 @@ enum InputService {
         let descriptor = try WindowSurfaceLease.parse(raw)
         return try await store.resolve(descriptor, sessionId: sessionId)
     }
+}
+
+typealias ProcessScopedInputPost = (_ ownerPid: pid_t, _ event: CGEvent) -> Void
+
+// Route every synthetic event directly to the process captured by the
+// one-shot surface lease. A global event stream would let a focus change in
+// the validation-to-post gap redirect input into an unrelated application.
+func postInputEvent(
+    _ event: CGEvent,
+    ownerPid: Int,
+    using postToProcess: ProcessScopedInputPost = { ownerPid, event in
+        event.postToPid(ownerPid)
+    }
+) throws {
+    guard ownerPid > 0, ownerPid <= Int(Int32.max) else {
+        throw HelperFailure(
+            "INPUT_EVENT_FAILED",
+            "the target process identifier is invalid"
+        )
+    }
+    postToProcess(pid_t(ownerPid), event)
 }
 
 enum WaitService {
