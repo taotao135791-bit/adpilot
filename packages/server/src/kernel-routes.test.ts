@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -14,6 +14,8 @@ afterEach(async () => {
 describe("kernel REST routes", () => {
   it("runs the project → goal → task graph → artifact render flow end to end", async () => {
     const { server } = await boot();
+    const projectRoot = await realpath(await mkdtemp(join(tmpdir(), "adpilot-kernel-project-")));
+    roots.push(projectRoot);
 
     const created = await server.inject({
       method: "POST",
@@ -22,13 +24,13 @@ describe("kernel REST routes", () => {
         workspaceId: "personal",
         name: "Northwind 投放",
         type: "advertising",
-        rootPaths: ["/tmp/ads"],
+        rootPaths: [projectRoot],
         enabledCapabilityPacks: ["ads"]
       }
     });
     expect(created.statusCode).toBe(201);
     const project = created.json();
-    expect(project).toMatchObject({ workspaceId: "personal", name: "Northwind 投放", type: "advertising", rootPaths: ["/tmp/ads"] });
+    expect(project).toMatchObject({ workspaceId: "personal", name: "Northwind 投放", type: "advertising", rootPaths: [projectRoot] });
 
     const goalResponse = await server.inject({
       method: "POST",
@@ -134,6 +136,36 @@ describe("kernel REST routes", () => {
       expect(response.statusCode).toBe(201);
       expect(response.json()).toMatchObject({ title: payload.title, objective: "" });
     }
+  });
+
+  it("requires a real root for development projects and enables code plus git by default", async () => {
+    const { server } = await boot();
+    const missingRoot = await server.inject({
+      method: "POST",
+      url: "/api/kernel/projects",
+      payload: { workspaceId: "personal", name: "Unbound code", type: "development" }
+    });
+    expect(missingRoot.statusCode).toBe(400);
+    expect(missingRoot.json()).toMatchObject({ code: "PROJECT_ROOT_REQUIRED" });
+
+    const projectRoot = await realpath(await mkdtemp(join(tmpdir(), "adpilot-code-project-")));
+    roots.push(projectRoot);
+    const created = await server.inject({
+      method: "POST",
+      url: "/api/kernel/projects",
+      payload: {
+        workspaceId: "personal",
+        name: "Bound code",
+        type: "development",
+        rootPaths: [projectRoot, projectRoot]
+      }
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      type: "development",
+      rootPaths: [projectRoot],
+      enabledCapabilityPacks: ["code", "git"]
+    });
   });
 
   it("rejects invalid specs and missing parents with coded errors", async () => {

@@ -19,6 +19,7 @@ export type KernelProject = {
   description?: string;
   type: string;
   rootPaths: string[];
+  enabledCapabilityPacks: string[];
   goalIds: string[];
   artifactIds: string[];
   status: string;

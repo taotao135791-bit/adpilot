@@ -257,14 +257,16 @@ export class AdPilotAgent {
       permission: "OBSERVE" as const,
       adPilotSessionId: context.sessionId ?? conversationId
     };
-    const registryTools = this.agentTools ? this.registryTools(this.agentExecutionContext(clientId, context, conversationId)) : [];
+    const executionContext = this.agentExecutionContext(clientId, context, conversationId);
+    const registryTools = this.agentTools ? this.registryTools(executionContext) : [];
+    const projectRoot = executionContext.rootPaths[0];
     let summary: string;
     try {
       const run = await this.runtime.run({
         context: { ...runContext, sessionId: conversationId, conversationId, role: "adpilot_agent" },
         systemPrompt: [
           "You are AdPilot, the user's local general-purpose assistant, now executing a local action request. Advertising operations is your domain specialty, but this task is ordinary local work.",
-          "Available tools: read, grep, find and ls observe the workspace and explicitly allowed directories; write and edit create and modify files inside the workspace; bash runs sandboxed shell commands, including `open` on macOS to launch applications and URLs (for example `open https://www.baidu.com` or `open -a Safari`).",
+          "Available tools: read, grep, find and ls observe the active project root when one is bound, otherwise the private AdPilot workspace; write and edit modify only that same root; bash runs in a root-confined, no-network sandbox.",
           "Bash commands are deterministically classified. Read-level commands run directly. Write-level commands (file changes, installs, `open`) run without an approval reference when the operator granted full access; in guarded mode the gate denial explains exactly what is missing — report it to the user instead of retrying the same call. Deny-classified commands (network tools, shell-level screen capture, credential and browser-profile stores, process control, protected paths, rm -rf) are hard-blocked in every mode; never try to work around them. That deny list covers shell commands only: computer.observe, when it appears in your tool list, is the sanctioned read-only way to see the user's screen and it never needs an approval, an approvalId, or a workaround.",
           "When computer.close_window appears, it is the sanctioned routine local action for closing one app window. First call computer.observe, then pass only the fresh observationId it returned. That one-time id is bound to this session and the captured PID, bundle, window, and bounds; never guess or reuse it. Full Access allows this write directly, while guarded mode keeps its approval reference.",
           "Two red lines: you never change an advertising account from this path — account mutations go through an investigation and the full approval chain. And when computer.observe is not among your tools you cannot see the user's screen; say so honestly instead of claiming an observation.",
@@ -273,7 +275,7 @@ export class AdPilotAgent {
         ].join("\n"),
         prompt: JSON.stringify({ goal, client: clientContext, conversation: sanitizeConversationContext(context) }),
         signals: { task: "conversation" },
-        tools: [...this.tools.generalAgentTools(runContext), ...registryTools],
+        tools: [...this.tools.generalAgentTools(runContext, projectRoot), ...registryTools],
         ...(context.modelOverride ? { modelOverride: context.modelOverride } : {})
       });
       summary = run.text.trim();
@@ -385,7 +387,9 @@ export class AdPilotAgent {
     };
     let modelResult: MainAgentOutput;
     const knowledgeContext = await this.knowledge.context(await this.knowledge.match(goal));
-    const registryTools = this.agentTools ? this.registryTools(this.agentExecutionContext(clientId, context, conversationId)) : [];
+    const executionContext = this.agentExecutionContext(clientId, context, conversationId);
+    const registryTools = this.agentTools ? this.registryTools(executionContext) : [];
+    const projectRoot = executionContext.rootPaths[0];
     try {
       const runContext = {
         clientId,
@@ -414,7 +418,7 @@ export class AdPilotAgent {
           ...(knowledgeContext ? [knowledgeContext] : [])
         ].join("\n"),
         prompt: JSON.stringify({ goal, projectContext, currentTask: task }),
-        signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool, ...this.tools.generalAgentTools(runContext), ...registryTools],
+        signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool, ...this.tools.generalAgentTools(runContext, projectRoot), ...registryTools],
         ...(context.modelOverride ? { modelOverride: context.modelOverride } : {})
       }, MainAgentOutput);
     } catch (error) {

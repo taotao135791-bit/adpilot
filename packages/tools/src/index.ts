@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { z } from "zod";
@@ -208,10 +209,11 @@ export class AdPilotTools {
    * Specialists never receive this set; the bash classification of every
    * invocation is chained into the audit log under the given context.
    */
-  generalAgentTools(context: ToolContext): AgentTool[] {
+  generalAgentTools(context: ToolContext, workspaceRoot = this.workspace.root): AgentTool[] {
+    const readRoots = workspaceRoot === this.workspace.root ? this.generalReadRoots : [];
     return createGeneralAgentTools({
-      workspaceRoot: this.workspace.root,
-      readPolicy: workspaceReadPolicy(this.workspace.root, this.generalReadRoots),
+      workspaceRoot,
+      readPolicy: workspaceReadPolicy(workspaceRoot, readRoots),
       bash: {
         onClassified: async (entry: BashToolAuditEntry) => {
           await this.audit.append({
@@ -221,12 +223,14 @@ export class AdPilotTools {
             action: "bash_classify",
             status: entry.classification.verdict === "deny" ? "denied" : "succeeded",
             details: {
-              command: entry.commandPreview,
+              // Commands may contain filenames, customer names or secrets.
+              // Keep correlation without persisting model/user text.
+              commandFingerprint: createHash("sha256").update(entry.commandPreview).digest("hex"),
+              commandLength: entry.commandPreview.length,
               verdict: entry.classification.verdict,
               parseable: entry.classification.parseable,
               reason: entry.classification.reason,
               commands: entry.classification.commands.map((item) => ({
-                command: item.command,
                 program: item.program,
                 verdict: item.verdict,
                 rule: item.rule

@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { realpath, stat } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import type { AdPilotSystem } from "@adpilot/application";
@@ -19,14 +21,51 @@ const WorkspaceQuery = z.object({
   status: z.enum(["active", "archived"]).optional()
 }).strict();
 
+const ProjectType = z.enum(["general", "advertising", "development", "research", "creative"]);
+const CapabilityPack = z.enum([
+  "ads",
+  "artifact",
+  "automation",
+  "code",
+  "computer-use",
+  "git",
+  "workflow"
+]);
+
 const ProjectCreateBody = z.object({
   workspaceId: z.string().min(1).max(256),
   name: z.string().trim().min(1).max(256),
   description: z.string().max(4_000).optional(),
-  type: z.enum(["general", "advertising", "development", "research", "creative"]).default("general"),
+  type: ProjectType.default("general"),
   rootPaths: z.array(z.string().min(1).max(1_024)).max(32).default([]),
-  enabledCapabilityPacks: z.array(z.string().min(1).max(64)).max(16).default([])
+  enabledCapabilityPacks: z.array(CapabilityPack).max(CapabilityPack.options.length).optional()
 }).strict();
+
+const DEFAULT_CAPABILITY_PACKS: Readonly<Record<z.infer<typeof ProjectType>, readonly z.infer<typeof CapabilityPack>[]>> = {
+  general: [],
+  advertising: ["ads", "artifact", "automation", "workflow", "computer-use"],
+  development: ["code", "git"],
+  research: [],
+  creative: ["artifact"]
+};
+
+async function canonicalProjectRoots(inputs: readonly string[]): Promise<string[]> {
+  const roots: string[] = [];
+  for (const input of inputs) {
+    if (!isAbsolute(input)) {
+      throw new KernelError(`project root must be an absolute path: ${input}`, "PROJECT_ROOT_INVALID");
+    }
+    const canonical = await realpath(input).catch(() => {
+      throw new KernelError(`project root does not exist: ${input}`, "PROJECT_ROOT_INVALID");
+    });
+    const metadata = await stat(canonical);
+    if (!metadata.isDirectory()) {
+      throw new KernelError(`project root is not a directory: ${input}`, "PROJECT_ROOT_INVALID");
+    }
+    if (!roots.includes(canonical)) roots.push(canonical);
+  }
+  return roots;
+}
 
 const GoalCreateBody = z.object({
   projectId: z.string().uuid(),
@@ -121,12 +160,22 @@ export function registerKernelRoutes(app: FastifyInstance, system: AdPilotSystem
   app.post("/api/kernel/projects", async (request, reply) => {
     const body = ProjectCreateBody.parse(request.body);
     await requireWorkspace(body.workspaceId);
+    const rootPaths = await canonicalProjectRoots(body.rootPaths);
+    if (body.type === "development" && rootPaths.length === 0) {
+      throw new KernelError(
+        "development projects require at least one existing absolute project root",
+        "PROJECT_ROOT_REQUIRED"
+      );
+    }
+    const enabledCapabilityPacks = body.enabledCapabilityPacks?.length
+      ? [...new Set(body.enabledCapabilityPacks)]
+      : [...DEFAULT_CAPABILITY_PACKS[body.type]];
     const project = await system.kernel.createProject({
       workspaceId: body.workspaceId,
       name: body.name,
       type: body.type,
-      rootPaths: body.rootPaths,
-      enabledCapabilityPacks: body.enabledCapabilityPacks,
+      rootPaths,
+      enabledCapabilityPacks,
       ...(body.description !== undefined ? { description: body.description } : {})
     });
     // Shadow the kernel project into the session-service under the same id so

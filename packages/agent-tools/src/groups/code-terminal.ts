@@ -93,9 +93,10 @@ async function checkpointRepositoryMutation(
  * command execution through the real TerminalService. Both the working
  * directory of a session and any one-shot cwd must live inside the execution
  * context's rootPaths. Command policy follows the shared bash classifier:
- * read-level commands run directly, write-level commands require the
- * destructive grant (a refusal is PERMISSION_DENIED, recoverable=false, so
- * the agent asks the user instead of retrying), deny-level commands never run.
+ * read-level commands run directly, write-level commands require the normal
+ * write grant and stay inside the root-only Seatbelt profile, while
+ * deny-level commands never run. The registry lifecycle checks the write
+ * grant before this implementation is entered.
  */
 export function createCodeTerminalTools(): AgentToolDefinition[] {
   const terminals = new Map<string, OwnedTerminal>();
@@ -147,12 +148,6 @@ export function createCodeTerminalTools(): AgentToolDefinition[] {
           throw toolError(
             "PERMISSION_DENIED",
             `command is deny-classified and never runs (${classification.reason}); do not try to work around this`
-          );
-        }
-        if (classification.verdict !== "read" && !ctx.permissions.destructive) {
-          throw toolError(
-            "PERMISSION_DENIED",
-            `command is ${classification.verdict}-classified (${classification.reason}) and this context lacks the destructive permission; ask the user to run it or to grant the permission`
           );
         }
         const checkpointId = classification.verdict === "read"

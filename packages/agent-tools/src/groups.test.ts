@@ -143,7 +143,7 @@ describe("terminal tools (real TerminalService)", () => {
     expect((closed.data as { closed: boolean }).closed).toBe(true);
   });
 
-  it("refuses cwd outside the roots and write-level commands without the destructive grant", async () => {
+  it("refuses cwd outside the roots, allows sandboxed writes, and always denies dangerous commands", async () => {
     const { root, deps } = await workspace();
     const canonical = await realpath(root);
     const outside = await realpath(await mkdtemp(join(tmpdir(), "adpilot-outside-")));
@@ -151,10 +151,15 @@ describe("terminal tools (real TerminalService)", () => {
     const escaped = await call("terminal.create", { cwd: outside }, makeCtx({ rootPaths: [canonical] }), deps);
     expect(escaped.error).toMatchObject({ code: "PERMISSION_DENIED", recoverable: false });
 
-    const readOnly = makeCtx({ rootPaths: [canonical], permissions: { read: true, write: true, destructive: false, computerUse: false, network: false } });
-    const writeCommand = await call("terminal.execute", { cwd: root, command: `touch ${join(root, "nope.txt")}` }, readOnly, deps);
-    expect(writeCommand.error).toMatchObject({ code: "PERMISSION_DENIED", recoverable: false });
-    await expect(stat(join(root, "nope.txt"))).rejects.toThrow();
+    const workspaceWrite = makeCtx({ rootPaths: [canonical], permissions: { read: true, write: true, destructive: false, computerUse: false, network: false } });
+    const writeCommand = await call("terminal.execute", { cwd: root, command: `touch ${join(root, "created.txt")}` }, workspaceWrite, deps);
+    expect(writeCommand.success).toBe(true);
+    expect((await stat(join(root, "created.txt"))).isFile()).toBe(true);
+
+    const noWriteGrant = makeCtx({ rootPaths: [canonical], permissions: { read: true, write: false, destructive: false, computerUse: false, network: false } });
+    const blockedWrite = await call("terminal.execute", { cwd: root, command: `touch ${join(root, "blocked.txt")}` }, noWriteGrant, deps);
+    expect(blockedWrite.error).toMatchObject({ code: "PERMISSION_DENIED", recoverable: false });
+    await expect(stat(join(root, "blocked.txt"))).rejects.toThrow();
 
     const denyCommand = await call(
       "terminal.execute",

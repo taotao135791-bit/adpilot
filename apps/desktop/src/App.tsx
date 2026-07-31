@@ -80,6 +80,7 @@ export function App() {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);  /** Artifact to pre-select when the workbench opens (clicked from Home). */
   const [focusArtifactId, setFocusArtifactId] = useState<string | null>(null);
   const [codeHandoff, setCodeHandoff] = useState<{ projectId: string; mission: string } | null>(null);
+  const [pendingCodeMission, setPendingCodeMission] = useState<string | null>(null);
   /** Bumped to make ProjectsView open its create dialog (from the Home empty state). */
   const [projectsDialogNonce, setProjectsDialogNonce] = useState(0);
   /** Bumped on every plugin SSE event; PluginsView refetches on change. */
@@ -343,29 +344,12 @@ export function App() {
     void submitGoal(message);
   }
 
-  /** Home's Code hand-off: a development project is created from the text and
-     opened with the text prefilled in its mission composer. */
-  async function submitCodeProject(message: string) {
+  /** Code work must bind a real project root before any coding tool exists. */
+  function submitCodeProject(message: string) {
     if (!clientId) return;
-    try {
-      const response = await fetch(`/api/kernel/projects`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          workspaceId: clientId,
-          name: message.replace(/\s+/g, " ").trim().slice(0, 40) || "Code task",
-          type: "development"
-        })
-      });
-      if (!response.ok) throw new Error(String(response.status));
-      const project = await response.json() as { id: string };
-      setCodeHandoff({ projectId: project.id, mission: message });
-      setActiveProjectId(project.id);
-      setFocusArtifactId(null);
-      setMainView("project");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    }
+    setPendingCodeMission(message);
+    setMainView("projects");
+    setProjectsDialogNonce((nonce) => nonce + 1);
   }
 
   /** Home's project-scoped Ask: jump into the project workbench with the
@@ -800,7 +784,7 @@ export function App() {
                 workspaceName={state.clients.find((client) => client.id === clientId)?.name ?? clientId}
                 projects={kernelProjects}
                 onSubmitGoal={submitAndChat}
-                onSubmitCode={(message) => void submitCodeProject(message)}
+                onSubmitCode={submitCodeProject}
                 onSubmitProjectGoal={submitProjectGoal}
                 onModelSaved={applySettings}
                 onOpenSettings={() => openSettings("models")}
@@ -811,7 +795,16 @@ export function App() {
                 locale={locale}
                 clientId={clientId}
                 dialogNonce={projectsDialogNonce}
+                {...(pendingCodeMission ? { initialCodeMission: pendingCodeMission } : {})}
                 onOpenProject={(projectId) => openProject(projectId)}
+                onProjectCreated={(project) => {
+                  if (pendingCodeMission && project.type === "development") {
+                    setCodeHandoff({ projectId: project.id, mission: pendingCodeMission });
+                  }
+                  setPendingCodeMission(null);
+                  openProject(project.id);
+                }}
+                onCreateCancelled={() => setPendingCodeMission(null)}
               />
             )}
             {mainView === "automations" && <AutomationsView locale={locale} clientId={clientId} />}

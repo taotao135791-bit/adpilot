@@ -755,7 +755,7 @@ export const AGENT_REGISTRY_TOOL_PERMISSIONS = {
   "project.get_context": "read",
   "project.list": "read",
   "project.open": "write",
-  "project.add_root": "write",
+  "project.add_root": "destructive",
   "goal.create": "write",
   "goal.get": "read",
   "goal.update": "write",

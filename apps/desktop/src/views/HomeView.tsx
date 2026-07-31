@@ -115,7 +115,12 @@ export function HomeView({ locale, workspaceName, projects, onSubmitGoal, onSubm
                 onClick={() => {
                   const text = goal.trim();
                   if (!text || submitting) return;
-                  onSubmitCode(text);
+                  if (
+                    scopeProject
+                    && scopeProject.rootPaths.length > 0
+                    && scopeProject.enabledCapabilityPacks.includes("code")
+                  ) onSubmitProjectGoal(scopeProject.id, text);
+                  else onSubmitCode(text);
                   setGoal("");
                 }}
               >{copy.homeCodeMode}</button>

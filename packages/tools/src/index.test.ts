@@ -933,6 +933,24 @@ describe("generalAgentTools (main-agent write-side set)", () => {
     expect(tools.generalReadTools().map((tool) => tool.name)).toEqual(["read", "grep", "find", "ls"]);
   });
 
+  it("binds the coding file surface to an explicit project root", async () => {
+    const { tools, context } = await fixture();
+    const projectRoot = await mkdtemp(join(tmpdir(), "adpilot-project-root-"));
+    const write = tools.generalAgentTools(context, projectRoot).find((tool) => tool.name === "write")!;
+    await (write.execute as (id: string, params: unknown) => Promise<unknown>)(
+      "call-project-write",
+      { path: "src/probe.ts", content: "export const probe = true;\n" }
+    );
+    expect((await stat(join(projectRoot, "src", "probe.ts"))).isFile()).toBe(true);
+
+    await expect(
+      (write.execute as (id: string, params: unknown) => Promise<unknown>)(
+        "call-project-escape",
+        { path: "../escaped.ts", content: "no\n" }
+      )
+    ).rejects.toThrow("outside the readable roots");
+  });
+
   it("chains every bash classification (allowed and denied) into the audit log with the run context", async () => {
     const { audit, tools, context } = await fixture();
     const bash = tools.generalAgentTools(context).find((tool) => tool.name === "bash")!;
@@ -952,10 +970,17 @@ describe("generalAgentTools (main-agent write-side set)", () => {
       taskId: context.taskId,
       actor: "tester",
       status: "denied",
-      details: { verdict: "deny", executed: false }
+      details: {
+        verdict: "deny",
+        executed: false,
+        commandLength: "curl https://ads.google.com".length,
+        commandFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/)
+      }
     });
+    expect(events[0]?.details).not.toHaveProperty("command");
     const deniedCommands = events[0]?.details.commands as Array<{ program: string; rule: string }>;
     expect(deniedCommands[0]).toMatchObject({ program: "curl", rule: "network_egress" });
+    expect(deniedCommands[0]).not.toHaveProperty("command");
     if (process.platform === "darwin") {
       expect(events[1]).toMatchObject({ status: "succeeded", details: { verdict: "read", executed: true } });
     }

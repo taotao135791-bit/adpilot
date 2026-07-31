@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   formatTime,
   projectTypeLabel,
@@ -24,12 +24,24 @@ const PROJECT_TYPES = ["general", "advertising", "development", "research", "cre
  * guarded by an explicit confirmation dialog. Cards open the project
  * workbench.
  */
-export function ProjectsView({ locale, clientId, dialogNonce, onOpenProject }: {
+export function ProjectsView({
+  locale,
+  clientId,
+  dialogNonce,
+  initialCodeMission,
+  onOpenProject,
+  onProjectCreated,
+  onCreateCancelled
+}: {
   locale: AppLocale;
   clientId: string;
   /** Bumped by other views (Home) to open the create dialog here. */
   dialogNonce: number;
+  /** When present, prefill a development project and require its code root. */
+  initialCodeMission?: string;
   onOpenProject: (projectId: string) => void;
+  onProjectCreated?: (project: KernelProject) => void;
+  onCreateCancelled?: () => void;
 }) {
   const copy = workspaceCopy(locale);
   const [projects, setProjects] = useState<KernelProject[] | null>(null);
@@ -39,6 +51,27 @@ export function ProjectsView({ locale, clientId, dialogNonce, onOpenProject }: {
   const [saving, setSaving] = useState(false);
   const [archiveTarget, setArchiveTarget] = useState<KernelProject | null>(null);
   const [archiving, setArchiving] = useState(false);
+  const createDialogRef = useRef<HTMLDivElement>(null);
+  const archiveDialogRef = useRef<HTMLDivElement>(null);
+  const dialogOpenerRef = useRef<HTMLElement | undefined>(undefined);
+  const dialogLockedRef = useRef(false);
+  dialogLockedRef.current = saving || archiving;
+
+  function openCreateDialog() {
+    dialogOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    setDialogOpen(true);
+  }
+
+  function closeCreateDialog() {
+    if (saving) return;
+    setDialogOpen(false);
+    onCreateCancelled?.();
+  }
+
+  function openArchiveDialog(project: KernelProject) {
+    dialogOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    setArchiveTarget(project);
+  }
 
   const load = useCallback(async () => {
     if (!clientId) return;
@@ -54,23 +87,76 @@ export function ProjectsView({ locale, clientId, dialogNonce, onOpenProject }: {
   }, [clientId]);
 
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => { if (dialogNonce > 0) setDialogOpen(true); }, [dialogNonce]);
+  useEffect(() => {
+    if (dialogNonce <= 0) return;
+    dialogOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    if (initialCodeMission) {
+      setDraft({
+        name: initialCodeMission.replace(/\s+/g, " ").trim().slice(0, 40) || "Code task",
+        type: "development",
+        roots: ""
+      });
+    }
+    setDialogOpen(true);
+  }, [dialogNonce, initialCodeMission]);
+
+  useEffect(() => {
+    const dialog = dialogOpen ? createDialogRef.current : archiveTarget ? archiveDialogRef.current : null;
+    if (!dialog) return;
+    const focusableSelector = 'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
+    const focusTimer = window.setTimeout(() => {
+      if (!dialog.contains(document.activeElement)) dialog.querySelector<HTMLElement>(focusableSelector)?.focus();
+    }, 0);
+    const handleKeys = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (dialogLockedRef.current) return;
+        if (dialogOpen) closeCreateDialog();
+        else setArchiveTarget(null);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = [...dialog.querySelectorAll<HTMLElement>(focusableSelector)];
+      if (!focusable.length) return;
+      const first = focusable[0]!;
+      const last = focusable.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeys);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.removeEventListener("keydown", handleKeys);
+      dialogOpenerRef.current?.focus();
+    };
+  }, [dialogOpen, archiveTarget]);
 
   async function createProject() {
     const name = draft.name.trim();
     if (!name || saving) return;
+    const rootPaths = parseRootPathsInput(draft.roots);
+    if (draft.type === "development" && rootPaths.length === 0) {
+      setError(locale === "zh-CN" ? "代码项目必须填写至少一个现有的绝对目录。" : "Code projects require at least one existing absolute directory.");
+      return;
+    }
     setSaving(true);
     try {
       const response = await fetch("/api/kernel/projects", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ workspaceId: clientId, name, type: draft.type, rootPaths: parseRootPathsInput(draft.roots) })
+        body: JSON.stringify({ workspaceId: clientId, name, type: draft.type, rootPaths })
       });
       const body = await response.json().catch(() => undefined) as (KernelProject & { error?: string }) | undefined;
       if (!response.ok || !body?.id) throw new Error(body?.error ?? String(response.status));
       setDialogOpen(false);
       setDraft({ name: "", type: "general", roots: "" });
-      onOpenProject(body.id);
+      if (onProjectCreated) onProjectCreated(body);
+      else onOpenProject(body.id);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -107,7 +193,7 @@ export function ProjectsView({ locale, clientId, dialogNonce, onOpenProject }: {
           <h1>{copy.projectsTitle}</h1>
           <p>{copy.projectsBody}</p>
         </div>
-        <Button size="sm" variant="primary" icon={<IconPlus size={13} />} onClick={() => setDialogOpen(true)} disabled={!clientId}>
+        <Button size="sm" variant="primary" icon={<IconPlus size={13} />} onClick={openCreateDialog} disabled={!clientId}>
           {copy.projectsNew}
         </Button>
       </header>
@@ -125,7 +211,7 @@ export function ProjectsView({ locale, clientId, dialogNonce, onOpenProject }: {
         <div className="empty-block">
           <strong>{copy.projectsEmpty}</strong>
           <p>{copy.projectsEmptyBody}</p>
-          <Button size="sm" variant="primary" icon={<IconPlus size={13} />} onClick={() => setDialogOpen(true)}>{copy.projectsNew}</Button>
+          <Button size="sm" variant="primary" icon={<IconPlus size={13} />} onClick={openCreateDialog}>{copy.projectsNew}</Button>
         </div>
       ) : (
         <div className="card-grid">
@@ -148,7 +234,7 @@ export function ProjectsView({ locale, clientId, dialogNonce, onOpenProject }: {
                 className="icon-button project-card-archive"
                 icon={<IconArchive size={13} />}
                 aria-label={`${copy.archiveProject}: ${project.name}`}
-                onClick={() => setArchiveTarget(project)}
+                onClick={() => openArchiveDialog(project)}
               />
             </div>
           ))}
@@ -156,8 +242,8 @@ export function ProjectsView({ locale, clientId, dialogNonce, onOpenProject }: {
       )}
 
       {dialogOpen && (
-        <div className="plugin-confirm-overlay" role="presentation" onClick={() => setDialogOpen(false)}>
-          <div className="plugin-confirm" role="dialog" aria-modal="true" aria-label={copy.newProjectTitle} onClick={(event) => event.stopPropagation()}>
+        <div className="plugin-confirm-overlay" role="presentation" onClick={closeCreateDialog}>
+          <div ref={createDialogRef} className="plugin-confirm" role="dialog" aria-modal="true" aria-label={copy.newProjectTitle} onClick={(event) => event.stopPropagation()}>
             <h2>{copy.newProjectTitle}</h2>
             <label className="workspace-field">
               <span>{copy.projectNameLabel}</span>
@@ -173,10 +259,21 @@ export function ProjectsView({ locale, clientId, dialogNonce, onOpenProject }: {
               <span>{copy.projectRootsLabel}</span>
               <textarea rows={3} value={draft.roots} placeholder="/Users/you/project" onChange={(event) => setDraft({ ...draft, roots: event.target.value })} />
             </label>
-            <p className="workbench-quiet">{copy.projectRootsHint}</p>
+            <p className="workbench-quiet">
+              {draft.type === "development"
+                ? (locale === "zh-CN" ? "必填；代码、终端和 Git 只允许访问这些目录。" : "Required; code, terminal, and Git stay confined to these directories.")
+                : copy.projectRootsHint}
+            </p>
             <div className="plugin-confirm-actions">
-              <Button size="sm" variant="subtle" onClick={() => setDialogOpen(false)}>{copy.cancel}</Button>
-              <Button size="sm" variant="primary" disabled={saving || !draft.name.trim()} onClick={() => void createProject()}>{copy.projectCreate}</Button>
+              <Button size="sm" variant="subtle" onClick={closeCreateDialog}>{copy.cancel}</Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={saving || !draft.name.trim() || (draft.type === "development" && parseRootPathsInput(draft.roots).length === 0)}
+                onClick={() => void createProject()}
+              >
+                {copy.projectCreate}
+              </Button>
             </div>
           </div>
         </div>
@@ -184,7 +281,7 @@ export function ProjectsView({ locale, clientId, dialogNonce, onOpenProject }: {
 
       {archiveTarget && (
         <div className="plugin-confirm-overlay" role="presentation" onClick={() => setArchiveTarget(null)}>
-          <div className="plugin-confirm" role="alertdialog" aria-modal="true" aria-label={copy.archiveProjectTitle} onClick={(event) => event.stopPropagation()}>
+          <div ref={archiveDialogRef} className="plugin-confirm" role="alertdialog" aria-modal="true" aria-label={copy.archiveProjectTitle} onClick={(event) => event.stopPropagation()}>
             <h2>{copy.archiveProjectTitle}</h2>
             <p><strong>{archiveTarget.name}</strong></p>
             <p>{copy.archiveProjectBody}</p>

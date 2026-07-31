@@ -75,9 +75,9 @@ export function createProjectTools(): AgentToolDefinition[] {
     },
     {
       name: "project.add_root",
-      description: "Add a filesystem root path to a project (normalized and de-duplicated). Use when the project needs to work on an additional directory.",
+      description: "Expand a project's filesystem authority with another root. This security-boundary change is destructive-gated and unavailable to ordinary agent runs; prefer the user-controlled project settings flow.",
       capabilityPack: "project",
-      permission: "write",
+      permission: "destructive",
       parameters: ProjectIdParams.extend({ path: z.string().min(1) }),
       execute: async (raw, ctx, deps) => {
         const params = ProjectIdParams.extend({ path: z.string().min(1) }).parse(raw);
