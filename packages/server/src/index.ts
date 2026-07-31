@@ -714,7 +714,7 @@ export async function createServer(system: AdPilotSystem, options: {
   registerWorkflowRoutes(app, system);
   const terminalService = new TerminalService();
   app.addHook("onClose", async () => terminalService.shutdown());
-  registerTerminalRoutes(app, terminalService);
+  registerTerminalRoutes(app, terminalService, system);
   registerGitRoutes(app, system);
   registerFsRoutes(app, system);
   registerAdsRoutes(app, system);

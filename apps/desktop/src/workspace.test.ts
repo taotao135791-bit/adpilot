@@ -188,7 +188,13 @@ describe("URL builders", () => {
 
   it("builds fs and terminal routes", () => {
     expect(fsTreeUrl("/tmp/x y", 3)).toBe("/api/fs/tree?root=%2Ftmp%2Fx+y&depth=3");
-    expect(terminalOutputUrl("t1", 41)).toBe("/api/terminals/t1/output?since=41");
+    expect(terminalOutputUrl("t1", 41, {
+      clientId: "personal",
+      projectId: "project-1",
+      root: "/tmp/x y"
+    })).toBe(
+      "/api/terminals/t1/output?clientId=personal&projectId=project-1&root=%2Ftmp%2Fx+y&since=41"
+    );
   });
 });
 

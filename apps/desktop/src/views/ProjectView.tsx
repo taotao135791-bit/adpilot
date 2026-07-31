@@ -399,7 +399,13 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
                 {/* Terminal sessions stay alive across right-tab switches; the
                     panel unmounts only when the workbench itself closes. */}
                 <div hidden={rightTab !== "terminal"} className="project-panel-fill">
-                  <TerminalPanel locale={locale} defaultCwd={projectDefaultRoot(detail)} projectName={detail.name} />
+                  <TerminalPanel
+                    locale={locale}
+                    clientId={clientId}
+                    projectId={projectId}
+                    defaultCwd={projectDefaultRoot(detail)}
+                    projectName={detail.name}
+                  />
                 </div>
                 <div hidden={rightTab !== "git"} className="project-panel-fill">
                   <GitPanel locale={locale} root={projectDefaultRoot(detail)} workspaceId={clientId} />

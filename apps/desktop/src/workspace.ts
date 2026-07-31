@@ -172,16 +172,34 @@ export function fsFileUrl(path: string): string {
   return `/api/fs/file${query({ path })}`;
 }
 
-export function terminalOutputUrl(id: string, since: number): string {
-  return `/api/terminals/${encodeURIComponent(id)}/output${query({ since })}`;
+export interface TerminalScope {
+  clientId: string;
+  projectId: string;
+  root: string;
 }
 
-export function terminalActionUrl(id: string, action: "input" | "exec" | "interrupt"): string {
-  return `/api/terminals/${encodeURIComponent(id)}/${action}`;
+export function terminalOutputUrl(id: string, since: number, scope: TerminalScope): string {
+  return `/api/terminals/${encodeURIComponent(id)}/output${query({ ...scope, since })}`;
 }
 
-export function terminalUrl(id: string): string {
-  return `/api/terminals/${encodeURIComponent(id)}`;
+export function terminalActionUrl(
+  id: string,
+  action: "input" | "exec" | "interrupt",
+  scope: TerminalScope
+): string {
+  return `/api/terminals/${encodeURIComponent(id)}/${action}${query({
+    clientId: scope.clientId,
+    projectId: scope.projectId,
+    root: scope.root
+  })}`;
+}
+
+export function terminalUrl(id: string, scope: TerminalScope): string {
+  return `/api/terminals/${encodeURIComponent(id)}${query({
+    clientId: scope.clientId,
+    projectId: scope.projectId,
+    root: scope.root
+  })}`;
 }
 
 export function gitGetUrl(action: string, params: Record<string, string | number | undefined>): string {

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { workspaceCopy, type AppLocale } from "../labels.js";
 import {
-  fsTreeUrl,
   interpolate,
   localTerminalChunk,
   mergeTerminalChunks,
@@ -11,8 +10,8 @@ import {
   terminalOutputUrl,
   terminalUrl,
   type CommandClassification,
-  type FsTreeResponse,
   type TerminalChunk,
+  type TerminalScope,
   type TerminalSessionInfo
 } from "../workspace.js";
 import { Button, Tooltip } from "../ui.js";
@@ -24,17 +23,17 @@ type ExecResult = { exitCode: number | null; stdout: string; stderr: string; dur
 
 /**
  * Terminal panel: real interactive shell sessions over /api/terminals.
- * Sessions are created on demand (default cwd = project root, or the
- * resolved home directory), output is incrementally polled every 800ms by
- * seq, input is written to the shell stdin, and the exec toggle runs one-shot
- * classified commands — a 409 COMMAND_APPROVAL_REQUIRED surfaces the
- * classifier verdict with an explicit "run anyway" resend. Sessions the panel
- * created are killed when it unmounts so the server's 8-session cap is never
- * leaked.
+ * Sessions are created only against this existing client/project and its
+ * canonical first root. That same scope accompanies every later operation,
+ * so a terminal id cannot be attached from another project or root. Output is
+ * incrementally polled every 800ms by seq; write-classified one-shot commands
+ * can ask for approval, while deny-classified commands never offer a bypass.
  */
-export function TerminalPanel({ locale, defaultCwd, projectName }: {
+export function TerminalPanel({ locale, clientId, projectId, defaultCwd, projectName }: {
   locale: AppLocale;
-  /** Project's first rootPath; empty string falls back to the home directory. */
+  clientId: string;
+  projectId: string;
+  /** Project's canonical first rootPath; an empty project has no terminal. */
   defaultCwd: string;
   projectName: string;
 }) {
@@ -58,6 +57,7 @@ export function TerminalPanel({ locale, defaultCwd, projectName }: {
 
   sessionsRef.current = sessions;
   chunksRef.current = chunksBySession;
+  const scope: TerminalScope = { clientId, projectId, root: defaultCwd };
 
   const appendLocal = useCallback((sessionId: string, data: string, stream: TerminalChunk["stream"] = "meta") => {
     localSeqRef.current += 1;
@@ -68,25 +68,18 @@ export function TerminalPanel({ locale, defaultCwd, projectName }: {
   }, []);
 
   const createSession = useCallback(async () => {
-    let cwd = defaultCwd;
-    if (!cwd) {
-      try {
-        const response = await fetch(fsTreeUrl("~", 0));
-        if (response.ok) cwd = ((await response.json()) as FsTreeResponse).root;
-      } catch { /* fall through to the server's error, surfaced below */ }
-    }
-    if (!cwd) throw new Error(copy.terminalCreateFailed);
+    if (!defaultCwd) throw new Error(copy.terminalCreateFailed);
     const response = await fetch("/api/terminals", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cwd, title: projectName })
+      body: JSON.stringify({ clientId, projectId, cwd: defaultCwd, title: projectName })
     });
     const body = await response.json().catch(() => undefined) as (TerminalSessionInfo & { error?: string }) | undefined;
     if (!response.ok || !body?.id) throw new Error(body?.error ?? copy.terminalCreateFailed);
     setSessions((current) => [...current, body]);
     setActiveId(body.id);
     return body;
-  }, [copy, defaultCwd, projectName]);
+  }, [clientId, copy, defaultCwd, projectId, projectName]);
 
   /* Boot the first session; kill every panel-owned session on unmount. */
   useEffect(() => {
@@ -103,7 +96,7 @@ export function TerminalPanel({ locale, defaultCwd, projectName }: {
     return () => {
       cancelled = true;
       for (const session of sessionsRef.current) {
-        void fetch(terminalUrl(session.id), { method: "DELETE" }).catch(() => undefined);
+        void fetch(terminalUrl(session.id, scope), { method: "DELETE" }).catch(() => undefined);
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -117,7 +110,7 @@ export function TerminalPanel({ locale, defaultCwd, projectName }: {
         void (async () => {
           try {
             const since = serverLastSeq(chunksRef.current[session.id] ?? []);
-            const response = await fetch(terminalOutputUrl(session.id, since));
+            const response = await fetch(terminalOutputUrl(session.id, since, scope));
             if (!response.ok) {
               haltedRef.current.add(session.id);
               return;
@@ -152,11 +145,15 @@ export function TerminalPanel({ locale, defaultCwd, projectName }: {
     const data = input.endsWith("\n") ? input : `${input}\n`;
     setInput("");
     try {
-      await fetch(terminalActionUrl(activeId, "input"), {
+      const response = await fetch(terminalActionUrl(activeId, "input", scope), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ data })
       });
+      if (!response.ok) {
+        const body = await response.json().catch(() => undefined) as { error?: string } | undefined;
+        throw new Error(body?.error ?? String(response.status));
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -169,7 +166,7 @@ export function TerminalPanel({ locale, defaultCwd, projectName }: {
     const sessionId = activeId;
     appendLocal(sessionId, `$ ${command}`);
     try {
-      const response = await fetch(terminalActionUrl(sessionId, "exec"), {
+      const response = await fetch(terminalActionUrl(sessionId, "exec", scope), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ command, ...(approved ? { approved: true } : {}) })
@@ -193,12 +190,12 @@ export function TerminalPanel({ locale, defaultCwd, projectName }: {
 
   async function interrupt() {
     if (!activeId) return;
-    await fetch(terminalActionUrl(activeId, "interrupt"), { method: "POST" }).catch(() => undefined);
+    await fetch(terminalActionUrl(activeId, "interrupt", scope), { method: "POST" }).catch(() => undefined);
   }
 
   async function closeSession(id: string) {
     haltedRef.current.add(id);
-    await fetch(terminalUrl(id), { method: "DELETE" }).catch(() => undefined);
+    await fetch(terminalUrl(id, scope), { method: "DELETE" }).catch(() => undefined);
     setSessions((current) => {
       const next = current.filter((session) => session.id !== id);
       if (activeId === id) setActiveId(next[next.length - 1]?.id ?? null);
