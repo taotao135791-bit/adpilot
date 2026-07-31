@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { AuditLog } from "@adpilot/audit";
 import { ApprovalService } from "@adpilot/approvals";
@@ -239,6 +239,109 @@ describe("PiAgentRuntime session injection", () => {
       .filter((entry) => entry.type === "message")
       .map((entry) => entry.message.role);
   }
+
+  it("stops only an exact client and conversation match after clearing both message queues", async () => {
+    const { runtime } = await setup();
+    const firstAgent = {
+      clearAllQueues: vi.fn(),
+      abort: vi.fn()
+    };
+    const secondAgent = {
+      clearAllQueues: vi.fn(),
+      abort: vi.fn()
+    };
+    const activeSessions = (runtime as unknown as {
+      activeSessions: Map<string, {
+        agent: typeof firstAgent;
+        clientId: string;
+        conversationId: string;
+        sessionId: string;
+        startedAt: string;
+      }>;
+    }).activeSessions;
+    activeSessions.set(resolvePiSessionId("client-a", "shared-conversation"), {
+      agent: firstAgent,
+      clientId: "client-a",
+      conversationId: "shared-conversation",
+      sessionId: resolvePiSessionId("client-a", "shared-conversation"),
+      startedAt: new Date().toISOString()
+    });
+    activeSessions.set(resolvePiSessionId("client-b", "shared-conversation"), {
+      agent: secondAgent,
+      clientId: "client-b",
+      conversationId: "shared-conversation",
+      sessionId: resolvePiSessionId("client-b", "shared-conversation"),
+      startedAt: new Date().toISOString()
+    });
+
+    expect(runtime.stopConversation("client-a", "other-conversation")).toBe(false);
+    expect(runtime.stopConversation("client-c", "shared-conversation")).toBe(false);
+    expect(firstAgent.abort).not.toHaveBeenCalled();
+    expect(secondAgent.abort).not.toHaveBeenCalled();
+
+    expect(runtime.stopConversation("client-a", "shared-conversation")).toBe(true);
+    expect(firstAgent.clearAllQueues).toHaveBeenCalledOnce();
+    expect(firstAgent.abort).toHaveBeenCalledOnce();
+    expect(firstAgent.clearAllQueues.mock.invocationCallOrder[0]!).toBeLessThan(firstAgent.abort.mock.invocationCallOrder[0]!);
+    expect(secondAgent.clearAllQueues).not.toHaveBeenCalled();
+    expect(secondAgent.abort).not.toHaveBeenCalled();
+  });
+
+  it("propagates Stop through the active tool AbortSignal and reports an idle miss", async () => {
+    const { faux, runtime } = await setup();
+    let toolStarted = false;
+    let toolSignal: AbortSignal | undefined;
+    let signalAborted = false;
+    const abortAwareTool = {
+      name: "analyze_campaign_metrics",
+      label: "Analyze campaign metrics",
+      description: "test double",
+      parameters: { type: "object", properties: {} },
+      executionMode: "sequential",
+      execute: async (_toolCallId: string, _args: unknown, signal?: AbortSignal) => {
+        toolSignal = signal;
+        toolStarted = true;
+        await new Promise<void>((_resolve, reject) => {
+          if (signal?.aborted) {
+            signalAborted = true;
+            reject(new Error("tool aborted"));
+            return;
+          }
+          signal?.addEventListener("abort", () => {
+            signalAborted = true;
+            reject(new Error("tool aborted"));
+          }, { once: true });
+        });
+        return { content: [{ type: "text", text: "unreachable" }], details: {} };
+      }
+    } as AgentTool;
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("analyze_campaign_metrics", {}), { stopReason: "toolUse" })
+    ]);
+    const conversationId = "abort-tool-conversation";
+    const running = runtime.run({
+      context: { ...baseContext, sessionId: crypto.randomUUID(), conversationId },
+      systemPrompt: "You are AdPilot.",
+      prompt: "Analyze until stopped.",
+      signals: { task: "conversation" },
+      tools: [abortAwareTool]
+    });
+    await waitFor(() => toolStarted, "abort-aware tool to start");
+
+    expect(runtime.stopConversation("client-b", conversationId)).toBe(false);
+    expect(toolSignal?.aborted).toBe(false);
+    expect(runtime.queueSessionMessage("client-a", conversationId, "queued steer", "steer")).toBe(true);
+    expect(runtime.queueSessionMessage("client-a", conversationId, "queued follow-up", "followUp")).toBe(true);
+    expect(runtime.stopConversation("client-a", conversationId)).toBe(true);
+    expect(signalAborted).toBe(true);
+    expect(toolSignal?.aborted).toBe(true);
+
+    const result = await running;
+    expect(JSON.stringify(result.messages)).not.toContain("queued steer");
+    expect(JSON.stringify(result.messages)).not.toContain("queued follow-up");
+    expect(runtime.isSessionActive("client-a", conversationId)).toBe(false);
+    expect(runtime.stopConversation("client-a", conversationId)).toBe(false);
+  });
 
   it("queues a follow-up message into a running session without interrupting tool execution", async () => {
     const { workspace, faux, runtime } = await setup();

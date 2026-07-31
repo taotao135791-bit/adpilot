@@ -62,6 +62,63 @@ describe("desktop native REST boundary", () => {
     await server.close();
   });
 
+  it("protects conversation Stop with the desktop instance boundary and returns an explicit hit result", async () => {
+    const { server, system } = await boot();
+    const stopConversation = vi.spyOn(system.runtime, "stopConversation")
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    const url = "/api/clients/client-a/conversations/conversation-42/stop";
+
+    const missing = await server.inject({ method: "POST", url });
+    expect(missing.statusCode).toBe(403);
+    expect(missing.json()).toMatchObject({ code: "DESKTOP_NATIVE_FORBIDDEN" });
+    const crossSite = await server.inject({
+      method: "POST",
+      url,
+      headers: { cookie, "sec-fetch-site": "cross-site" }
+    });
+    expect(crossSite.statusCode).toBe(403);
+    expect(stopConversation).not.toHaveBeenCalled();
+
+    const idle = await server.inject({
+      method: "POST",
+      url,
+      headers: { cookie, "sec-fetch-site": "same-origin" }
+    });
+    expect(idle.statusCode).toBe(200);
+    expect(idle.headers["cache-control"]).toBe("no-store");
+    expect(idle.json()).toEqual({ stopped: false });
+
+    const stopped = await server.inject({
+      method: "POST",
+      url,
+      headers: { cookie, "sec-fetch-site": "same-origin" }
+    });
+    expect(stopped.statusCode).toBe(200);
+    expect(stopped.json()).toEqual({ stopped: true });
+    expect(stopConversation).toHaveBeenNthCalledWith(1, "client-a", "conversation-42");
+    expect(stopConversation).toHaveBeenNthCalledWith(2, "client-a", "conversation-42");
+    await server.close();
+  });
+
+  it("fails closed when no desktop instance credential is configured", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-stop-no-native-auth-"));
+    roots.push(root);
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+    const stopConversation = vi.spyOn(system.runtime, "stopConversation");
+    const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/clients/client-a/conversations/conversation-42/stop",
+      headers: { "sec-fetch-site": "same-origin" }
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: "DESKTOP_NATIVE_FORBIDDEN" });
+    expect(stopConversation).not.toHaveBeenCalled();
+    await server.close();
+  });
+
   it("returns only a frame that matches the authoritative browser binding", async () => {
     const { server, system, bridge, productSession: disabledProductSession } = await boot();
     const browser = connectedBrowser();

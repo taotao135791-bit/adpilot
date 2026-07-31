@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import packageManifest from "../../../package.json" with { type: "json" };
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
-import Fastify from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import { SessionError } from "@earendil-works/pi-agent-core";
@@ -169,6 +169,18 @@ export async function createServer(system: AdPilotSystem, options: {
   type AuthSession = { id: string; providerId: string; status: "running" | "complete" | "failed"; events: AuthEvent[]; prompt?: AuthPrompt; answer?: (value: string) => void; error?: string };
   const authSessions = new Map<string, AuthSession>();
   await app.register(cors, { origin: false });
+  const requireDesktopInstanceRequest = async (request: FastifyRequest, reply: FastifyReply): Promise<FastifyReply | undefined> => {
+    const fetchSite = request.headers["sec-fetch-site"];
+    if (fetchSite !== undefined && fetchSite !== "same-origin") {
+      return reply.code(403).send({ error: "desktop native routes require a same-origin request", code: "DESKTOP_NATIVE_FORBIDDEN" });
+    }
+    const configuredToken = options.desktopNativeAuthToken;
+    const token = cookieValue(request.headers.cookie, "adpilot_native_instance");
+    if (!configuredToken || configuredToken.length < 32 || !token || !constantTimeTextEqual(token, configuredToken)) {
+      return reply.code(403).send({ error: "desktop native instance authentication failed", code: "DESKTOP_NATIVE_FORBIDDEN" });
+    }
+    return undefined;
+  };
   if (options.desktopNative) {
     if (!options.desktopNativeAuthToken || options.desktopNativeAuthToken.length < 32) {
       throw new Error("desktop native routes require an instance-bound authentication token");
@@ -179,14 +191,7 @@ export async function createServer(system: AdPilotSystem, options: {
       if (!path.startsWith("/api/desktop-native/")
         && !path.startsWith("/api/computer/")
         && !productComputerPermission) return;
-      const fetchSite = request.headers["sec-fetch-site"];
-      if (fetchSite !== undefined && fetchSite !== "same-origin") {
-        return reply.code(403).send({ error: "desktop native routes require a same-origin request", code: "DESKTOP_NATIVE_FORBIDDEN" });
-      }
-      const token = cookieValue(request.headers.cookie, "adpilot_native_instance");
-      if (!token || !constantTimeTextEqual(token, options.desktopNativeAuthToken!)) {
-        return reply.code(403).send({ error: "desktop native instance authentication failed", code: "DESKTOP_NATIVE_FORBIDDEN" });
-      }
+      return requireDesktopInstanceRequest(request, reply);
     });
   }
 
@@ -869,6 +874,18 @@ export async function createServer(system: AdPilotSystem, options: {
       }
       throw error;
     }
+  });
+
+  app.post("/api/clients/:id/conversations/:cid/stop", {
+    preHandler: requireDesktopInstanceRequest
+  }, async (request, reply) => {
+    const params = z.object({
+      id: z.string().trim().min(1).max(256),
+      cid: z.string().trim().min(1).max(120)
+    }).parse(request.params);
+    const stopped = system.runtime.stopConversation(params.id, params.cid);
+    reply.header("cache-control", "no-store");
+    return { stopped };
   });
 
   /* ------------------------- product Session authority ------------------------- */

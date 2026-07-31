@@ -310,6 +310,19 @@ export class PiAgentRuntime {
   }
 
   /**
+   * Stops only the in-flight run owned by the exact client+conversation pair.
+   * Pending steering and follow-up turns are discarded before aborting so a
+   * stopped conversation cannot resume work from an already queued message.
+   */
+  stopConversation(clientId: string, conversationId: string): boolean {
+    const active = this.activeSessions.get(resolvePiSessionId(clientId, conversationId));
+    if (!active || active.clientId !== clientId || active.conversationId !== conversationId) return false;
+    active.agent.clearAllQueues();
+    active.agent.abort();
+    return true;
+  }
+
+  /**
    * Queues a user message into a running session through pi-agent-core
    * steering. The injected turn inherits the active run's system prompt,
    * tools, and tool-permission gate, and is persisted through the normal
