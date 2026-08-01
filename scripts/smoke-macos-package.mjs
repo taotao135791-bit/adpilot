@@ -82,6 +82,7 @@ for (const app of apps) {
     "--verbose=2",
     app
   ]));
+  checks.push(await bundleVersionCheck("app-version", app, packageVersion));
   const helper = join(
     app,
     "Contents",
@@ -103,6 +104,7 @@ for (const app of apps) {
       "--verbose=2",
       helper
     ]));
+    checks.push(await bundleVersionCheck("nested-helper-version", helper, packageVersion));
   }
   checks.push(...await uacEngineChecks(app));
 }
@@ -262,6 +264,34 @@ async function commandCheck(check, artifact, command, args) {
     return {
       check,
       artifact,
+      status: "failed",
+      reason: caught instanceof Error ? caught.message.split("\n")[0] : String(caught)
+    };
+  }
+}
+
+async function bundleVersionCheck(check, app, expectedVersion) {
+  const plist = join(app, "Contents", "Info.plist");
+  try {
+    const [shortVersion, buildVersion] = await Promise.all([
+      run("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleShortVersionString", plist], { timeout: 30_000 }),
+      run("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleVersion", plist], { timeout: 30_000 })
+    ]);
+    const actualShortVersion = shortVersion.stdout.trim();
+    const actualBuildVersion = buildVersion.stdout.trim();
+    if (actualShortVersion !== expectedVersion || actualBuildVersion !== expectedVersion) {
+      return {
+        check,
+        artifact: app,
+        status: "failed",
+        reason: `expected ${expectedVersion}; found short=${actualShortVersion || "missing"}, build=${actualBuildVersion || "missing"}`
+      };
+    }
+    return { check, artifact: app, status: "passed", version: expectedVersion };
+  } catch (caught) {
+    return {
+      check,
+      artifact: app,
       status: "failed",
       reason: caught instanceof Error ? caught.message.split("\n")[0] : String(caught)
     };
