@@ -10,6 +10,12 @@ import { ToolPermissionGate } from "./tool-gate.js";
 import { conversationMessageLabel, duplicateConversationStorage, forkConversationStorage, forkConversationStorageInto, type ConversationDuplicateResult, type ConversationForkResult } from "./conversation-fork.js";
 import { isPlanModeSkill, isPlanModeTool, PLAN_MODE_SYSTEM_PROMPT, PlanModeStore, type PlanModeProbe } from "./plan-mode.js";
 import type { AutonomyProbe } from "./autonomy-mode.js";
+import {
+  RuntimeBudgetController,
+  resolveRuntimeBudgetLimits,
+  type RuntimeBudgetLimits,
+  type RuntimeBudgetOverride
+} from "./runtime-budget.js";
 
 export { AdPilotSessionStorage, resolvePiSessionId } from "./session-storage.js";
 export type { AdPilotSessionMetadata } from "./session-storage.js";
@@ -21,6 +27,13 @@ export { PlanModeState, PlanModeStore, PLAN_MODE_SYSTEM_PROMPT, isPlanModeSkill,
 export type { PlanModeProbe } from "./plan-mode.js";
 export { AutonomyMode, AutonomyState, AutonomyStore } from "./autonomy-mode.js";
 export type { AutonomyProbe } from "./autonomy-mode.js";
+export {
+  DEFAULT_RUNTIME_BUDGET,
+  MAX_RUNTIME_BUDGET,
+  RuntimeBudgetExceeded,
+  resolveRuntimeBudgetLimits
+} from "./runtime-budget.js";
+export type { RuntimeBudgetExceededReason, RuntimeBudgetLimits, RuntimeBudgetOverride } from "./runtime-budget.js";
 
 export interface RuntimeExtension {
   name: string;
@@ -57,6 +70,11 @@ export interface RuntimeRequest {
    * global router decides, exactly as before.
    */
   modelOverride?: SessionModelOverride;
+  /**
+   * Optional per-request budget tuning. Values are integer-normalized and
+   * clamped to the runtime's hard safety envelope.
+   */
+  budget?: RuntimeBudgetOverride;
 }
 
 /**
@@ -102,6 +120,7 @@ export interface ActiveSessionInfo {
 interface TrackedSession extends ActiveSessionInfo {
   agent: Agent;
   clientId: string;
+  budget?: RuntimeBudgetController;
 }
 
 export class StructuredOutputBlocker extends Error {
@@ -150,6 +169,11 @@ export interface PiAgentRuntimeOptions {
    * receive nothing (pi-ai would silently drop the parameter anyway).
    */
   reasoning?: ReasoningPolicy;
+  /**
+   * Runtime-wide budget defaults. Per-request overrides may tune these values,
+   * but neither layer can exceed MAX_RUNTIME_BUDGET.
+   */
+  budget?: RuntimeBudgetOverride;
 }
 
 /**
@@ -193,6 +217,7 @@ export class PiAgentRuntime {
   private readonly generalReadTools: AgentTool[];
   private readonly planMode: PlanModeProbe | undefined;
   private readonly reasoningPolicy: ReasoningPolicy | undefined;
+  private readonly defaultBudgetLimits: RuntimeBudgetLimits;
   private readonly sessionLocks = new Map<string, Promise<void>>();
   private readonly activeSessions = new Map<string, TrackedSession>();
   private readonly toolGate: ToolPermissionGate;
@@ -211,6 +236,7 @@ export class PiAgentRuntime {
     this.generalReadTools = options.generalReadTools ?? [];
     this.planMode = options.planMode;
     this.reasoningPolicy = options.reasoning;
+    this.defaultBudgetLimits = resolveRuntimeBudgetLimits(options.budget);
     this.toolGate = new ToolPermissionGate(tools.approvals, tools.audit, this.planMode, options.autonomy);
   }
 
@@ -228,9 +254,20 @@ export class PiAgentRuntime {
   }
 
   async run(request: RuntimeRequest): Promise<RuntimeResult> {
+    const budget = this.createBudget(request);
+    try {
+      return await this.runWithBudget(request, budget);
+    } finally {
+      budget.dispose();
+    }
+  }
+
+  private async runWithBudget(request: RuntimeRequest, budget: RuntimeBudgetController): Promise<RuntimeResult> {
     const resolvedRequest = this.resolveRequest(request);
     return this.withSessionLock(resolvedRequest.context.sessionId, async () => {
+      budget.throwIfExceeded();
       for (const extension of this.extensions) await extension.beforeRun?.(resolvedRequest.context);
+      budget.throwIfExceeded();
       const override = resolvedRequest.modelOverride;
       const decision: { tier: string; ref: ModelRef; reasons: string[] } = override?.ref
         ? { tier: "session", ref: override.ref, reasons: ["session-pinned model binding"] }
@@ -239,13 +276,15 @@ export class PiAgentRuntime {
           : this.router.route(resolvedRequest.signals);
       let model = resolvePiModel(this.models, decision.ref);
       try {
-        let result = await this.execute(resolvedRequest, model, decision.tier, false);
+        let result = await this.execute(resolvedRequest, model, decision.tier, false, budget);
         if (result.messages.some((message) => message.role === "assistant" && message.stopReason === "error") && decision.tier !== "strong") {
           const fallbackFast = override?.ref !== undefined && override.fallbackRoute === "fast";
           model = resolvePiModel(this.models, this.router.route(fallbackFast ? resolvedRequest.signals : { ...resolvedRequest.signals, reviewerEscalated: true }).ref);
-          result = await this.execute({ ...resolvedRequest, priorMessages: result.messages }, model, fallbackFast ? "fast" : "strong", true);
+          result = await this.execute({ ...resolvedRequest, priorMessages: result.messages }, model, fallbackFast ? "fast" : "strong", true, budget);
         }
+        budget.throwIfExceeded();
         for (const extension of this.extensions) await extension.afterRun?.(result, resolvedRequest.context);
+        budget.throwIfExceeded();
         return result;
       } catch (unknownError) {
         const error = unknownError instanceof Error ? unknownError : new Error(String(unknownError));
@@ -260,32 +299,37 @@ export class PiAgentRuntime {
   }
 
   async runStructuredDetailed<S extends z.ZodTypeAny>(request: RuntimeRequest, schema: S): Promise<StructuredRuntimeResult<S>> {
-    const first = await this.run({
-      ...request,
-      systemPrompt: `${request.systemPrompt}\nReturn the final answer as one JSON object matching the requested schema. Do not wrap it in markdown.`
-    });
-    const firstParsed = parseStructured(first.text, schema);
-    if (firstParsed.success) return { output: firstParsed.data, runtime: first, attempts: 1, repaired: false };
+    const budget = this.createBudget(request);
+    try {
+      const first = await this.runWithBudget({
+        ...request,
+        systemPrompt: `${request.systemPrompt}\nReturn the final answer as one JSON object matching the requested schema. Do not wrap it in markdown.`
+      }, budget);
+      const firstParsed = parseStructured(first.text, schema);
+      if (firstParsed.success) return { output: firstParsed.data, runtime: first, attempts: 1, repaired: false };
 
-    const sameModelRepair = await this.run({
-      ...request,
-      systemPrompt: "You repair structured JSON. Return exactly one corrected JSON object and nothing else. Never call tools or add facts.",
-      prompt: structuredRepairPrompt(first.text, firstParsed.issues),
-      tools: [], allowedSkills: []
-    });
-    const secondParsed = parseStructured(sameModelRepair.text, schema);
-    if (secondParsed.success) return { output: secondParsed.data, runtime: sameModelRepair, attempts: 2, repaired: true };
+      const sameModelRepair = await this.runWithBudget({
+        ...request,
+        systemPrompt: "You repair structured JSON. Return exactly one corrected JSON object and nothing else. Never call tools or add facts.",
+        prompt: structuredRepairPrompt(first.text, firstParsed.issues),
+        tools: [], allowedSkills: []
+      }, budget);
+      const secondParsed = parseStructured(sameModelRepair.text, schema);
+      if (secondParsed.success) return { output: secondParsed.data, runtime: sameModelRepair, attempts: 2, repaired: true };
 
-    const strongRepair = await this.run({
-      ...request,
-      systemPrompt: "You are the final high-assurance JSON repair pass. Return exactly one corrected JSON object and nothing else. Never call tools or add facts.",
-      prompt: structuredRepairPrompt(sameModelRepair.text, secondParsed.issues),
-      signals: { ...request.signals, reviewerEscalated: true },
-      tools: [], allowedSkills: []
-    });
-    const thirdParsed = parseStructured(strongRepair.text, schema);
-    if (thirdParsed.success) return { output: thirdParsed.data, runtime: strongRepair, attempts: 3, repaired: true };
-    throw new StructuredOutputBlocker(3, thirdParsed.issues);
+      const strongRepair = await this.runWithBudget({
+        ...request,
+        systemPrompt: "You are the final high-assurance JSON repair pass. Return exactly one corrected JSON object and nothing else. Never call tools or add facts.",
+        prompt: structuredRepairPrompt(sameModelRepair.text, secondParsed.issues),
+        signals: { ...request.signals, reviewerEscalated: true },
+        tools: [], allowedSkills: []
+      }, budget);
+      const thirdParsed = parseStructured(strongRepair.text, schema);
+      if (thirdParsed.success) return { output: thirdParsed.data, runtime: strongRepair, attempts: 3, repaired: true };
+      throw new StructuredOutputBlocker(3, thirdParsed.issues);
+    } finally {
+      budget.dispose();
+    }
   }
 
   /**
@@ -317,6 +361,7 @@ export class PiAgentRuntime {
   stopConversation(clientId: string, conversationId: string): boolean {
     const active = this.activeSessions.get(resolvePiSessionId(clientId, conversationId));
     if (!active || active.clientId !== clientId || active.conversationId !== conversationId) return false;
+    active.budget?.cancelForUserStop();
     active.agent.clearAllQueues();
     active.agent.abort();
     return true;
@@ -529,7 +574,14 @@ export class PiAgentRuntime {
     } as AgentTool;
   }
 
-  private async execute(request: ResolvedRuntimeRequest, model: Model<Api>, tier: string, recovered: boolean): Promise<RuntimeResult> {
+  private async execute(
+    request: ResolvedRuntimeRequest,
+    model: Model<Api>,
+    tier: string,
+    recovered: boolean,
+    budget: RuntimeBudgetController
+  ): Promise<RuntimeResult> {
+    budget.throwIfExceeded();
     // Plan mode is conversation-scoped: the read-only tool shrink and the
     // prompt instruction apply to every run of the conversation; the gate
     // backstop (ToolPermissionGate) independently denies non-read calls.
@@ -543,7 +595,8 @@ export class PiAgentRuntime {
     if ((await session.getEntries()).length === 0 && request.priorMessages?.length) {
       for (const message of request.priorMessages) await session.appendMessage(message);
     }
-    let lastCompactionEntryId = await this.compactAtThreshold(session, model, request.context);
+    let lastCompactionEntryId = await this.compactAtThreshold(session, model, request.context, budget);
+    budget.throwIfExceeded();
     let compacted = Boolean(lastCompactionEntryId);
     const persistedContext = await session.buildContext();
     const events: AgentEvent[] = [];
@@ -565,6 +618,7 @@ export class PiAgentRuntime {
       },
       convertToLlm: adpilotConvertToLlm,
       streamFn: (selectedModel, context, options) => {
+        budget.claimTurn();
         const reasoning = this.reasoningFor(tier, selectedModel);
         return this.models.streamSimple(selectedModel, context, reasoning ? { ...options, reasoning } : options);
       },
@@ -575,6 +629,7 @@ export class PiAgentRuntime {
         if (toolCall.name === "commit_approved_action") return { block: true, reason: "Approval tokens are never exposed to the model; commit through the approval API." };
         const denial = await this.toolGate.check(toolCall.name, args, request.context);
         if (denial) return { block: true, reason: denial };
+        budget.claimToolCall();
         return undefined;
       }
     });
@@ -584,9 +639,11 @@ export class PiAgentRuntime {
       clientId: request.context.clientId,
       conversationId: request.context.conversationId,
       sessionId: request.context.sessionId,
-      startedAt: new Date().toISOString()
+      startedAt: new Date().toISOString(),
+      budget
     });
     try {
+      budget.bind(agent);
       agent.subscribe(async (event) => {
         events.push(event);
         for (const extension of this.extensions) await extension.onEvent?.(event, request.context);
@@ -597,11 +654,13 @@ export class PiAgentRuntime {
       });
       await agent.prompt(request.prompt);
       await agent.waitForIdle();
+      budget.throwIfExceeded();
       const text = lastAssistantText(agent.state.messages);
       if (request.context.userMessageId) {
         await this.labelConversationMessage(session, request.prompt, request.context.userMessageId);
       }
-      const compactionEntryId = await this.compactAtThreshold(session, model, request.context);
+      const compactionEntryId = await this.compactAtThreshold(session, model, request.context, budget);
+      budget.throwIfExceeded();
       lastCompactionEntryId = compactionEntryId ?? lastCompactionEntryId;
       compacted = compacted || Boolean(compactionEntryId);
       await this.writeCheckpoint(session, request.context, "idle", lastCompactionEntryId ? { compactionEntryId: lastCompactionEntryId } : undefined);
@@ -610,6 +669,7 @@ export class PiAgentRuntime {
       await this.writeCheckpoint(session, request.context, "failed", { error: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
       throw error;
     } finally {
+      budget.unbind(agent);
       this.activeSessions.delete(request.context.sessionId);
     }
   }
@@ -660,8 +720,10 @@ export class PiAgentRuntime {
   private async compactAtThreshold(
     session: Session,
     model: Model<Api>,
-    context: RuntimeRunContext & { conversationId: string }
+    context: RuntimeRunContext & { conversationId: string },
+    budget: RuntimeBudgetController
   ): Promise<string | undefined> {
+    budget.throwIfExceeded();
     if (model.contextWindow <= 0) return undefined;
     const sessionContext = await session.buildContext();
     const usage = estimateContextTokens(sessionContext.messages);
@@ -674,7 +736,8 @@ export class PiAgentRuntime {
       firstKeptEntryId: preparation.value.firstKeptEntryId,
       tokensBefore: preparation.value.tokensBefore
     });
-    const result = await compact(preparation.value, this.models, model, this.compactionInstructions);
+    const result = await compact(preparation.value, this.models, model, this.compactionInstructions, budget.signal);
+    budget.throwIfExceeded();
     if (!result.ok) throw result.error;
     const compactionEntryId = await session.appendCompaction(
       result.value.summary,
@@ -688,6 +751,10 @@ export class PiAgentRuntime {
       compactionEntryId
     });
     return compactionEntryId;
+  }
+
+  private createBudget(request: RuntimeRequest): RuntimeBudgetController {
+    return new RuntimeBudgetController(resolveRuntimeBudgetLimits(request.budget, this.defaultBudgetLimits));
   }
 
   private async writeCheckpoint(
