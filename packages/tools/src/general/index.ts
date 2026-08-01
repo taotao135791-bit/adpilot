@@ -29,7 +29,15 @@ export { PROTECTED_PATH_MESSAGE, createProtectedPathMatcher } from "./protected-
 export type { ProtectedPathMatcher } from "./protected-paths.js";
 export { BASH_DENY_MESSAGE, createBashTool, executeSandboxedBash } from "./bash.js";
 export type { BashToolAuditEntry, BashToolOptions, SandboxedBashResult } from "./bash.js";
-export { buildSeatbeltProfile, resolveSandboxExec, sandboxedEnv, SANDBOX_EXEC_PATH, SANDBOX_UNAVAILABLE_MESSAGE } from "./sandbox.js";
+export {
+  buildSeatbeltProfile,
+  createPrivateSandboxDirectory,
+  removePrivateSandboxDirectory,
+  resolveSandboxExec,
+  sandboxedEnv,
+  SANDBOX_EXEC_PATH,
+  SANDBOX_UNAVAILABLE_MESSAGE
+} from "./sandbox.js";
 export type { SandboxAvailability, SeatbeltProfileOptions } from "./sandbox.js";
 export { globToRegExp } from "./walk.js";
 export { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, GREP_MAX_LINE_LENGTH } from "./truncate.js";

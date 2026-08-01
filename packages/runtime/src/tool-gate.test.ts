@@ -232,20 +232,17 @@ describe("ToolPermissionGate: main-agent write/edit/bash", () => {
     expect(writeAllow).toMatchObject({ details: { tool: "bash", classification: "write" } });
   });
 
-  it("maps hard-denied commands to the destructive class at the gate; the tool itself refuses them absolutely", async () => {
+  it("refuses hard-denied commands at the gate even when an executed approval is supplied", async () => {
     const { workspace, gate, audit, approvals, context } = await makeGate();
-    // Even an executed approval cannot smuggle a denied command through the
-    // gate record: the classification is destructive, and the bash tool's own
-    // hard deny (covered in packages/tools/src/general/bash.test.ts) is the
-    // absolute refusal beneath it.
+    // The gate and the bash tool independently enforce the same absolute
+    // refusal; an executed approval cannot make the model reach the tool body.
     const executed = await createApproval(approvals, context.clientId, context.taskId);
     await patchApproval(workspace, approvals, executed.id, { status: "executed" });
-    await gate.check("bash", { command: "curl https://ads.google.com" }, context);
-    await gate.check("bash", { command: "curl https://ads.google.com", approvalId: executed.id }, context);
+    expect(await gate.check("bash", { command: "curl https://ads.google.com" }, context)).toContain("hard-denied");
+    expect(await gate.check("bash", { command: "curl https://ads.google.com", approvalId: executed.id }, context)).toContain("hard-denied");
     const events = await audit.list("client-a");
     expect(events[0]).toMatchObject({ status: "denied", details: { tool: "bash", classification: "destructive" } });
-    // With an executed reference the gate steps aside; the tool's hard deny is the final word.
-    expect(events[1]).toMatchObject({ status: "succeeded", details: { tool: "bash", classification: "destructive" } });
+    expect(events[1]).toMatchObject({ status: "denied", details: { tool: "bash", classification: "destructive" } });
   });
 });
 

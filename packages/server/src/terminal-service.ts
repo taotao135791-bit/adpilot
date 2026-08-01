@@ -14,7 +14,8 @@
  * dedicated fd, so cwd changes (`cd build`) persist across exec calls only
  * while they remain inside the immutable session root. Commands the shared
  * bash classifier verdicts `write` require `{ approved: true }`; `deny` is
- * absolute and can never be overridden by approval.
+ * absolute and can never be overridden by approval. Every shell receives a
+ * distinct 0700 HOME/TMPDIR and cannot delegate work to another GUI app.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -25,9 +26,12 @@ import { StringDecoder } from "node:string_decoder";
 import { classifyBashCommand, type BashClassification } from "@adpilot/shared";
 import {
   buildSeatbeltProfile,
+  createPrivateSandboxDirectory,
   createProtectedPathMatcher,
+  removePrivateSandboxDirectory,
   resolveSandboxExec
 } from "@adpilot/tools";
+import { broadProjectRootReason } from "./project-root-policy.js";
 
 export type TerminalErrorCode =
   | "TERMINAL_NOT_FOUND"
@@ -122,6 +126,8 @@ interface TerminalSession {
   readonly id: string;
   /** Immutable confinement root. */
   readonly root: string;
+  /** Private 0700 HOME/TMPDIR granted to this session and no other terminal. */
+  readonly tempRoot: string;
   /** Tracked cwd; it may move only to a descendant of `root`. */
   cwd: string;
   readonly scope?: TerminalSessionScope;
@@ -137,6 +143,7 @@ interface TerminalSession {
   running: boolean;
   exitCode: number | null;
   readonly exitWaiters: Array<() => void>;
+  tempCleanup?: Promise<void>;
 }
 
 export class TerminalService {
@@ -154,23 +161,39 @@ export class TerminalService {
       ? undefined
       : await normalizeScope(input.scope, cwd);
     const root = scope?.root ?? cwd;
-    const env = buildEnv(input.env);
-    const spawnTarget = sandboxedShell(root, ["-i", "-f"]);
+    await assertSafeTerminalRoot(root);
+    const tempRoot = await createPrivateSandboxDirectory();
+    const env = buildEnv(input.env, tempRoot);
+    let spawnTarget: ReturnType<typeof sandboxedShell>;
+    try {
+      spawnTarget = sandboxedShell(root, tempRoot, ["-i", "-f"]);
+    } catch (error) {
+      await removePrivateSandboxDirectory(tempRoot);
+      throw error;
+    }
     // -i: interactive (reads commands from stdin); -f: skip rc files so the
     // caller's ~/.zshrc cannot inject aliases, prompts or hangs into a
     // service-owned shell.
-    const proc = spawn(spawnTarget.file, spawnTarget.args, {
-      cwd,
-      env,
-      detached: true,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
+    let proc: ChildProcess;
+    try {
+      proc = spawn(spawnTarget.file, spawnTarget.args, {
+        cwd,
+        env,
+        detached: true,
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+    } catch (error) {
+      await removePrivateSandboxDirectory(tempRoot);
+      throw new TerminalError(`failed to spawn ${SHELL}`, "TERMINAL_SPAWN_FAILED", { cause: error });
+    }
     if (!proc.stdin || !proc.stdout || !proc.stderr) {
+      await removePrivateSandboxDirectory(tempRoot);
       throw new TerminalError("failed to pipe the shell stdio", "TERMINAL_SPAWN_FAILED");
     }
     const session: TerminalSession = {
       id: randomUUID(),
       root,
+      tempRoot,
       cwd,
       ...(scope !== undefined ? { scope } : {}),
       title: input.title ?? basename(cwd),
@@ -219,7 +242,12 @@ export class TerminalService {
     return { chunks, running: session.running };
   }
 
-  write(id: string, data: string, scope?: TerminalSessionScope): void {
+  write(
+    id: string,
+    data: string,
+    scope?: TerminalSessionScope,
+    approved = false
+  ): BashClassification | undefined {
     const session = this.require(id, scope);
     this.assertRunning(session);
     session.pendingInput += data;
@@ -230,18 +258,28 @@ export class TerminalService {
         "TERMINAL_INPUT_INVALID"
       );
     }
-    // Never forward a line continuation or incomplete quote/subshell before
-    // seeing and classifying the complete command. Otherwise two REST writes
-    // (`r\\` then `m -rf …`) could evade a per-chunk deny decision.
+    // A REST write is an arbitrary byte chunk, not a shell command boundary.
+    // Hold it until a newline terminates the complete command. Otherwise two
+    // requests (`r` then `m -rf …\n`) would be harmless in isolation but join
+    // into a denied command in zsh's own input buffer.
+    if (!session.pendingInput.endsWith("\n")) return undefined;
     const normalized = session.pendingInput.replace(/\\\r?\n/g, "");
     const classification = classifyBashCommand(normalized, { workspaceRoot: session.root });
-    if (/\\(?:\r?\n)$/.test(session.pendingInput) || !classification.parseable) return;
+    if (/\\(?:\r?\n)$/.test(session.pendingInput) || !classification.parseable) return undefined;
     const completeInput = session.pendingInput;
     session.pendingInput = "";
     if (classification.verdict === "deny") {
       throw deniedCommand(classification);
     }
+    if (classification.verdict === "write" && !approved) {
+      throw new TerminalError(
+        `command requires explicit approval (${classification.verdict}: ${classification.reason})`,
+        "COMMAND_APPROVAL_REQUIRED",
+        { classification }
+      );
+    }
     session.stdin.write(completeInput);
+    return classification;
   }
 
   interrupt(id: string, scope?: TerminalSessionScope): void {
@@ -254,6 +292,7 @@ export class TerminalService {
     const session = this.require(id, scope);
     this.sessions.delete(id);
     await this.terminate(session);
+    await this.cleanupTemp(session);
   }
 
   async exec(
@@ -278,7 +317,24 @@ export class TerminalService {
       env = session.env;
     } else {
       cwd = await normalizeCwd(target.cwd);
-      env = buildEnv();
+      await assertSafeTerminalRoot(cwd);
+      const classification = classifyBashCommand(command, { workspaceRoot: cwd });
+      if (classification.verdict === "deny") throw deniedCommand(classification);
+      if (classification.verdict === "write" && options.approved !== true) {
+        throw new TerminalError(
+          `command requires explicit approval (${classification.verdict}: ${classification.reason}); retry with approved: true`,
+          "COMMAND_APPROVAL_REQUIRED",
+          { classification }
+        );
+      }
+      const tempRoot = await createPrivateSandboxDirectory();
+      try {
+        env = buildEnv(undefined, tempRoot);
+        const result = await this.runOnce(cwd, cwd, env, command, options.timeoutMs, tempRoot);
+        return terminalExecResult(result);
+      } finally {
+        await removePrivateSandboxDirectory(tempRoot);
+      }
     }
     const root = session?.root ?? cwd;
     const classification = classifyBashCommand(command, { workspaceRoot: root });
@@ -292,7 +348,7 @@ export class TerminalService {
         { classification }
       );
     }
-    const result = await this.runOnce(cwd, root, env, command, options.timeoutMs);
+    const result = await this.runOnce(cwd, root, env, command, options.timeoutMs, session!.tempRoot);
     if (session && result.finalCwd !== undefined) {
       const finalCwd = await normalizeCwd(result.finalCwd);
       if (!isWithinRoot(finalCwd, session.root)) {
@@ -303,13 +359,7 @@ export class TerminalService {
       }
       session.cwd = finalCwd;
     }
-    return {
-      exitCode: result.exitCode,
-      stdout: result.stdout,
-      stderr: result.stderr,
-      durationMs: result.durationMs,
-      timedOut: result.timedOut
-    };
+    return terminalExecResult(result);
   }
 
   async shutdown(): Promise<void> {
@@ -327,14 +377,15 @@ export class TerminalService {
     root: string,
     env: Record<string, string>,
     command: string,
-    timeoutMs?: number
+    timeoutMs: number | undefined,
+    tempRoot: string
   ): Promise<TerminalExecResult & { finalCwd?: string }> {
     const timeout = Math.min(Math.max(1, timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS), MAX_EXEC_TIMEOUT_MS);
     // fd 3 carries the post-command PWD back without polluting stdout; the
     // trailing `exit` preserves the command's own exit code.
     const wrapped = `${command}\n__adpilot_exit_code=$?\nprintf '%s' "$PWD" >&3\nexit "$__adpilot_exit_code"`;
     const startedAt = Date.now();
-    const spawnTarget = sandboxedShell(root, ["-f", "-c", wrapped]);
+    const spawnTarget = sandboxedShell(root, tempRoot, ["-f", "-c", wrapped]);
     return new Promise((resolvePromise, rejectPromise) => {
       const child = spawn(spawnTarget.file, spawnTarget.args, {
         cwd,
@@ -433,6 +484,12 @@ export class TerminalService {
     session.exitCode = exitCode;
     const waiters = session.exitWaiters.splice(0);
     for (const resolve of waiters) resolve();
+    void this.cleanupTemp(session).catch(() => undefined);
+  }
+
+  private cleanupTemp(session: TerminalSession): Promise<void> {
+    session.tempCleanup ??= removePrivateSandboxDirectory(session.tempRoot);
+    return session.tempCleanup;
   }
 
   private pushChunk(session: TerminalSession, stream: "stdout" | "stderr", data: string): void {
@@ -470,6 +527,16 @@ async function normalizeScope(scope: TerminalSessionScope, cwd: string): Promise
   return { clientId: scope.clientId, projectId: scope.projectId, root };
 }
 
+async function assertSafeTerminalRoot(root: string): Promise<void> {
+  const reason = await broadProjectRootReason(root);
+  if (reason) {
+    throw new TerminalError(
+      `terminal cwd is too broad for confinement (${reason})`,
+      "TERMINAL_CWD_INVALID"
+    );
+  }
+}
+
 function scopeMatches(
   actual: TerminalSessionScope | undefined,
   expected: TerminalSessionScope
@@ -493,7 +560,11 @@ function deniedCommand(classification: BashClassification): TerminalError {
   );
 }
 
-function sandboxedShell(root: string, shellArgs: readonly string[]): { file: string; args: string[] } {
+function sandboxedShell(
+  root: string,
+  tempRoot: string,
+  shellArgs: readonly string[]
+): { file: string; args: string[] } {
   const sandbox = resolveSandboxExec();
   if (!sandbox.available || !sandbox.path) {
     throw new TerminalError(
@@ -502,7 +573,12 @@ function sandboxedShell(root: string, shellArgs: readonly string[]): { file: str
     );
   }
   const protect = createProtectedPathMatcher({ workspaceRoot: root });
-  const profile = buildSeatbeltProfile({ workspaceRoot: root, protect });
+  const profile = buildSeatbeltProfile({
+    workspaceRoot: root,
+    protect,
+    isolatedTempDir: tempRoot,
+    denyGuiLaunch: true
+  });
   return { file: sandbox.path, args: ["-p", profile, SHELL, ...shellArgs] };
 }
 
@@ -525,7 +601,10 @@ function shellSingleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function buildEnv(extra?: Readonly<Record<string, string | number | boolean>>): Record<string, string> {
+function buildEnv(
+  extra: Readonly<Record<string, string | number | boolean>> | undefined,
+  tempRoot: string
+): Record<string, string> {
   const env: Record<string, string> = {};
   for (const key of ENV_WHITELIST) {
     const value = process.env[key];
@@ -540,8 +619,20 @@ function buildEnv(extra?: Readonly<Record<string, string | number | boolean>>): 
   env.TERM = "xterm-256color";
   env.SHELL = SHELL;
   env.HISTFILE = "/dev/null";
+  env.HOME = tempRoot;
+  env.TMPDIR = tempRoot;
   if (!env.PATH) env.PATH = "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin";
   return env;
+}
+
+function terminalExecResult(result: TerminalExecResult & { finalCwd?: string }): TerminalExecResult {
+  return {
+    exitCode: result.exitCode,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    durationMs: result.durationMs,
+    timedOut: result.timedOut
+  };
 }
 
 function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {

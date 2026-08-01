@@ -1241,7 +1241,7 @@ export async function createServer(system: AdPilotSystem, options: {
         ? 409
         : code === "PRIVACY_MODE_REMOTE_PROVIDER_BLOCKED" || code === "DESKTOP_NATIVE_FORBIDDEN"
           ? 403
-          : code === "DESKTOP_NATIVE_UNAVAILABLE"
+          : code === "DESKTOP_NATIVE_UNAVAILABLE" || code === "TERMINAL_SANDBOX_UNAVAILABLE"
             ? 503
             : code?.endsWith("_NOT_FOUND")
               ? 404

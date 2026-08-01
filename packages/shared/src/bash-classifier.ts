@@ -224,6 +224,10 @@ const SCREEN_CAPTURE: DenyRule = {
   rule: "screen_capture",
   reason: "screen capture and UI scripting are hard-denied: screenshots flow exclusively through the privacy pipeline"
 };
+const GUI_LAUNCH: DenyRule = {
+  rule: "gui_application_launch",
+  reason: "GUI application launch is hard-denied: terminal commands must not delegate URLs, files, or work to other software"
+};
 const PRIVILEGE_PROCESS: DenyRule = {
   rule: "privilege_or_process_control",
   reason: "privilege escalation and process control are hard-denied"
@@ -250,6 +254,7 @@ const DENY_PROGRAMS: Readonly<Record<string, DenyRule>> = {
   mtr: NETWORK_EGRESS, dig: NETWORK_EGRESS, host: NETWORK_EGRESS, nslookup: NETWORK_EGRESS,
   screencapture: SCREEN_CAPTURE, osascript: SCREEN_CAPTURE, automator: SCREEN_CAPTURE,
   cliclick: SCREEN_CAPTURE, "screencaptureui": SCREEN_CAPTURE,
+  open: GUI_LAUNCH, shortcuts: GUI_LAUNCH, "xdg-open": GUI_LAUNCH, gio: GUI_LAUNCH,
   sudo: PRIVILEGE_PROCESS, doas: PRIVILEGE_PROCESS, su: PRIVILEGE_PROCESS,
   kill: PRIVILEGE_PROCESS, killall: PRIVILEGE_PROCESS, pkill: PRIVILEGE_PROCESS,
   launchctl: PRIVILEGE_PROCESS, systemctl: PRIVILEGE_PROCESS, shutdown: PRIVILEGE_PROCESS,
@@ -613,16 +618,6 @@ function classifySegment(segment: ParsedSegment, context: SegmentContext): Simpl
     const delegatedRule = delegated ? DENY_PROGRAMS[basenameOf(delegated.value)] : undefined;
     if (delegatedRule) return finish(verdict("deny", delegatedRule.rule, `${program} delegates to a denied program: ${delegatedRule.reason}`), program);
     return finish(verdict("write", "delegated_execution", `${program} executes a delegated command`), program);
-  }
-
-  // macOS open: launching apps and URLs is the local assistant's everyday
-  // action surface, so it is an explicit write-level command (waived from the
-  // approval reference only under full access). Arguments that point at
-  // browser profile stores or other protected paths were already hard-denied
-  // by the token-path check above; the seatbelt profile still confines the
-  // spawned process.
-  if (program === "open") {
-    return finish(verdict("write", "launch_application", "open launches an application, document or URL on the host; a write-level side effect, hard-denied when it references a protected path such as a browser profile store"), program);
   }
 
   // Whitelisted read programs, with their write-capable flags checked.

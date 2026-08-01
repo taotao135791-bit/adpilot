@@ -463,7 +463,7 @@ describe("AdPilotAgent conversation routing: answer / act / investigate", () => 
     expect(outcome.task?.phase).toBe("completed");
   });
 
-  it("guarded mode blocks a write-level open call at the gate; the denial reaches the model", async () => {
+  it("hard-denies shell-based GUI launch at the gate; the denial reaches the model", async () => {
     const { faux, agent, audit } = await makeAgent("routing-act-guarded");
     let toolResultText = "";
     faux.setResponses([
@@ -471,16 +471,16 @@ describe("AdPilotAgent conversation routing: answer / act / investigate", () => 
       fauxAssistantMessage(fauxToolCall("bash", { command: "open https://www.baidu.com" }), { stopReason: "toolUse" }),
       async (context) => {
         toolResultText = JSON.stringify(context);
-        return fauxAssistantMessage("当前处于 guarded 模式,需要你在设置中授予 full access 后我才能直接打开网页。");
+        return fauxAssistantMessage("Shell policy 禁止启动其他 GUI 软件；请改用绑定窗口的 Computer Use 工具。");
       }
     ]);
     const outcome = await agent.respond("client-a", "打开百度", { interfaceLocale: "zh-CN" });
-    expect(outcome.reply).toContain("guarded");
-    expect(toolResultText).toContain("approval-gated");
-    expect(toolResultText).toContain("full access");
+    expect(outcome.reply).toContain("Computer Use");
+    expect(toolResultText).toContain("hard-denied");
+    expect(toolResultText).toContain("cannot be authorized");
     const gateEvents = (await audit.list("client-a")).filter((event) => event.action === "tool_gate");
     expect(gateEvents).toHaveLength(1);
-    expect(gateEvents[0]).toMatchObject({ status: "denied", details: { tool: "bash", classification: "write" } });
+    expect(gateEvents[0]).toMatchObject({ status: "denied", details: { tool: "bash", classification: "destructive" } });
   });
 });
 

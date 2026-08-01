@@ -8,7 +8,8 @@
  *   calls, exfiltration POSTs and remote code pulls are impossible regardless
  *   of what the classifier let through, and the local-only privacy mode's "no
  *   bytes leave this machine" semantics hold for bash automatically.
- * - file writes are confined to the workspace root and the temp directories.
+ * - production callers bind file writes to the workspace root and one
+ *   invocation-private 0700 HOME/TMPDIR.
  * - reads of the protected paths (the .adpilot private subtree except the
  *   public skills/prompts directories, browser profile stores, credential
  *   stores, .env files, the audit chain) are denied outright.
@@ -19,8 +20,9 @@
  * refuses to execute instead of silently degrading to an unsandboxed shell.
  */
 import { existsSync, realpathSync } from "node:fs";
+import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { ProtectedPathMatcher } from "./protected-paths.js";
 
 export const SANDBOX_EXEC_PATH = "/usr/bin/sandbox-exec";
@@ -68,6 +70,13 @@ export interface SeatbeltProfileOptions {
   protect: ProtectedPathMatcher;
   /** Defaults to the process home directory; injectable for tests. */
   homeDir?: string;
+  /**
+   * A per-invocation 0700 directory used as HOME and TMPDIR. When present,
+   * the profile does not grant data access to the process-wide temp trees.
+   */
+  isolatedTempDir?: string;
+  /** Terminal shells must not hand work to LaunchServices or another GUI app. */
+  denyGuiLaunch?: boolean;
 }
 
 /**
@@ -77,8 +86,25 @@ export interface SeatbeltProfileOptions {
  */
 export function buildSeatbeltProfile(options: SeatbeltProfileOptions): string {
   const workspace = canonical(options.workspaceRoot);
-  const tmp = canonical(tmpdir());
+  const isolatedTemp = options.isolatedTempDir ? canonical(options.isolatedTempDir) : null;
+  const sharedTempReads = isolatedTemp
+    ? [`  (subpath "${sbpl(isolatedTemp)}")`]
+    : [
+        `  (subpath "${sbpl("/tmp")}")`,
+        `  (subpath "${sbpl("/private/tmp")}")`,
+        `  (subpath "${sbpl(canonical(tmpdir()))}")`,
+        `  (subpath "${sbpl("/var/folders")}")`,
+        `  (subpath "${sbpl("/private/var/folders")}")`
+      ];
+  const sharedTempWrites = [...sharedTempReads];
   const protectedPrefixes = options.protect.deniedPrefixes();
+  const deniedExecutables = [
+    "/usr/sbin/screencapture",
+    "/usr/bin/osascript",
+    ...(options.denyGuiLaunch
+      ? ["/usr/bin/open", "/usr/bin/shortcuts", "/usr/bin/automator"]
+      : [])
+  ];
 
   const lines: string[] = [
     ";; AdPilot bash seatbelt profile — generated, do not edit.",
@@ -116,21 +142,13 @@ export function buildSeatbeltProfile(options: SeatbeltProfileOptions): string {
     `  (subpath "${sbpl("/Applications")}")`,
     `  (subpath "${sbpl("/opt")}")`,
     `  (subpath "${sbpl(workspace)}")`,
-    `  (subpath "${sbpl("/tmp")}")`,
-    `  (subpath "${sbpl("/private/tmp")}")`,
-    `  (subpath "${sbpl(tmp)}")`,
-    `  (subpath "${sbpl("/var/folders")}")`,
-    `  (subpath "${sbpl("/private/var/folders")}")`,
+    ...sharedTempReads,
     ")",
     "",
     ";; writes: only the workspace, temp directories, and devices",
     "(allow file-write*",
     `  (subpath "${sbpl(workspace)}")`,
-    `  (subpath "${sbpl("/tmp")}")`,
-    `  (subpath "${sbpl("/private/tmp")}")`,
-    `  (subpath "${sbpl(tmp)}")`,
-    `  (subpath "${sbpl("/var/folders")}")`,
-    `  (subpath "${sbpl("/private/var/folders")}")`,
+    ...sharedTempWrites,
     `  (subpath "${sbpl("/dev")}")`,
     ")",
     "",
@@ -144,7 +162,7 @@ export function buildSeatbeltProfile(options: SeatbeltProfileOptions): string {
     `(allow file-read* (subpath "${sbpl(resolve(workspace, ".adpilot", "skills"))}") (subpath "${sbpl(resolve(workspace, ".adpilot", "prompts"))}"))`,
     "",
     ";; screenshot capture and UI scripting stay inside the privacy pipeline",
-    `(deny process-exec (literal "${sbpl("/usr/sbin/screencapture")}") (literal "${sbpl("/usr/bin/osascript")}"))`,
+    `(deny process-exec ${deniedExecutables.map((path) => `(literal "${sbpl(path)}")`).join(" ")})`,
     "",
     ";; no sockets at all: egress, ingress and binds are impossible",
     "(deny network*)",
@@ -153,12 +171,35 @@ export function buildSeatbeltProfile(options: SeatbeltProfileOptions): string {
   return lines.join("\n");
 }
 
+const PRIVATE_SANDBOX_PREFIX = "adpilot-private-";
+
+/** Creates a canonical, process-private HOME/TMPDIR for one sandboxed shell. */
+export async function createPrivateSandboxDirectory(): Promise<string> {
+  const root = canonical(tmpdir());
+  const directory = await mkdtemp(join(root, PRIVATE_SANDBOX_PREFIX));
+  await chmod(directory, 0o700);
+  return canonical(directory);
+}
+
+/** Removes only directories created by createPrivateSandboxDirectory. */
+export async function removePrivateSandboxDirectory(path: string): Promise<void> {
+  const canonicalTempRoot = canonical(tmpdir());
+  const resolved = resolve(path);
+  if (dirname(resolved) !== canonicalTempRoot || !basename(resolved).startsWith(PRIVATE_SANDBOX_PREFIX)) {
+    throw new Error("refusing to remove a non-AdPilot sandbox directory");
+  }
+  await rm(resolved, { recursive: true, force: true });
+}
+
 /**
  * Environment handed to sandboxed commands: an allowlist that excludes every
  * API key, token and secret of the host process, so `echo $OPENAI_API_KEY`
  * style channels return nothing.
  */
-export function sandboxedEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function sandboxedEnv(
+  base: NodeJS.ProcessEnv = process.env,
+  isolatedHome?: string
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     PATH: "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin",
     SHELL: "/bin/bash",
@@ -166,6 +207,10 @@ export function sandboxedEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Proc
   };
   for (const name of ["HOME", "LANG", "TMPDIR", "USER", "LOGNAME", "__CF_USER_TEXT_ENCODING", "LC_ALL", "LC_CTYPE"]) {
     if (base[name]) env[name] = base[name];
+  }
+  if (isolatedHome) {
+    env.HOME = isolatedHome;
+    env.TMPDIR = isolatedHome;
   }
   return env;
 }

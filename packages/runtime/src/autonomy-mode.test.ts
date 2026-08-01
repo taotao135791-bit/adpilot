@@ -85,13 +85,12 @@ describe("ToolPermissionGate autonomy modes", () => {
     const { gate, audit, context } = await makeGate(probe("full_access"));
     expect(await gate.check("write", { path: "notes.md", content: "hi" }, context)).toBeNull();
     expect(await gate.check("edit", { path: "notes.md" }, context)).toBeNull();
-    expect(await gate.check("bash", { command: "open https://www.baidu.com" }, context)).toBeNull();
     expect(await gate.check("bash", { command: "echo hi > notes.md" }, context)).toBeNull();
     expect(await gate.check("computer.close_window", { bundleId: "com.google.Chrome", windowId: 42 }, context)).toBeNull();
     // Read-level calls still flow without any audit record.
     expect(await gate.check("bash", { command: "ls -la" }, context)).toBeNull();
     const events = await audit.list("client-a");
-    expect(events).toHaveLength(5);
+    expect(events).toHaveLength(4);
     for (const event of events) {
       expect(event).toMatchObject({
         action: "tool_gate",
@@ -104,7 +103,7 @@ describe("ToolPermissionGate autonomy modes", () => {
 
   it("guarded mode keeps the approval chain and points at the autonomy switch", async () => {
     const { gate, audit, context } = await makeGate(probe("guarded"));
-    const denial = await gate.check("bash", { command: "open https://www.baidu.com" }, context);
+    const denial = await gate.check("bash", { command: "echo hi > notes.md" }, context);
     expect(denial).toContain("approvalId");
     expect(denial).toContain("full access");
     const writeDenial = await gate.check("write", { path: "notes.md" }, context);
@@ -121,11 +120,11 @@ describe("ToolPermissionGate autonomy modes", () => {
   it("red line 1: deny-classified commands stay hard-denied at the gate in full access", async () => {
     const { gate, audit, context } = await makeGate(probe("full_access"));
     const curl = await gate.check("bash", { command: "curl https://ads.google.com" }, context);
-    expect(curl).toContain("approvalId");
+    expect(curl).toContain("hard-denied");
     const rmrf = await gate.check("bash", { command: "rm -rf /" }, context);
-    expect(rmrf).toContain("approvalId");
+    expect(rmrf).toContain("hard-denied");
     const profile = await gate.check("bash", { command: "open '/Users/x/Library/Application Support/Google/Chrome'" }, context);
-    expect(profile).toContain("approvalId");
+    expect(profile).toContain("hard-denied");
     const events = await audit.list("client-a");
     expect(events).toHaveLength(3);
     for (const event of events) {
@@ -158,7 +157,7 @@ describe("ToolPermissionGate autonomy modes", () => {
     const context: ToolContext & { conversationId: string } = {
       clientId: "client-a", taskId: crypto.randomUUID(), actor: "tester", permission: "OBSERVE", conversationId: "primary"
     };
-    const denial = await gate.check("bash", { command: "open https://www.baidu.com" }, context);
+    const denial = await gate.check("bash", { command: "echo hi > notes.md" }, context);
     expect(denial).toContain("Plan mode is active");
     const events = await audit.list("client-a");
     expect(events[0]).toMatchObject({ status: "denied", details: { planMode: true } });

@@ -18,7 +18,7 @@
  *    pipeline. The classification decision is written to the audit chain.
  * 2. Execution happens exclusively through macOS sandbox-exec with a
  *    generated seatbelt profile (no network, writes confined to the
- *    workspace and temp directories, protected paths unreadable). When
+ *    workspace and one per-call private temp home, protected paths unreadable). When
  *    sandbox-exec is unavailable the tool FAILS CLOSED with an explicit
  *    error instead of silently degrading to an unsandboxed shell — this is
  *    the behavioral equivalent of upstream's spawnHook seam.
@@ -34,7 +34,14 @@ import { Type } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import { classifyBashCommand, type BashClassification } from "@adpilot/shared";
 import { createProtectedPathMatcher } from "./protected-paths.js";
-import { buildSeatbeltProfile, resolveSandboxExec, sandboxedEnv, SANDBOX_UNAVAILABLE_MESSAGE } from "./sandbox.js";
+import {
+  buildSeatbeltProfile,
+  createPrivateSandboxDirectory,
+  removePrivateSandboxDirectory,
+  resolveSandboxExec,
+  sandboxedEnv,
+  SANDBOX_UNAVAILABLE_MESSAGE
+} from "./sandbox.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateTail } from "./truncate.js";
 
 const MAX_TIMEOUT_SECONDS = 3600;
@@ -105,12 +112,12 @@ export async function executeSandboxedBash(
   const spawnImpl = options.spawnImpl ?? spawn;
   const protect = createProtectedPathMatcher({ workspaceRoot: options.workspaceRoot });
   const sandboxPath = options.sandboxExecPath === null ? null : (options.sandboxExecPath ?? "/usr/bin/sandbox-exec");
-  const execSandboxed = (command: string, timeoutSeconds: number, profile: string, signal?: AbortSignal): Promise<{ exitCode: number | null; output: Buffer }> => {
+  const execSandboxed = (command: string, timeoutSeconds: number, profile: string, isolatedHome: string, signal?: AbortSignal): Promise<{ exitCode: number | null; output: Buffer }> => {
     return new Promise((resolvePromise, rejectPromise) => {
       const child = spawnImpl(sandboxPath!, ["-p", profile, "/bin/bash", "-c", command], {
         cwd: options.workspaceRoot,
         detached: true,
-        env: sandboxedEnv(),
+        env: sandboxedEnv(process.env, isolatedHome),
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true
       } as SpawnOptions);
@@ -174,32 +181,42 @@ export async function executeSandboxedBash(
   }
 
   const timeoutSeconds = resolveTimeoutSeconds(timeout);
-  const profile = buildSeatbeltProfile({ workspaceRoot: options.workspaceRoot, protect });
-  await options.onClassified?.({ classification, commandPreview: command.slice(0, 200), sandboxPath: sandbox.path, executed: true });
-  const startedAt = Date.now();
-  const { exitCode, output } = await execSandboxed(command, timeoutSeconds, profile, signal);
+  const isolatedHome = await createPrivateSandboxDirectory();
+  try {
+    const profile = buildSeatbeltProfile({
+      workspaceRoot: options.workspaceRoot,
+      protect,
+      isolatedTempDir: isolatedHome,
+      denyGuiLaunch: true
+    });
+    await options.onClassified?.({ classification, commandPreview: command.slice(0, 200), sandboxPath: sandbox.path, executed: true });
+    const startedAt = Date.now();
+    const { exitCode, output } = await execSandboxed(command, timeoutSeconds, profile, isolatedHome, signal);
 
-  const text = output.toString("utf-8");
-  const truncation = truncateTail(text);
-  let outputText = truncation.content.trim().length > 0 ? truncation.content : "(no output)";
-  if (truncation.truncated) {
-    const startLine = truncation.totalLines - truncation.outputLines + 1;
-    outputText += `\n\n[Showing lines ${startLine}-${truncation.totalLines} of ${truncation.totalLines}${truncation.truncatedBy === "bytes" ? ` (${formatSize(DEFAULT_MAX_BYTES)} limit)` : ""}]`;
+    const text = output.toString("utf-8");
+    const truncation = truncateTail(text);
+    let outputText = truncation.content.trim().length > 0 ? truncation.content : "(no output)";
+    if (truncation.truncated) {
+      const startLine = truncation.totalLines - truncation.outputLines + 1;
+      outputText += `\n\n[Showing lines ${startLine}-${truncation.totalLines} of ${truncation.totalLines}${truncation.truncatedBy === "bytes" ? ` (${formatSize(DEFAULT_MAX_BYTES)} limit)` : ""}]`;
+    }
+    return {
+      exitCode,
+      output: outputText,
+      classification,
+      truncated: truncation.truncated,
+      durationMs: Date.now() - startedAt
+    };
+  } finally {
+    await removePrivateSandboxDirectory(isolatedHome);
   }
-  return {
-    exitCode,
-    output: outputText,
-    classification,
-    truncated: truncation.truncated,
-    durationMs: Date.now() - startedAt
-  };
 }
 
 export function createBashTool(options: BashToolOptions): AgentTool {
   return {
     name: "bash",
     label: "Run a sandboxed bash command",
-    description: `Execute a bash command in the workspace root under a macOS seatbelt sandbox: no network access, file writes confined to the workspace and temp directories, and protected paths (credentials, approval secrets, audit chain, browser profiles) unreadable. Read-only commands (ls, cat, grep, git status/diff/log, ...) run freely; writes require an executed approval reference; dangerous commands (curl/wget/ssh, screencapture, sudo, kill, launchctl, rm -rf, browser profile access) are always refused. Output is truncated to the last ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}.`,
+    description: `Execute a bash command in the workspace root under a macOS seatbelt sandbox: no network access, file writes confined to the workspace and one per-call private temp home, and protected paths (credentials, approval secrets, audit chain, browser profiles) unreadable. Read-only commands (ls, cat, grep, git status/diff/log, ...) run freely; writes require an executed approval reference; dangerous commands (GUI app launch, curl/wget/ssh, screencapture, sudo, kill, launchctl, rm -rf, browser profile access) are always refused. Output is truncated to the last ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}.`,
     parameters: bashParameters,
     executionMode: "sequential",
     execute: async (_toolCallId, raw, signal) => {

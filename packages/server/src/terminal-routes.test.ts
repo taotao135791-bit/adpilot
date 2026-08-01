@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAdPilotSystem, type AdPilotSystem } from "@adpilot/application";
 import { createServer } from "./index.js";
+import { TerminalService } from "./terminal-service.js";
 
 type Server = Awaited<ReturnType<typeof createServer>>;
 
@@ -78,12 +79,12 @@ describe("terminal REST routes", () => {
     await server.inject({
       method: "POST",
       url: scoped(`/api/terminals/${session.id}/input`, scope),
-      payload: { data: "read answer; printf 'got:%s\\n' \"$answer\"\n" }
+      payload: { data: "read answer; printf 'got:%s\\n' \"$answer\"\n", approved: true }
     });
     await server.inject({
       method: "POST",
       url: scoped(`/api/terminals/${session.id}/input`, scope),
-      payload: { data: "hello-terminal\n" }
+      payload: { data: "hello-terminal\n", approved: true }
     });
     expect(
       await waitForChunks(
@@ -130,7 +131,7 @@ describe("terminal REST routes", () => {
     await server.inject({
       method: "POST",
       url: scoped(`/api/terminals/${session.id}/input`, scope),
-      payload: { data: "sleep 30\n" }
+      payload: { data: "sleep 30\n", approved: true }
     });
     await new Promise((resolve) => setTimeout(resolve, 400));
     const interrupted = await server.inject({
@@ -141,7 +142,7 @@ describe("terminal REST routes", () => {
     await server.inject({
       method: "POST",
       url: scoped(`/api/terminals/${session.id}/input`, scope),
-      payload: { data: "echo status-$?\n" }
+      payload: { data: "echo status-$?\n", approved: true }
     });
     expect(
       await waitForChunks(
@@ -211,6 +212,115 @@ describe("terminal REST routes", () => {
     expect(completed.statusCode).toBe(403);
     expect(completed.json()).toMatchObject({ code: "COMMAND_DENIED" });
     expect((await stat(target)).isDirectory()).toBe(true);
+
+    // Raw REST writes are byte chunks, not command boundaries. Holding the
+    // first byte until a newline means the shell never sees a reconstructed
+    // denied command that the classifier did not inspect as a whole.
+    const ordinaryPartial = await server.inject({
+      method: "POST",
+      url: scoped(`/api/terminals/${session.id}/input`, scope),
+      payload: { data: "r" }
+    });
+    expect(ordinaryPartial.statusCode).toBe(200);
+    const ordinaryCompleted = await server.inject({
+      method: "POST",
+      url: scoped(`/api/terminals/${session.id}/input`, scope),
+      payload: { data: `m -rf "${target}"\n`, approved: true }
+    });
+    expect(ordinaryCompleted.statusCode).toBe(403);
+    expect(ordinaryCompleted.json()).toMatchObject({ code: "COMMAND_DENIED" });
+    expect((await stat(target)).isDirectory()).toBe(true);
+
+    const guiLaunch = await server.inject({
+      method: "POST",
+      url: scoped(`/api/terminals/${session.id}/input`, scope),
+      payload: { data: "open https://example.com\n", approved: true }
+    });
+    expect(guiLaunch.statusCode).toBe(403);
+    expect(guiLaunch.json()).toMatchObject({
+      code: "COMMAND_DENIED",
+      classification: { verdict: "deny" }
+    });
+  });
+
+  it("requires 409 confirmation before forwarding write-classified interactive input", async () => {
+    const { server, system } = await boot();
+    const scope = await createProjectScope(system);
+    const session = (await createSession(server, scope)).body;
+    const marker = join(scope.root, "interactive-approved.txt");
+    const command = "printf x >> interactive-approved.txt\n";
+
+    const pending = await server.inject({
+      method: "POST",
+      url: scoped(`/api/terminals/${session.id}/input`, scope),
+      payload: { data: command }
+    });
+    expect(pending.statusCode).toBe(409);
+    expect(pending.json()).toMatchObject({
+      code: "COMMAND_APPROVAL_REQUIRED",
+      classification: { verdict: "write" }
+    });
+    await expect(stat(marker)).rejects.toThrow();
+
+    const approved = await server.inject({
+      method: "POST",
+      url: scoped(`/api/terminals/${session.id}/input`, scope),
+      payload: { data: command, approved: true }
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(await waitForFile(marker)).toBe(true);
+    // The rejected pending buffer was cleared before the retry, so the
+    // approved command runs exactly once rather than being concatenated.
+    expect(await readFile(marker, "utf8")).toBe("x");
+  });
+
+  it("uses distinct 0700 temp homes and denies another client sentinel", async () => {
+    const { server, system } = await boot();
+    await system.workspace.initializeClient({
+      profile: { id: "client-b", name: "Client B", industry: "test", timezone: "UTC" },
+      kpi: { primary: "CPA", target: 1, currency: "USD" }
+    });
+    const scopeA = await createProjectScope(system);
+    const scopeB = await createProjectScope(system, "client-b");
+    const sessionA = (await createSession(server, scopeA)).body;
+    const sessionB = (await createSession(server, scopeB)).body;
+
+    const homeA = (await server.inject({
+      method: "POST",
+      url: scoped(`/api/terminals/${sessionA.id}/exec`, scopeA),
+      payload: { command: "printf '%s' \"$HOME\"", approved: true }
+    })).json().stdout.trim() as string;
+    const homeB = (await server.inject({
+      method: "POST",
+      url: scoped(`/api/terminals/${sessionB.id}/exec`, scopeB),
+      payload: { command: "printf '%s' \"$HOME\"", approved: true }
+    })).json().stdout.trim() as string;
+    expect(homeA).not.toBe(homeB);
+    expect((await stat(homeA)).mode & 0o777).toBe(0o700);
+    expect((await stat(homeB)).mode & 0o777).toBe(0o700);
+
+    const sentinel = join(homeA, "client-a-sentinel.txt");
+    await writeFile(sentinel, "client-a-private\n", { mode: 0o600 });
+    const crossClientRead = await server.inject({
+      method: "POST",
+      url: scoped(`/api/terminals/${sessionB.id}/exec`, scopeB),
+      payload: { command: `cat '${sentinel}'` }
+    });
+    expect(crossClientRead.statusCode).toBe(200);
+    expect(crossClientRead.json().exitCode).not.toBe(0);
+    expect(crossClientRead.json().stdout).not.toContain("client-a-private");
+
+    const ownRead = await server.inject({
+      method: "POST",
+      url: scoped(`/api/terminals/${sessionA.id}/exec`, scopeA),
+      payload: { command: `cat '${sentinel}'` }
+    });
+    expect(ownRead.json()).toMatchObject({ exitCode: 0 });
+    expect(ownRead.json().stdout).toContain("client-a-private");
+
+    await server.inject({ method: "DELETE", url: scoped(`/api/terminals/${sessionA.id}`, scopeA) });
+    await expect(stat(homeA)).rejects.toThrow();
+    expect((await stat(homeB)).isDirectory()).toBe(true);
   });
 
   it("cannot attach a terminal across a client, project, or canonical project root", async () => {
@@ -310,7 +420,7 @@ describe("terminal REST routes", () => {
     await server.inject({
       method: "POST",
       url: scoped(`/api/terminals/${session.id}/input`, scope),
-      payload: { data: "cd ..; pwd\n" }
+      payload: { data: "cd ..; pwd\n", approved: true }
     });
     expect(
       await waitForChunks(
@@ -350,7 +460,7 @@ describe("terminal REST routes", () => {
     await server.inject({
       method: "POST",
       url: scoped(`/api/terminals/${session.id}/input`, scope),
-      payload: { data: "exit\n" }
+      payload: { data: "exit\n", approved: true }
     });
     const deadline = Date.now() + 8_000;
     let running = true;
@@ -396,6 +506,49 @@ describe("terminal REST routes", () => {
     });
     expect(response.statusCode).toBe(400);
     expect(response.json().code).toBe("TERMINAL_CWD_INVALID");
+  });
+
+  it("rejects filesystem, home, and volume roots as terminal boundaries", async () => {
+    const { server, system } = await boot();
+    const project = await system.kernel.createProject({
+      workspaceId: "personal",
+      name: "Unsafe root fixture",
+      rootPaths: ["/"]
+    });
+    const terminal = await server.inject({
+      method: "POST",
+      url: "/api/terminals",
+      payload: { clientId: "personal", projectId: project.id, cwd: "/" }
+    });
+    expect(terminal.statusCode).toBe(400);
+    expect(terminal.json()).toMatchObject({ code: "TERMINAL_CWD_INVALID" });
+
+    for (const root of ["/", homedir(), "/Users", "/Applications", "/System", "/private/tmp", "/Volumes"]) {
+      if (!(await stat(root).catch(() => null))?.isDirectory()) continue;
+      const response = await server.inject({
+        method: "POST",
+        url: "/api/kernel/projects",
+        payload: {
+          workspaceId: "personal",
+          name: "Unsafe project root",
+          type: "development",
+          rootPaths: [root]
+        }
+      });
+      expect(response.statusCode, root).toBe(400);
+      expect(response.json(), root).toMatchObject({ code: "PROJECT_ROOT_INVALID" });
+    }
+  });
+
+  it("also rejects broad roots when coding tools call TerminalService directly", async () => {
+    const service = new TerminalService();
+    await expect(service.create({ cwd: homedir() })).rejects.toMatchObject({
+      code: "TERMINAL_CWD_INVALID"
+    });
+    await expect(service.exec({ cwd: "/" }, "pwd")).rejects.toMatchObject({
+      code: "TERMINAL_CWD_INVALID"
+    });
+    await service.shutdown();
   });
 });
 
@@ -474,6 +627,15 @@ async function waitForChunks(
     });
     if (response.statusCode === 200 && predicate(response.json().chunks)) return true;
     await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
+}
+
+async function waitForFile(path: string): Promise<boolean> {
+  const deadline = Date.now() + 8_000;
+  while (Date.now() < deadline) {
+    if ((await stat(path).catch(() => null))?.isFile()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return false;
 }

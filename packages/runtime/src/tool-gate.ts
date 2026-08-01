@@ -56,11 +56,14 @@ export class ToolPermissionGate {
       && this.autonomy !== undefined
       ? await this.autonomy.mode(context.clientId).then((mode) => mode === "full_access").catch(() => false)
       : false;
-    const denial = planModeOn
+    const hardPolicyDenial = toolName === "bash" && classification === "destructive"
+      ? "bash command is hard-denied by AdPilot policy and cannot be authorized in guarded or full-access mode. Use a dedicated bounded product tool instead of launching or capturing other software, networking, controlling processes, or bypassing the shell policy."
+      : null;
+    const denial = hardPolicyDenial ?? (planModeOn
       ? `Plan mode is active for this conversation: ${toolName} is a ${classification} operation and only read-only tools are available. Present the numbered plan and ask the user to disable plan mode to execute it.`
       : fullAccessWaiver
         ? null
-        : await this.authorize(rule, toolName, args, context);
+        : await this.authorize(rule, toolName, args, context, classification));
     await this.audit.append({
       clientId: context.clientId,
       taskId: context.taskId,
@@ -80,11 +83,17 @@ export class ToolPermissionGate {
     return denial;
   }
 
-  private async authorize(rule: ToolGateRule, toolName: string, args: unknown, context: ToolContext): Promise<string | null> {
+  private async authorize(
+    rule: ToolGateRule,
+    toolName: string,
+    args: unknown,
+    context: ToolContext,
+    classification: "write" | "destructive"
+  ): Promise<string | null> {
     if (rule.authority === "self_gated") return null;
     const credentials = extractApprovalCredentials(args);
     if (!credentials) {
-      const autonomyHint = rule.authority === "approval_reference" && FULL_ACCESS_WAIVED_TOOLS.has(toolName)
+      const autonomyHint = classification === "write" && rule.authority === "approval_reference" && FULL_ACCESS_WAIVED_TOOLS.has(toolName)
         ? " If the user asked for a routine local action, tell them this workspace is in guarded mode and they can grant full access (Settings or PUT /api/clients/:id/autonomy) to let local write operations run without an approval reference."
         : "";
       return `${toolName} is a ${rule.authority === "approval_token" ? "token-gated" : "approval-gated"} operation and the call carried no approvalId. Prepare an approval and reference it explicitly.${autonomyHint}`;

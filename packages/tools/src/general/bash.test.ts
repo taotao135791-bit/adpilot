@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -118,6 +118,7 @@ describe("bash tool: fail-closed sandbox availability", () => {
 
 describe.runIf(process.platform === "darwin")("bash tool: sandbox-exec execution", () => {
   it("executes through sandbox-exec with the generated profile, workspace cwd and a scrubbed environment", async () => {
+    let isolatedHome = "";
     const { impl, calls } = fakeSpawn((call, child) => {
       expect(call.file).toBe("/usr/bin/sandbox-exec");
       expect(call.args[0]).toBe("-p");
@@ -128,6 +129,12 @@ describe.runIf(process.platform === "darwin")("bash tool: sandbox-exec execution
       expect(call.args[3]).toBe("-c");
       expect(call.options.detached).toBe(true);
       expect(call.options.env?.OPENAI_API_KEY).toBeUndefined();
+      isolatedHome = call.options.env?.HOME ?? "";
+      expect(isolatedHome).toMatch(/adpilot-private-/);
+      expect(call.options.env?.TMPDIR).toBe(isolatedHome);
+      expect(profile).toContain(`(subpath "${isolatedHome}")`);
+      expect(profile).not.toContain('(subpath "/tmp")');
+      expect(profile).not.toContain('(subpath "/private/tmp")');
       finish(child, { stdout: "daily.md\n" });
     });
     process.env.OPENAI_API_KEY = "sk-test-should-not-leak";
@@ -140,6 +147,7 @@ describe.runIf(process.platform === "darwin")("bash tool: sandbox-exec execution
       expect(result.details).toMatchObject({ exitCode: 0, classification: { verdict: "read", parseable: true } });
       expect(audit).toHaveLength(1);
       expect(audit[0]).toMatchObject({ executed: true, sandboxPath: "/usr/bin/sandbox-exec" });
+      expect(existsSync(isolatedHome)).toBe(false);
     } finally {
       delete process.env.OPENAI_API_KEY;
     }
@@ -205,15 +213,22 @@ describe.runIf(process.platform === "darwin")("bash tool: real sandbox smoke tes
     void root;
   }, 20_000);
 
-  it("holds the OS floor where the classifier cannot: writes stay confined to the workspace and temp dirs", async () => {
+  it("holds the OS floor where the classifier cannot: each invocation gets an isolated, cleaned temp home", async () => {
     const { root, run } = await makeTool();
-    // A `~` redirect is a relative target to the classifier (write level,
-    // approval-gated); at runtime bash expands it into the home directory,
-    // which the seatbelt profile does NOT allow for writes. Without the
-    // sandbox this command would silently succeed.
-    const escapeTarget = join(process.env.HOME ?? "", "adpilot-sandbox-escape-test.md");
-    await expect(run({ command: "echo forged > ~/adpilot-sandbox-escape-test.md" })).rejects.toThrow(/Operation not permitted|exited with code/);
-    expect(existsSync(escapeTarget)).toBe(false);
+    const homeResult = await run({ command: "printf '%s' \"$HOME\"" });
+    const privateHome = homeResult.content.map((item) => item.text ?? "").join("").trim();
+    expect(privateHome).toMatch(/adpilot-private-/);
+    expect(privateHome).not.toBe(process.env.HOME);
+    expect(existsSync(privateHome)).toBe(false);
+
+    const otherTemp = await realpath(await mkdtemp(join(tmpdir(), "adpilot-other-client-")));
+    const sentinel = join(otherTemp, "sentinel.txt");
+    await writeFile(sentinel, "other-client-secret\n");
+    try {
+      await expect(run({ command: `cat '${sentinel}'` })).rejects.toThrow(/Operation not permitted|exited with code/);
+    } finally {
+      await rm(otherTemp, { recursive: true, force: true });
+    }
     // Read confinement holds at the OS floor too: /Users is not a readable root.
     await expect(run({ command: "ls /Users" })).rejects.toThrow(/exited with code/);
     void root;

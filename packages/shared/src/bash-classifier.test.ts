@@ -212,12 +212,12 @@ describe("bash command classifier: hard deny (no approval can authorize)", () =>
   });
 });
 
-describe("bash command classifier: macOS open (local action surface)", () => {
-  it("classifies opening URLs and applications as an explicit write-level command", () => {
+describe("bash command classifier: GUI application isolation", () => {
+  it("hard-denies opening URLs and applications from a shell", () => {
     for (const command of ["open https://www.baidu.com", "open -a Safari", "open -a 'Google Chrome'", "open notes.md", "open .", "open -R notes.md"]) {
       const result = verdict(command, ROOT);
-      expect(result.verdict, command).toBe("write");
-      expect(result.commands[0]?.rule, command).toBe("launch_application");
+      expect(result.verdict, command).toBe("deny");
+      expect(result.commands[0]?.rule, command).toBe("gui_application_launch");
     }
   });
 

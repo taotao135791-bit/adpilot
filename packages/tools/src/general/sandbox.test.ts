@@ -1,9 +1,16 @@
-import { mkdtemp, realpath } from "node:fs/promises";
+import { mkdtemp, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createProtectedPathMatcher } from "./protected-paths.js";
-import { buildSeatbeltProfile, resolveSandboxExec, sandboxedEnv, SANDBOX_EXEC_PATH } from "./sandbox.js";
+import {
+  buildSeatbeltProfile,
+  createPrivateSandboxDirectory,
+  removePrivateSandboxDirectory,
+  resolveSandboxExec,
+  sandboxedEnv,
+  SANDBOX_EXEC_PATH
+} from "./sandbox.js";
 
 async function makeFixture() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "adpilot-sandbox-")));
@@ -76,6 +83,26 @@ describe("buildSeatbeltProfile", () => {
     expect(profile).toContain('(deny process-exec (literal "/usr/sbin/screencapture") (literal "/usr/bin/osascript"))');
   });
 
+  it("uses only the explicit private temp and denies GUI launch for an isolated shell", async () => {
+    const { workspace, home, protect } = await makeFixture();
+    const isolatedTemp = await createPrivateSandboxDirectory();
+    try {
+      const profile = buildSeatbeltProfile({
+        workspaceRoot: workspace,
+        protect,
+        homeDir: home,
+        isolatedTempDir: isolatedTemp,
+        denyGuiLaunch: true
+      });
+      expect(profile).toContain(`(subpath "${isolatedTemp}")`);
+      expect(profile).not.toContain('(subpath "/tmp")');
+      expect(profile).not.toContain('(subpath "/private/tmp")');
+      expect(profile).toContain('(literal "/usr/bin/open")');
+    } finally {
+      await removePrivateSandboxDirectory(isolatedTemp);
+    }
+  });
+
   it("escapes quotes and backslashes in interpolated paths", async () => {
     const { workspace, home, protect } = await makeFixture();
     const weird = `${workspace}/quo"te`;
@@ -104,5 +131,13 @@ describe("sandboxedEnv", () => {
       expect(env[leaked], leaked).toBeUndefined();
     }
     expect(Object.keys(env).sort()).toEqual(["HOME", "PATH", "SHELL", "TERM", "TMPDIR", "USER"].sort());
+  });
+
+  it("creates a 0700 private home and removes it safely", async () => {
+    const privateHome = await createPrivateSandboxDirectory();
+    expect((await stat(privateHome)).mode & 0o777).toBe(0o700);
+    expect(sandboxedEnv({}, privateHome)).toMatchObject({ HOME: privateHome, TMPDIR: privateHome });
+    await removePrivateSandboxDirectory(privateHome);
+    await expect(stat(privateHome)).rejects.toThrow();
   });
 });

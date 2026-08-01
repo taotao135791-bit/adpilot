@@ -15,6 +15,7 @@ import {
   WorkbookSpec
 } from "@adpilot/artifacts";
 import { ensureProjectSession, isComplexMission, MISSION_GOAL_TITLE_LENGTH } from "./session-binding.js";
+import { broadProjectRootReason } from "./project-root-policy.js";
 
 const WorkspaceQuery = z.object({
   workspaceId: z.string().min(1).max(256),
@@ -61,6 +62,13 @@ async function canonicalProjectRoots(inputs: readonly string[]): Promise<string[
     const metadata = await stat(canonical);
     if (!metadata.isDirectory()) {
       throw new KernelError(`project root is not a directory: ${input}`, "PROJECT_ROOT_INVALID");
+    }
+    const broadReason = await broadProjectRootReason(canonical);
+    if (broadReason) {
+      throw new KernelError(
+        `project root is too broad for terminal confinement (${broadReason})`,
+        "PROJECT_ROOT_INVALID"
+      );
     }
     if (!roots.includes(canonical)) roots.push(canonical);
   }

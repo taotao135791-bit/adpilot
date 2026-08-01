@@ -45,7 +45,11 @@ export function TerminalPanel({ locale, clientId, projectId, defaultCwd, project
   const [input, setInput] = useState("");
   const [execMode, setExecMode] = useState(false);
   const [execBusy, setExecBusy] = useState(false);
-  const [approval, setApproval] = useState<{ command: string; classification: CommandClassification } | null>(null);
+  const [approval, setApproval] = useState<{
+    mode: "input" | "exec";
+    command: string;
+    classification: CommandClassification;
+  } | null>(null);
   const [error, setError] = useState("");
   const [booting, setBooting] = useState(true);
 
@@ -140,20 +144,29 @@ export function TerminalPanel({ locale, clientId, projectId, defaultCwd, project
     if (element) element.scrollTop = element.scrollHeight;
   }, [activeChunks.length, activeId]);
 
-  async function sendInput() {
-    if (!activeId || !input) return;
-    const data = input.endsWith("\n") ? input : `${input}\n`;
-    setInput("");
+  async function sendInput(command = input, approved = false) {
+    if (!activeId || !command) return;
+    const data = command.endsWith("\n") ? command : `${command}\n`;
+    if (!approved) setInput("");
     try {
       const response = await fetch(terminalActionUrl(activeId, "input", scope), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ data })
+        body: JSON.stringify({ data, ...(approved ? { approved: true } : {}) })
       });
+      const body = await response.json().catch(() => undefined) as { error?: string; code?: string; classification?: CommandClassification | null } | undefined;
+      if (response.status === 409 && body?.code === "COMMAND_APPROVAL_REQUIRED") {
+        setApproval({
+          mode: "input",
+          command,
+          classification: body.classification ?? { verdict: "unknown", reason: body.error ?? "" }
+        });
+        return;
+      }
       if (!response.ok) {
-        const body = await response.json().catch(() => undefined) as { error?: string } | undefined;
         throw new Error(body?.error ?? String(response.status));
       }
+      setApproval(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -164,7 +177,7 @@ export function TerminalPanel({ locale, clientId, projectId, defaultCwd, project
     setExecBusy(true);
     setError("");
     const sessionId = activeId;
-    appendLocal(sessionId, `$ ${command}`);
+    if (!approved) appendLocal(sessionId, `$ ${command}`);
     try {
       const response = await fetch(terminalActionUrl(sessionId, "exec", scope), {
         method: "POST",
@@ -173,7 +186,7 @@ export function TerminalPanel({ locale, clientId, projectId, defaultCwd, project
       });
       const body = await response.json().catch(() => undefined) as (ExecResult & { error?: string; code?: string; classification?: CommandClassification | null }) | undefined;
       if (response.status === 409 && body?.code === "COMMAND_APPROVAL_REQUIRED") {
-        setApproval({ command, classification: body.classification ?? { verdict: "unknown", reason: body.error ?? "" } });
+        setApproval({ mode: "exec", command, classification: body.classification ?? { verdict: "unknown", reason: body.error ?? "" } });
         return;
       }
       if (!response.ok || !body) throw new Error(body?.error ?? String(response.status));
@@ -241,7 +254,16 @@ export function TerminalPanel({ locale, clientId, projectId, defaultCwd, project
           </div>
           <div className="panel-banner-actions">
             <Button size="sm" variant="subtle" onClick={() => setApproval(null)}>{copy.cancel}</Button>
-            <Button size="sm" variant="outline" disabled={execBusy} onClick={() => void runExec(approval.command, true)}>{copy.terminalRunAnyway}</Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={execBusy}
+              onClick={() => void (approval.mode === "exec"
+                ? runExec(approval.command, true)
+                : sendInput(approval.command, true))}
+            >
+              {copy.terminalRunAnyway}
+            </Button>
           </div>
         </div>
       )}

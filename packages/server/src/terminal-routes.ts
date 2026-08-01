@@ -8,6 +8,7 @@ import {
   TerminalService,
   type TerminalSessionScope
 } from "./terminal-service.js";
+import { broadProjectRootReason } from "./project-root-policy.js";
 
 const CreateBody = z.object({
   clientId: z.string().min(1).max(256),
@@ -33,7 +34,8 @@ const OutputQuery = z.object({
 }).strict();
 
 const InputBody = z.object({
-  data: z.string().min(1).max(64_000)
+  data: z.string().min(1).max(64_000),
+  approved: z.boolean().optional()
 }).strict();
 
 const ExecBody = z.object({
@@ -118,8 +120,11 @@ export function registerTerminalRoutes(
     const body = InputBody.parse(request.body);
     const scope = await resolveScope(query);
     try {
-      service.write(params.id, body.data, scope);
+      service.write(params.id, body.data, scope, body.approved === true);
     } catch (error) {
+      if (error instanceof TerminalError && error.code === "COMMAND_APPROVAL_REQUIRED") {
+        return sendCommandError(reply, error, 409);
+      }
       if (error instanceof TerminalError && error.code === "COMMAND_DENIED") {
         return sendCommandError(reply, error, 403);
       }
@@ -182,6 +187,13 @@ async function canonicalDirectory(path: string): Promise<string> {
   if (!metadata?.isDirectory()) {
     throw new TerminalError(
       `terminal cwd is not a directory: ${path}`,
+      "TERMINAL_CWD_INVALID"
+    );
+  }
+  const broadReason = await broadProjectRootReason(canonical);
+  if (broadReason) {
+    throw new TerminalError(
+      `terminal cwd is too broad for confinement (${broadReason})`,
       "TERMINAL_CWD_INVALID"
     );
   }
