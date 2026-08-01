@@ -72,6 +72,8 @@ export class RuntimeBudgetController {
   private readonly startedAt = performance.now();
   private readonly abortController = new AbortController();
   private readonly timer: ReturnType<typeof setTimeout>;
+  private readonly deadlinePromise: Promise<RuntimeBudgetExceeded>;
+  private resolveDeadline: (failure: RuntimeBudgetExceeded) => void = () => undefined;
   private activeAgent: Agent | undefined;
   private failure: RuntimeBudgetExceeded | undefined;
   private stoppedByUser = false;
@@ -79,6 +81,9 @@ export class RuntimeBudgetController {
   private toolCallCount = 0;
 
   constructor(readonly limits: RuntimeBudgetLimits) {
+    this.deadlinePromise = new Promise((resolve) => {
+      this.resolveDeadline = resolve;
+    });
     this.timer = setTimeout(() => {
       this.exceed("wallClockMs");
     }, limits.wallClockMs);
@@ -95,6 +100,63 @@ export class RuntimeBudgetController {
 
   get toolCalls(): number {
     return this.toolCallCount;
+  }
+
+  get wasStoppedByUser(): boolean {
+    return this.stoppedByUser;
+  }
+
+  /**
+   * Make the wall-clock limit observable by the public caller even while the
+   * underlying operation is awaiting code that does not honor AbortSignal.
+   * The operation remains observed by Promise.race, and every later runtime
+   * boundary checks the latched failure before doing more work.
+   */
+  enforceDeadline<T>(operation: Promise<T>): Promise<T> {
+    return Promise.race([
+      operation,
+      this.deadlinePromise.then((failure): never => {
+        throw failure;
+      })
+    ]);
+  }
+
+  /**
+   * Wait for an abort-aware maintenance operation without trusting it to
+   * settle promptly. User Stop resolves as an ordinary cancellation; a budget
+   * abort is converted back to RuntimeBudgetExceeded by throwIfExceeded().
+   */
+  settleUntilAbort<T>(operation: Promise<T>): Promise<{ aborted: true } | { aborted: false; value: T }> {
+    if (this.signal.aborted) {
+      // The operation may already have rejected while aborting synchronously
+      // (for example a counted compaction call). Keep observing it.
+      void operation.catch(() => undefined);
+      return Promise.resolve({ aborted: true });
+    }
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (outcome: { aborted: true } | { aborted: false; value: T }): void => {
+        if (settled) return;
+        settled = true;
+        this.signal.removeEventListener("abort", onAbort);
+        resolve(outcome);
+      };
+      const onAbort = (): void => finish({ aborted: true });
+      this.signal.addEventListener("abort", onAbort, { once: true });
+      if (this.signal.aborted) {
+        onAbort();
+        return;
+      }
+      operation.then(
+        (value) => finish({ aborted: false, value }),
+        (error: unknown) => {
+          if (settled) return;
+          settled = true;
+          this.signal.removeEventListener("abort", onAbort);
+          reject(error);
+        }
+      );
+    });
   }
 
   bind(agent: Agent): void {
@@ -143,6 +205,7 @@ export class RuntimeBudgetController {
     if (this.failure) return;
     this.stoppedByUser = true;
     clearTimeout(this.timer);
+    this.abortController.abort(new Error("Runtime stopped by user"));
   }
 
   dispose(): void {
@@ -154,6 +217,7 @@ export class RuntimeBudgetController {
     if (this.failure || this.stoppedByUser) return;
     this.failure = new RuntimeBudgetExceeded(reason, this.turnCount, this.toolCallCount, this.elapsedMs());
     clearTimeout(this.timer);
+    if (reason === "wallClockMs") this.resolveDeadline(this.failure);
     this.abortController.abort(this.failure);
     if (this.activeAgent) this.stopAgent(this.activeAgent);
   }

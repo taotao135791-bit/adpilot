@@ -255,9 +255,11 @@ export class PiAgentRuntime {
 
   async run(request: RuntimeRequest): Promise<RuntimeResult> {
     const budget = this.createBudget(request);
+    const operation = this.runWithBudget(request, budget);
     try {
-      return await this.runWithBudget(request, budget);
+      return await budget.enforceDeadline(operation);
     } finally {
+      this.releaseActiveBudget(request, budget);
       budget.dispose();
     }
   }
@@ -266,8 +268,11 @@ export class PiAgentRuntime {
     const resolvedRequest = this.resolveRequest(request);
     return this.withSessionLock(resolvedRequest.context.sessionId, async () => {
       budget.throwIfExceeded();
-      for (const extension of this.extensions) await extension.beforeRun?.(resolvedRequest.context);
-      budget.throwIfExceeded();
+      for (const extension of this.extensions) {
+        budget.throwIfExceeded();
+        await extension.beforeRun?.(resolvedRequest.context);
+        budget.throwIfExceeded();
+      }
       const override = resolvedRequest.modelOverride;
       const decision: { tier: string; ref: ModelRef; reasons: string[] } = override?.ref
         ? { tier: "session", ref: override.ref, reasons: ["session-pinned model binding"] }
@@ -283,8 +288,11 @@ export class PiAgentRuntime {
           result = await this.execute({ ...resolvedRequest, priorMessages: result.messages }, model, fallbackFast ? "fast" : "strong", true, budget);
         }
         budget.throwIfExceeded();
-        for (const extension of this.extensions) await extension.afterRun?.(result, resolvedRequest.context);
-        budget.throwIfExceeded();
+        for (const extension of this.extensions) {
+          budget.throwIfExceeded();
+          await extension.afterRun?.(result, resolvedRequest.context);
+          budget.throwIfExceeded();
+        }
         return result;
       } catch (unknownError) {
         const error = unknownError instanceof Error ? unknownError : new Error(String(unknownError));
@@ -300,36 +308,49 @@ export class PiAgentRuntime {
 
   async runStructuredDetailed<S extends z.ZodTypeAny>(request: RuntimeRequest, schema: S): Promise<StructuredRuntimeResult<S>> {
     const budget = this.createBudget(request);
+    const operation = this.runStructuredWithBudget(request, schema, budget);
     try {
-      const first = await this.runWithBudget({
-        ...request,
-        systemPrompt: `${request.systemPrompt}\nReturn the final answer as one JSON object matching the requested schema. Do not wrap it in markdown.`
-      }, budget);
-      const firstParsed = parseStructured(first.text, schema);
-      if (firstParsed.success) return { output: firstParsed.data, runtime: first, attempts: 1, repaired: false };
-
-      const sameModelRepair = await this.runWithBudget({
-        ...request,
-        systemPrompt: "You repair structured JSON. Return exactly one corrected JSON object and nothing else. Never call tools or add facts.",
-        prompt: structuredRepairPrompt(first.text, firstParsed.issues),
-        tools: [], allowedSkills: []
-      }, budget);
-      const secondParsed = parseStructured(sameModelRepair.text, schema);
-      if (secondParsed.success) return { output: secondParsed.data, runtime: sameModelRepair, attempts: 2, repaired: true };
-
-      const strongRepair = await this.runWithBudget({
-        ...request,
-        systemPrompt: "You are the final high-assurance JSON repair pass. Return exactly one corrected JSON object and nothing else. Never call tools or add facts.",
-        prompt: structuredRepairPrompt(sameModelRepair.text, secondParsed.issues),
-        signals: { ...request.signals, reviewerEscalated: true },
-        tools: [], allowedSkills: []
-      }, budget);
-      const thirdParsed = parseStructured(strongRepair.text, schema);
-      if (thirdParsed.success) return { output: thirdParsed.data, runtime: strongRepair, attempts: 3, repaired: true };
-      throw new StructuredOutputBlocker(3, thirdParsed.issues);
+      return await budget.enforceDeadline(operation);
     } finally {
+      this.releaseActiveBudget(request, budget);
       budget.dispose();
     }
+  }
+
+  private async runStructuredWithBudget<S extends z.ZodTypeAny>(
+    request: RuntimeRequest,
+    schema: S,
+    budget: RuntimeBudgetController
+  ): Promise<StructuredRuntimeResult<S>> {
+    const first = await this.runWithBudget({
+      ...request,
+      systemPrompt: `${request.systemPrompt}\nReturn the final answer as one JSON object matching the requested schema. Do not wrap it in markdown.`
+    }, budget);
+    budget.throwIfExceeded();
+    const firstParsed = parseStructured(first.text, schema);
+    if (firstParsed.success) return { output: firstParsed.data, runtime: first, attempts: 1, repaired: false };
+
+    const sameModelRepair = await this.runWithBudget({
+      ...request,
+      systemPrompt: "You repair structured JSON. Return exactly one corrected JSON object and nothing else. Never call tools or add facts.",
+      prompt: structuredRepairPrompt(first.text, firstParsed.issues),
+      tools: [], allowedSkills: []
+    }, budget);
+    budget.throwIfExceeded();
+    const secondParsed = parseStructured(sameModelRepair.text, schema);
+    if (secondParsed.success) return { output: secondParsed.data, runtime: sameModelRepair, attempts: 2, repaired: true };
+
+    const strongRepair = await this.runWithBudget({
+      ...request,
+      systemPrompt: "You are the final high-assurance JSON repair pass. Return exactly one corrected JSON object and nothing else. Never call tools or add facts.",
+      prompt: structuredRepairPrompt(sameModelRepair.text, secondParsed.issues),
+      signals: { ...request.signals, reviewerEscalated: true },
+      tools: [], allowedSkills: []
+    }, budget);
+    budget.throwIfExceeded();
+    const thirdParsed = parseStructured(strongRepair.text, schema);
+    if (thirdParsed.success) return { output: thirdParsed.data, runtime: strongRepair, attempts: 3, repaired: true };
+    throw new StructuredOutputBlocker(3, thirdParsed.issues);
   }
 
   /**
@@ -588,17 +609,26 @@ export class PiAgentRuntime {
     const planModeOn = this.planMode
       ? await this.planMode.isEnabled(request.context.clientId, request.context.conversationId).catch(() => false)
       : false;
+    budget.throwIfExceeded();
     const allowedSkills = planModeOn ? (request.allowedSkills ?? []).filter(isPlanModeSkill) : (request.allowedSkills ?? []);
     const skillsPrompt = this.buildSkillsPrompt(allowedSkills);
     const storage = await AdPilotSessionStorage.openOrCreate(this.workspace, request.context.clientId, request.context.conversationId);
+    budget.throwIfExceeded();
     const session = new Session(storage);
-    if ((await session.getEntries()).length === 0 && request.priorMessages?.length) {
-      for (const message of request.priorMessages) await session.appendMessage(message);
+    const existingEntries = await session.getEntries();
+    budget.throwIfExceeded();
+    if (existingEntries.length === 0 && request.priorMessages?.length) {
+      for (const message of request.priorMessages) {
+        budget.throwIfExceeded();
+        await session.appendMessage(message);
+        budget.throwIfExceeded();
+      }
     }
     let lastCompactionEntryId = await this.compactAtThreshold(session, model, request.context, budget);
     budget.throwIfExceeded();
     let compacted = Boolean(lastCompactionEntryId);
     const persistedContext = await session.buildContext();
+    budget.throwIfExceeded();
     const events: AgentEvent[] = [];
     const tools = planModeOn
       ? (request.tools ?? []).filter((tool) => isPlanModeTool(tool.name))
@@ -634,6 +664,7 @@ export class PiAgentRuntime {
       }
     });
     await this.writeCheckpoint(session, request.context, "running");
+    budget.throwIfExceeded();
     this.activeSessions.set(request.context.sessionId, {
       agent,
       clientId: request.context.clientId,
@@ -645,11 +676,19 @@ export class PiAgentRuntime {
     try {
       budget.bind(agent);
       agent.subscribe(async (event) => {
+        budget.throwIfExceeded();
         events.push(event);
-        for (const extension of this.extensions) await extension.onEvent?.(event, request.context);
+        for (const extension of this.extensions) {
+          budget.throwIfExceeded();
+          await extension.onEvent?.(event, request.context);
+          budget.throwIfExceeded();
+        }
         if (event.type === "message_end") {
+          budget.throwIfExceeded();
           await session.appendMessage(event.message);
+          budget.throwIfExceeded();
           await this.workspace.appendJsonl(request.context.clientId, `traces/${request.context.sessionId}.jsonl`, { type: "message", at: new Date().toISOString(), message: event.message });
+          budget.throwIfExceeded();
         }
       });
       await agent.prompt(request.prompt);
@@ -658,12 +697,14 @@ export class PiAgentRuntime {
       const text = lastAssistantText(agent.state.messages);
       if (request.context.userMessageId) {
         await this.labelConversationMessage(session, request.prompt, request.context.userMessageId);
+        budget.throwIfExceeded();
       }
       const compactionEntryId = await this.compactAtThreshold(session, model, request.context, budget);
       budget.throwIfExceeded();
       lastCompactionEntryId = compactionEntryId ?? lastCompactionEntryId;
       compacted = compacted || Boolean(compactionEntryId);
       await this.writeCheckpoint(session, request.context, "idle", lastCompactionEntryId ? { compactionEntryId: lastCompactionEntryId } : undefined);
+      budget.throwIfExceeded();
       return { text, sessionId: request.context.sessionId, model: { provider: model.provider, id: model.id, tier }, messages: agent.state.messages.slice(), events, recovered, compacted };
     } catch (error) {
       await this.writeCheckpoint(session, request.context, "failed", { error: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
@@ -723,12 +764,15 @@ export class PiAgentRuntime {
     context: RuntimeRunContext & { conversationId: string },
     budget: RuntimeBudgetController
   ): Promise<string | undefined> {
+    if (budget.wasStoppedByUser) return undefined;
     budget.throwIfExceeded();
     if (model.contextWindow <= 0) return undefined;
     const sessionContext = await session.buildContext();
+    budget.throwIfExceeded();
     const usage = estimateContextTokens(sessionContext.messages);
     if (!shouldCompact(usage.tokens, model.contextWindow, this.compactionSettings)) return undefined;
     const entries = await session.getBranch();
+    budget.throwIfExceeded();
     const preparation = prepareCompaction(entries, this.compactionSettings);
     if (!preparation.ok) throw preparation.error;
     if (!preparation.value) return undefined;
@@ -736,25 +780,57 @@ export class PiAgentRuntime {
       firstKeptEntryId: preparation.value.firstKeptEntryId,
       tokensBefore: preparation.value.tokensBefore
     });
-    const result = await compact(preparation.value, this.models, model, this.compactionInstructions, budget.signal);
     budget.throwIfExceeded();
+    if (budget.wasStoppedByUser) return undefined;
+    const compacting = compact(preparation.value, this.budgetedModels(budget), model, this.compactionInstructions, budget.signal);
+    const outcome = await budget.settleUntilAbort(compacting);
+    budget.throwIfExceeded();
+    if (budget.wasStoppedByUser || outcome.aborted) return undefined;
+    const result = outcome.value;
     if (!result.ok) throw result.error;
+    budget.throwIfExceeded();
     const compactionEntryId = await session.appendCompaction(
       result.value.summary,
       result.value.firstKeptEntryId,
       result.value.tokensBefore,
       result.value.details
     );
+    budget.throwIfExceeded();
     await this.writeCheckpoint(session, context, "compacted", {
       firstKeptEntryId: result.value.firstKeptEntryId,
       tokensBefore: result.value.tokensBefore,
       compactionEntryId
     });
+    budget.throwIfExceeded();
     return compactionEntryId;
+  }
+
+  /** Count every provider completion performed internally by Pi compaction. */
+  private budgetedModels(budget: RuntimeBudgetController): Models {
+    const models = this.models;
+    return new Proxy(models, {
+      get(target, property, receiver) {
+        if (property === "completeSimple") {
+          const completeSimple: Models["completeSimple"] = (...args) => {
+            budget.claimTurn();
+            return target.completeSimple(...args);
+          };
+          return completeSimple;
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+    });
   }
 
   private createBudget(request: RuntimeRequest): RuntimeBudgetController {
     return new RuntimeBudgetController(resolveRuntimeBudgetLimits(request.budget, this.defaultBudgetLimits));
+  }
+
+  private releaseActiveBudget(request: RuntimeRequest, budget: RuntimeBudgetController): void {
+    const conversationId = request.context.conversationId?.trim() || request.context.sessionId;
+    const sessionId = resolvePiSessionId(request.context.clientId, conversationId);
+    if (this.activeSessions.get(sessionId)?.budget === budget) this.activeSessions.delete(sessionId);
   }
 
   private async writeCheckpoint(

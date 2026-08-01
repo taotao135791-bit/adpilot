@@ -14,11 +14,14 @@ import { SkillRegistry } from "@adpilot/skills";
 import { AdPilotTools } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
 import {
+  AdPilotSessionStorage,
   MAX_RUNTIME_BUDGET,
   PiAgentRuntime,
   RuntimeBudgetExceeded,
   resolvePiSessionId,
-  resolveRuntimeBudgetLimits
+  resolveRuntimeBudgetLimits,
+  type PiAgentRuntimeOptions,
+  type RuntimeExtension
 } from "./index.js";
 
 function deferred() {
@@ -37,7 +40,11 @@ async function waitFor(condition: () => boolean, label: string): Promise<void> {
   throw new Error(`timed out waiting for ${label}`);
 }
 
-async function setup(options: Parameters<typeof fauxProvider>[0] = {}) {
+async function setup(
+  options: Parameters<typeof fauxProvider>[0] = {},
+  extensions: RuntimeExtension[] = [],
+  runtimeOptions: PiAgentRuntimeOptions = {}
+) {
   const root = await mkdtemp(join(tmpdir(), "adpilot-runtime-budget-"));
   const workspace = new WorkspaceStore(root);
   await workspace.initializeClient({
@@ -47,7 +54,7 @@ async function setup(options: Parameters<typeof fauxProvider>[0] = {}) {
   const faux = fauxProvider({
     ...options,
     provider: "test",
-    models: [{ id: "fast" }, { id: "strong", reasoning: true }]
+    models: options.models ?? [{ id: "fast" }, { id: "strong", reasoning: true }]
   });
   const models = createModels();
   models.setProvider(faux.provider);
@@ -62,7 +69,7 @@ async function setup(options: Parameters<typeof fauxProvider>[0] = {}) {
     new ApprovalService(workspace, "0123456789abcdef0123456789abcdef"),
     new ExperimentStore(workspace)
   );
-  const runtime = new PiAgentRuntime(models, router, workspace, new SkillRegistry(), tools);
+  const runtime = new PiAgentRuntime(models, router, workspace, new SkillRegistry(), tools, extensions, runtimeOptions);
   return { faux, runtime, workspace };
 }
 
@@ -106,7 +113,6 @@ describe("PiAgentRuntime hard budgets", () => {
       wallClockMs: 1
     })).toEqual({ maxTurns: 1, maxToolCalls: 1, wallClockMs: 10 });
   });
-
   it("never executes the N+1 tool body, clears queued messages, and releases the active session", async () => {
     const { faux, runtime, workspace } = await setup();
     const hold = deferred();
@@ -155,6 +161,41 @@ describe("PiAgentRuntime hard budgets", () => {
     expect(transcript).not.toContain("queued follow-up");
   });
 
+  it("rejects at the wall-clock deadline while a beforeRun hook is still hung and fails closed when it resumes", async () => {
+    const hold = deferred();
+    let firstHookRecovered = false;
+    const laterHook = vi.fn();
+    const { faux, runtime } = await setup({}, [
+      {
+        name: "hung-before-run",
+        beforeRun: async () => {
+          await hold.promise;
+          firstHookRecovered = true;
+        }
+      },
+      { name: "must-not-run-after-deadline", beforeRun: laterHook }
+    ]);
+    faux.setResponses([fauxAssistantMessage("must not reach provider")]);
+
+    const startedAt = performance.now();
+    const error = await capturedBudgetError(runtime.run({
+      ...request("hung-before-run"),
+      budget: { maxTurns: 4, maxToolCalls: 4, wallClockMs: 40 }
+    }));
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(error.reason).toBe("wallClockMs");
+    expect(elapsedMs).toBeLessThan(500);
+    expect(laterHook).not.toHaveBeenCalled();
+    expect(faux.state.callCount).toBe(0);
+
+    hold.release();
+    await waitFor(() => firstHookRecovered, "hung beforeRun hook to recover");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(laterHook).not.toHaveBeenCalled();
+    expect(faux.state.callCount).toBe(0);
+  });
+
   it("shares the turn counter with the automatic strong fallback", async () => {
     const { faux, runtime } = await setup();
     faux.setResponses([
@@ -186,6 +227,30 @@ describe("PiAgentRuntime hard budgets", () => {
     expect(error).toMatchObject({ reason: "maxTurns", turns: 2, toolCalls: 0 });
     expect(faux.state.callCount).toBe(2);
     expect(runtime.isSessionActive("client-a", "structured-turn-budget")).toBe(false);
+  });
+
+  it("counts a compaction model completion against the same turn budget", async () => {
+    const { faux, runtime } = await setup({
+      models: [
+        { id: "fast", contextWindow: 160, maxTokens: 64 },
+        { id: "strong", reasoning: true, contextWindow: 160, maxTokens: 64 }
+      ]
+    }, [], {
+      compaction: { enabled: true, reserveTokens: 40, keepRecentTokens: 1 }
+    });
+    faux.setResponses([
+      fauxAssistantMessage("campaign-42 analysis completed"),
+      fauxAssistantMessage("compaction must not exceed the turn budget")
+    ]);
+
+    const error = await capturedBudgetError(runtime.run({
+      ...request("compaction-turn-budget"),
+      systemPrompt: `Preserve advertising facts. ${"context ".repeat(100)}`,
+      budget: { maxTurns: 1, maxToolCalls: 4, wallClockMs: 5_000 }
+    }));
+
+    expect(error).toMatchObject({ reason: "maxTurns", turns: 1, toolCalls: 0 });
+    expect(faux.state.callCount).toBe(1);
   });
 
   it("aborts the exact provider signal at the wall-clock deadline and throws a typed failure", async () => {
@@ -251,5 +316,57 @@ describe("PiAgentRuntime hard budgets", () => {
       ])
     });
     expect(runtime.isSessionActive("client-a", conversationId)).toBe(false);
+  });
+
+  it("aborts the budget signal and skips a hung post-run compaction on user Stop", async () => {
+    const hold = deferred();
+    let compactionSignal: AbortSignal | undefined;
+    let compactionStarted = false;
+    const { faux, runtime, workspace } = await setup({
+      models: [
+        { id: "fast", contextWindow: 160, maxTokens: 64 },
+        { id: "strong", reasoning: true, contextWindow: 160, maxTokens: 64 }
+      ]
+    }, [], {
+      compaction: { enabled: true, reserveTokens: 40, keepRecentTokens: 1 }
+    });
+    faux.setResponses([
+      fauxAssistantMessage("campaign-42 analysis completed"),
+      async (_context, options) => {
+        compactionSignal = options?.signal;
+        compactionStarted = true;
+        await hold.promise;
+        return fauxAssistantMessage("late compaction must be ignored");
+      }
+    ]);
+
+    const conversationId = "stop-post-run-compaction";
+    const running = runtime.run({
+      ...request(conversationId),
+      systemPrompt: `Preserve advertising facts. ${"context ".repeat(100)}`,
+      budget: { maxTurns: 4, maxToolCalls: 4, wallClockMs: 5_000 }
+    });
+    await waitFor(() => compactionStarted, "post-run compaction");
+    expect(runtime.stopConversation("client-a", conversationId)).toBe(true);
+    expect(compactionSignal?.aborted).toBe(true);
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const result = await Promise.race([
+      running,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error("user Stop did not release post-run compaction")), 500);
+      })
+    ]).finally(() => {
+      if (timeout) clearTimeout(timeout);
+    });
+    expect(result.text).toBe("campaign-42 analysis completed");
+    expect(result.compacted).toBe(false);
+    expect(runtime.isSessionActive("client-a", conversationId)).toBe(false);
+
+    const storage = await AdPilotSessionStorage.openOrCreate(workspace, "client-a", conversationId);
+    expect(await storage.findEntries("compaction")).toHaveLength(0);
+    hold.release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await storage.findEntries("compaction")).toHaveLength(0);
   });
 });
