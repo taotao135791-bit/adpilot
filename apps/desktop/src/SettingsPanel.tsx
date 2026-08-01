@@ -76,6 +76,7 @@ export function SettingsPanel({ open, data, clientId, productSession, productSes
   const [authSession, setAuthSession] = useState<AuthSession>();
   const [authInput, setAuthInput] = useState("");
   const [advancedComputer, setAdvancedComputer] = useState(false);
+  const [aboutVersion, setAboutVersion] = useState<string>();
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
@@ -118,6 +119,14 @@ export function SettingsPanel({ open, data, clientId, productSession, productSes
       previousFocus?.focus();
     };
   }, [open, initialTab]);
+
+  useEffect(() => {
+    if (!open || aboutVersion) return;
+    void fetch("/api/about")
+      .then(async (response) => response.ok ? response.json() as Promise<{ version?: string }> : undefined)
+      .then((about) => { if (about?.version) setAboutVersion(about.version); })
+      .catch(() => undefined);
+  }, [aboutVersion, open]);
 
   useEffect(() => {
     if (!authSession || authSession.status !== "running") return;
@@ -283,7 +292,7 @@ export function SettingsPanel({ open, data, clientId, productSession, productSes
           </SettingsSection>}
 
           {data && tab === "about" && <SettingsSection title={text.aboutTitle} body={text.aboutBody}>
-            <dl className="system-manifest"><div><dt>{text.runtime}</dt><dd>Pi 0.80.10 · MIT</dd></div><div><dt>{text.visualRuntime}</dt><dd>UI-TARS 1.2.3 · Apache-2.0</dd></div><div><dt>{text.strategyCore}</dt><dd>codex-ads 1.9.2 · MIT</dd></div><div><dt>{text.providersAvailable}</dt><dd>{data.catalog.providers.length}</dd></div></dl>
+            <dl className="system-manifest"><div><dt>AdPilot</dt><dd>{aboutVersion ?? "—"}</dd></div><div><dt>{text.runtime}</dt><dd>Pi 0.80.10 · MIT</dd></div><div><dt>{text.visualRuntime}</dt><dd>UI-TARS 1.2.3 · Apache-2.0</dd></div><div><dt>{text.strategyCore}</dt><dd>codex-ads 1.9.2 · MIT</dd></div><div><dt>{text.providersAvailable}</dt><dd>{data.catalog.providers.length}</dd></div></dl>
             <p className="settings-legal">{text.legal}</p>
           </SettingsSection>}
         </div>
