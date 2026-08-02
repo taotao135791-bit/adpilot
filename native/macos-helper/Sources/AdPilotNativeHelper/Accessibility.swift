@@ -131,6 +131,9 @@ enum AccessibilityService {
         let descriptor = try WindowSurfaceLease.parse(params["surfaceLease"])
         let lease = try await surfaceLeaseStore.resolve(descriptor, sessionId: sessionId)
         try await surfaceLeaseStore.consume(generation: lease.generation)
+        let physicalInputGuard = try PhysicalInputGuard(
+            captureBaseline: lease.physicalAnyInputBaseline
+        )
         try requireAccessibilityPermission()
         let current = try WindowSurfaceIdentity.current(windowId: lease.identity.windowId)
         guard lease.identity.matches(current) else {
@@ -161,6 +164,10 @@ enum AccessibilityService {
             )
         }
         let closeButton = unsafeDowncast(rawCloseButton, to: AXUIElement.self)
+        try lease.identity.requireStillCurrent()
+        try requireInputDeadline(deadlineUnixMs, inputStarted: false)
+        try InputCancellationChannel.shared.requireMayContinue()
+        try physicalInputGuard.requireUnchanged()
         let pressResult = AXUIElementPerformAction(closeButton, kAXPressAction as CFString)
         guard pressResult == .success else {
             throw axFailure(
@@ -285,7 +292,93 @@ func requireAccessibilityPermission() throws {
     }
 }
 
-func requireNonSensitiveFocusedInput(expectedPid: Int) throws {
+struct FocusedInputTarget {
+    let element: AXUIElement
+    let window: AXUIElement
+
+    func matches(_ other: FocusedInputTarget) -> Bool {
+        CFEqual(element, other.element) && CFEqual(window, other.window)
+    }
+
+    func requireStillCurrent(on identity: WindowSurfaceIdentity) throws {
+        try requireStillCurrent(on: identity, resolve: focusedInputTarget)
+    }
+
+    func requireStillCurrent(
+        on identity: WindowSurfaceIdentity,
+        resolve: (WindowSurfaceIdentity) throws -> FocusedInputTarget
+    ) throws {
+        let current = try resolve(identity)
+        guard matches(current) else {
+            throw HelperFailure(
+                "FOCUSED_INPUT_CHANGED",
+                "the focused input target changed after the action was bound",
+                details: ["windowId": identity.windowId, "ownerPid": identity.ownerPid]
+            )
+        }
+    }
+
+    /// Inserts text through the exact Accessibility element captured for this
+    /// action. Unlike a process-scoped keyboard event, setting
+    /// `kAXSelectedTextAttribute` cannot be rerouted to whichever field happens
+    /// to gain focus before macOS consumes the request.
+    func insertSelectedText(
+        _ text: String,
+        on identity: WindowSurfaceIdentity,
+        beforeWrite: () throws -> Void = {},
+        resolve: (WindowSurfaceIdentity) throws -> FocusedInputTarget = focusedInputTarget,
+        isAttributeSettable: (
+            AXUIElement,
+            CFString,
+            UnsafeMutablePointer<DarwinBoolean>
+        ) -> AXError = AXUIElementIsAttributeSettable,
+        setAttributeValue: (
+            AXUIElement,
+            CFString,
+            CFTypeRef
+        ) -> AXError = AXUIElementSetAttributeValue
+    ) throws {
+        try requireStillCurrent(on: identity, resolve: resolve)
+        let attribute = kAXSelectedTextAttribute as CFString
+        var settable = DarwinBoolean(false)
+        let settableResult = isAttributeSettable(element, attribute, &settable)
+        guard settableResult == .success, settable.boolValue else {
+            throw axFailure(
+                "EXACT_TEXT_TARGET_UNAVAILABLE",
+                "the focused control does not expose exact-element text insertion",
+                settableResult == .success ? .attributeUnsupported : settableResult
+            )
+        }
+
+        // The settable probe is an IPC call and can take long enough for focus
+        // or sensitivity metadata to change. Resolve the exact target again
+        // immediately before the element-bound write.
+        try requireStillCurrent(on: identity, resolve: resolve)
+        try beforeWrite()
+        let writeResult = setAttributeValue(element, attribute, text as CFString)
+        guard writeResult == .success else {
+            // AX messaging errors do not prove that the target rejected the
+            // write, so callers must not retry this text automatically.
+            throw HelperFailure(
+                "OUTCOME_UNKNOWN",
+                "exact-element text insertion did not return a definite result",
+                details: ["axError": writeResult.rawValue]
+            )
+        }
+    }
+}
+
+func requireNonSensitiveFocusedInput(
+    on identity: WindowSurfaceIdentity
+) throws -> FocusedInputTarget {
+    try focusedInputTarget(on: identity)
+}
+
+private func focusedInputTarget(on identity: WindowSurfaceIdentity) throws -> FocusedInputTarget {
+    // Keep the Accessibility target and the CoreGraphics surface in one
+    // fail-closed check. PID equality alone is insufficient because one
+    // application process may own multiple windows or transient panels.
+    try identity.requireStillCurrent()
     let system = AXUIElementCreateSystemWide()
     var raw: CFTypeRef?
     let result = AXUIElementCopyAttributeValue(
@@ -303,10 +396,28 @@ func requireNonSensitiveFocusedInput(expectedPid: Int) throws {
     let element = unsafeDowncast(raw, to: AXUIElement.self)
     var ownerPid: pid_t = 0
     guard AXUIElementGetPid(element, &ownerPid) == .success,
-          Int(ownerPid) == expectedPid else {
+          Int(ownerPid) == identity.ownerPid else {
         throw HelperFailure(
             "TARGET_WINDOW_NOT_FRONTMOST",
             "the focused input target belongs to a different application"
+        )
+    }
+    guard let window = axElement(element, attribute: kAXWindowAttribute as CFString),
+          axWindowMatches(window, identity: identity) else {
+        throw HelperFailure(
+            "FOCUSED_INPUT_WINDOW_MISMATCH",
+            "the focused input target does not belong to the captured window",
+            details: ["windowId": identity.windowId, "ownerPid": identity.ownerPid]
+        )
+    }
+    let application = AXUIElementCreateApplication(pid_t(identity.ownerPid))
+    let exactWindows = try axElements(application, attribute: kAXWindowsAttribute as CFString)
+        .filter { axWindowMatches($0, identity: identity) }
+    guard exactWindows.count == 1, CFEqual(exactWindows[0], window) else {
+        throw HelperFailure(
+            "FOCUSED_INPUT_WINDOW_MISMATCH",
+            "Accessibility could not uniquely bind the focused input to the captured window",
+            details: ["windowId": identity.windowId, "ownerPid": identity.ownerPid]
         )
     }
     let role = axString(element, attribute: kAXRoleAttribute as CFString) ?? ""
@@ -323,6 +434,7 @@ func requireNonSensitiveFocusedInput(expectedPid: Int) throws {
             "password, passcode, and one-time-code fields require direct user input"
         )
     }
+    return FocusedInputTarget(element: element, window: window)
 }
 
 func isSensitiveFocusedField(
@@ -476,6 +588,16 @@ private func axElements(_ element: AXUIElement, attribute: CFString) throws -> [
         return []
     }
     return values
+}
+
+private func axElement(_ element: AXUIElement, attribute: CFString) -> AXUIElement? {
+    var raw: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute, &raw) == .success,
+          let raw,
+          CFGetTypeID(raw) == AXUIElementGetTypeID() else {
+        return nil
+    }
+    return unsafeDowncast(raw, to: AXUIElement.self)
 }
 
 private func axString(_ element: AXUIElement, attribute: CFString) -> String? {

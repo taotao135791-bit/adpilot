@@ -247,6 +247,12 @@ enum CaptureService {
             ]
         }
 
+        // Bind physical takeover to the pixels, not to the later action
+        // request. Any hardware input during capture or grounding invalidates
+        // the resulting one-shot lease before the first native event.
+        let physicalAnyInputBaseline = capturedWindowIdentity == nil
+            ? nil
+            : InputActivityService.anyInputCounter()
         let image: CGImage
         do {
             image = try await SCScreenshotManager.captureImage(
@@ -287,6 +293,12 @@ enum CaptureService {
             "source": source
         ]
         if let capturedWindowIdentity, let leaseDurationMs {
+            guard let physicalAnyInputBaseline else {
+                throw HelperFailure(
+                    "PHYSICAL_INPUT_BASELINE_MISSING",
+                    "window capture did not bind a physical-input baseline"
+                )
+            }
             let current = try WindowSurfaceIdentity.current(windowId: capturedWindowIdentity.windowId)
             guard capturedWindowIdentity.matches(current) else {
                 throw HelperFailure(
@@ -300,7 +312,8 @@ enum CaptureService {
                 sessionId: sessionId,
                 capturePixelWidth: image.width,
                 capturePixelHeight: image.height,
-                durationMs: leaseDurationMs
+                durationMs: leaseDurationMs,
+                physicalAnyInputBaseline: physicalAnyInputBaseline
             )
             result["surfaceLease"] = lease.dictionary
         } else {

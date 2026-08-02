@@ -121,6 +121,24 @@ function service() {
 }
 
 describe("NativeHelperOperator", () => {
+  it("fails closed for focus-routed hotkeys without calling the Helper", async () => {
+    const fixture = service();
+    const operator = new NativeHelperOperator(fixture.host);
+    const screenshot = await operator.capture(task);
+
+    await expect(operator.execute({
+      action: "hotkey",
+      keys: "CMD+S",
+      target: "save",
+      reason: "requested shortcut",
+      confidence: 1,
+      expected_result: "save is requested",
+      risk_level: "interact"
+    }, screenshot, task)).rejects.toMatchObject({ code: "EXACT_KEY_TARGET_UNAVAILABLE" });
+
+    expect(fixture.calls.some((call) => call.method === "input.keypress")).toBe(false);
+  });
+
   it("captures one bound window and consumes its lease for exactly one atomic click", async () => {
     const fixture = service();
     const operator = new NativeHelperOperator(fixture.host);
@@ -299,25 +317,29 @@ describe("NativeHelperOperator", () => {
     operator.setUserInputHandler(undefined);
   });
 
-  it("subtracts Helper-posted HID deltas and takes over only for physical input", async () => {
+  it("ignores Helper telemetry but detects concurrent same-type physical input", async () => {
     const samples = [
       {
         sampledAtUnixMs: 1,
         cursor: { x: 10, y: 10 },
-        counters: { leftMouseDown: 10, leftMouseUp: 10, keyDown: 3 },
-        helperPostedCounters: { leftMouseDown: 4, leftMouseUp: 4, keyDown: 1 }
+        counters: { leftMouseDown: 10, leftMouseUp: 10 },
+        helperPostedCounters: { leftMouseDown: 4, leftMouseUp: 4 }
       },
       {
         sampledAtUnixMs: 2,
         cursor: { x: 20, y: 20 },
-        counters: { leftMouseDown: 11, leftMouseUp: 11, keyDown: 3 },
-        helperPostedCounters: { leftMouseDown: 5, leftMouseUp: 5, keyDown: 1 }
+        // Helper synthetic click telemetry advances, but physical HID counters
+        // do not. This must not trigger takeover.
+        counters: { leftMouseDown: 10, leftMouseUp: 10 },
+        helperPostedCounters: { leftMouseDown: 5, leftMouseUp: 5 }
       },
       {
         sampledAtUnixMs: 3,
         cursor: { x: 20, y: 20 },
-        counters: { leftMouseDown: 11, leftMouseUp: 11, keyDown: 4 },
-        helperPostedCounters: { leftMouseDown: 5, leftMouseUp: 5, keyDown: 1 }
+        // The user and Helper both click in the same interval. Subtracting the
+        // matching Helper delta would hide this physical takeover.
+        counters: { leftMouseDown: 11, leftMouseUp: 11 },
+        helperPostedCounters: { leftMouseDown: 6, leftMouseUp: 6 }
       }
     ];
     const onTakeover = vi.fn(async () => undefined);

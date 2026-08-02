@@ -337,17 +337,21 @@ final class ProtocolTests: XCTestCase {
             capturePixelWidth: 1_600,
             capturePixelHeight: 1_200,
             durationMs: 10_000,
+            physicalAnyInputBaseline: 123,
             nowUnixMs: 1_700_000_000_000
         )
+        XCTAssertNil(lease.dictionary["physicalAnyInputBaseline"])
         let descriptor = try WindowSurfaceLease.parse(lease.dictionary)
+        XCTAssertNil(descriptor.physicalAnyInputBaseline)
         let point = try descriptor.globalPoint(pixelX: 800, pixelY: 600)
         XCTAssertEqual(point.x, 500, accuracy: 0.001)
         XCTAssertEqual(point.y, 350, accuracy: 0.001)
-        _ = try await store.resolve(
+        let resolved = try await store.resolve(
             descriptor,
             sessionId: "session-1",
             nowUnixMs: 1_700_000_001_000
         )
+        XCTAssertEqual(resolved.physicalAnyInputBaseline, 123)
         try await store.consume(
             generation: descriptor.generation,
             nowUnixMs: 1_700_000_001_000
@@ -395,6 +399,7 @@ final class ProtocolTests: XCTestCase {
             capturePixelWidth: 800,
             capturePixelHeight: 600,
             durationMs: 10_000,
+            physicalAnyInputBaseline: 123,
             nowUnixMs: 1_700_000_000_000
         )
         do {
@@ -521,6 +526,146 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(after, before + 1)
     }
 
+    func testInputActivityPhysicalCountersAlwaysUseHidSystemState() {
+        var observedSources: [CGEventSourceStateID] = []
+        var observedEventTypes: [CGEventType] = []
+        let counters = InputActivityService.physicalCounters { source, eventType in
+            observedSources.append(source)
+            observedEventTypes.append(eventType)
+            return eventType == .keyDown ? 7 : 0
+        }
+
+        XCTAssertEqual(counters["keyDown"], 7)
+        XCTAssertEqual(observedSources.count, 17)
+        XCTAssertTrue(observedSources.allSatisfy { $0 == .hidSystemState })
+        XCTAssertTrue(observedEventTypes.contains(InputActivityService.anyInputEventType))
+        XCTAssertNotNil(counters["anyInput"])
+        XCTAssertTrue(observedEventTypes.contains(.otherMouseDown))
+        XCTAssertTrue(observedEventTypes.contains(.otherMouseUp))
+        XCTAssertTrue(observedEventTypes.contains(.otherMouseDragged))
+        XCTAssertTrue(observedEventTypes.contains(.tabletPointer))
+        XCTAssertTrue(observedEventTypes.contains(.tabletProximity))
+    }
+
+    func testPhysicalInputGuardNeverSubtractsSameTypeHelperEvents() throws {
+        var anyInputCounter: UInt32 = 10
+        let guardrail = try PhysicalInputGuard(
+            captureBaseline: 10,
+            anyInputCounter: { anyInputCounter },
+            hasActiveInput: { false }
+        )
+        let helperBefore = InputActivityTracker.shared.snapshot()["leftMouseDown"] ?? 0
+
+        InputActivityTracker.shared.record(.leftMouseDown)
+        XCTAssertEqual(
+            InputActivityTracker.shared.snapshot()["leftMouseDown"],
+            helperBefore + 1
+        )
+        XCTAssertNoThrow(try guardrail.requireUnchanged())
+
+        // The physical and Helper deltas now have the same event type and
+        // magnitude. A subtraction-based guard would incorrectly cancel them.
+        anyInputCounter = 11
+        XCTAssertThrowsError(try guardrail.requireUnchanged()) { error in
+            let failure = error as? HelperFailure
+            XCTAssertEqual(failure?.code, "PHYSICAL_INPUT_DETECTED")
+            XCTAssertEqual(failure?.details?["counterChanged"] as? Bool, true)
+            XCTAssertEqual(failure?.details?["activeInput"] as? Bool, false)
+        }
+    }
+
+    func testPhysicalInputGuardRejectsInputHeldBeforeTheActionStarts() throws {
+        let guardrail = try PhysicalInputGuard(
+            captureBaseline: 10,
+            anyInputCounter: { 10 },
+            hasActiveInput: { true }
+        )
+        XCTAssertThrowsError(try guardrail.requireUnchanged()) { error in
+            let failure = error as? HelperFailure
+            XCTAssertEqual(failure?.code, "PHYSICAL_INPUT_DETECTED")
+            XCTAssertEqual(failure?.details?["counterChanged"] as? Bool, false)
+            XCTAssertEqual(failure?.details?["activeInput"] as? Bool, true)
+        }
+    }
+
+    func testPhysicalInputGuardDoubleReadsAroundTheHeldStateScan() throws {
+        var counterReads = 0
+        let guardrail = try PhysicalInputGuard(
+            captureBaseline: 10,
+            anyInputCounter: {
+                counterReads += 1
+                return counterReads == 1 ? 10 : 11
+            },
+            hasActiveInput: { false }
+        )
+        XCTAssertThrowsError(try guardrail.requireUnchanged()) { error in
+            XCTAssertEqual((error as? HelperFailure)?.code, "PHYSICAL_INPUT_DETECTED")
+        }
+        XCTAssertEqual(counterReads, 2)
+    }
+
+    func testPhysicalInputGuardRejectsALeaseWithoutCaptureBaseline() {
+        XCTAssertThrowsError(
+            try PhysicalInputGuard(
+                captureBaseline: nil,
+                anyInputCounter: { 10 },
+                hasActiveInput: { false }
+            )
+        ) { error in
+            XCTAssertEqual((error as? HelperFailure)?.code, "PHYSICAL_INPUT_BASELINE_MISSING")
+        }
+    }
+
+    func testActivePhysicalInputChecksAllMouseButtonsAndKeysInHidState() {
+        var observedSources: [CGEventSourceStateID] = []
+        var observedButtons: [UInt32] = []
+        XCTAssertTrue(
+            InputActivityService.hasActivePhysicalInput(
+                buttonState: { source, button in
+                    observedSources.append(source)
+                    observedButtons.append(button.rawValue)
+                    return button.rawValue == 7
+                },
+                keyState: { _, _ in false },
+                flagsState: { _ in [] }
+            )
+        )
+        XCTAssertEqual(observedButtons, Array(UInt32(0)...7))
+        XCTAssertTrue(observedSources.allSatisfy { $0 == .hidSystemState })
+
+        var observedKeys: [CGKeyCode] = []
+        XCTAssertTrue(
+            InputActivityService.hasActivePhysicalInput(
+                buttonState: { _, _ in false },
+                keyState: { source, key in
+                    observedSources.append(source)
+                    observedKeys.append(key)
+                    return key == 255
+                },
+                flagsState: { _ in [] }
+            )
+        )
+        XCTAssertEqual(observedKeys, Array(CGKeyCode(0)...255))
+        XCTAssertTrue(observedSources.allSatisfy { $0 == .hidSystemState })
+    }
+
+    func testActivePhysicalInputIgnoresLatchedCapsLockButRejectsHeldModifier() {
+        XCTAssertFalse(
+            InputActivityService.hasActivePhysicalInput(
+                buttonState: { _, _ in false },
+                keyState: { _, _ in false },
+                flagsState: { _ in [.maskAlphaShift] }
+            )
+        )
+        XCTAssertTrue(
+            InputActivityService.hasActivePhysicalInput(
+                buttonState: { _, _ in false },
+                keyState: { _, _ in false },
+                flagsState: { _ in [.maskShift] }
+            )
+        )
+    }
+
     func testProcessScopedInputPosterUsesTheExactOwnerPidWithoutPosting() throws {
         let event = try XCTUnwrap(
             CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
@@ -550,6 +695,248 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(didPost)
     }
 
+    func testInputCancellationChannelFailsClosedAfterCancellationMarker() throws {
+        let channel = InputCancellationChannel()
+        XCTAssertNoThrow(try channel.requireMayContinue())
+        channel.cancelForTesting()
+        XCTAssertThrowsError(try channel.requireMayContinue()) { error in
+            XCTAssertEqual((error as? HelperFailure)?.code, "INPUT_CANCELLED")
+        }
+    }
+
+    func testBoundedDragChecksEveryPhaseAndPostsOneBalancedRelease() async throws {
+        let events = try dragFixtureEvents()
+        var posted: [CGEventType] = []
+        var cancellationChecks = 0
+        var deadlineChecks: [Bool] = []
+        var surfaceChecks = 0
+        var physicalInputChecks = 0
+
+        let count = try await performBoundedDrag(
+            down: events.down,
+            startRelease: events.startRelease,
+            stages: events.stages,
+            ownerPid: 42,
+            downType: .leftMouseDown,
+            draggedType: .leftMouseDragged,
+            upType: .leftMouseUp,
+            delayMilliseconds: 0,
+            validateSurface: { surfaceChecks += 1 },
+            checkCancellation: { cancellationChecks += 1 },
+            checkPhysicalInput: { physicalInputChecks += 1 },
+            checkDeadline: { deadlineChecks.append($0) },
+            post: { posted.append($0.type) },
+            delay: { _ in }
+        )
+
+        XCTAssertEqual(count, 4)
+        XCTAssertEqual(posted, [.leftMouseDown, .leftMouseDragged, .leftMouseDragged, .leftMouseUp])
+        XCTAssertEqual(cancellationChecks, 4)
+        XCTAssertEqual(deadlineChecks, [false, true, true, true])
+        XCTAssertEqual(surfaceChecks, 4)
+        XCTAssertEqual(physicalInputChecks, 4)
+    }
+
+    func testBoundedClickPhysicalInputAfterMouseDownPostsRelease() throws {
+        let down = try XCTUnwrap(CGEvent(
+            mouseEventSource: nil,
+            mouseType: .leftMouseDown,
+            mouseCursorPosition: CGPoint(x: 10, y: 20),
+            mouseButton: .left
+        ))
+        let up = try XCTUnwrap(CGEvent(
+            mouseEventSource: nil,
+            mouseType: .leftMouseUp,
+            mouseCursorPosition: CGPoint(x: 10, y: 20),
+            mouseButton: .left
+        ))
+        var checkpointCount = 0
+        var posted: [CGEventType] = []
+
+        XCTAssertThrowsError(
+            try performBoundedClickPair(
+                down: down,
+                up: up,
+                ownerPid: 42,
+                downType: .leftMouseDown,
+                upType: .leftMouseUp,
+                checkpoint: { _ in
+                    checkpointCount += 1
+                    if checkpointCount == 2 {
+                        throw HelperFailure(
+                            "PHYSICAL_INPUT_DETECTED",
+                            "test physical takeover"
+                        )
+                    }
+                },
+                post: { posted.append($0.type) }
+            )
+        ) { error in
+            let failure = error as? HelperFailure
+            XCTAssertEqual(failure?.code, "OUTCOME_UNKNOWN")
+            XCTAssertEqual(
+                failure?.details?["underlyingCode"] as? String,
+                "PHYSICAL_INPUT_DETECTED"
+            )
+        }
+        XCTAssertEqual(posted, [.leftMouseDown, .leftMouseUp])
+    }
+
+    func testBoundedDragCancellationAfterMouseDownPostsRelease() async throws {
+        let events = try dragFixtureEvents()
+        var posted: [CGEventType] = []
+        var cancellationChecks = 0
+
+        do {
+            _ = try await performBoundedDrag(
+                down: events.down,
+                startRelease: events.startRelease,
+                stages: events.stages,
+                ownerPid: 42,
+                downType: .leftMouseDown,
+                draggedType: .leftMouseDragged,
+                upType: .leftMouseUp,
+                delayMilliseconds: 0,
+                validateSurface: {},
+                checkCancellation: {
+                    cancellationChecks += 1
+                    if cancellationChecks == 3 {
+                        throw HelperFailure("INPUT_CANCELLED", "test cancellation")
+                    }
+                },
+                checkPhysicalInput: {},
+                checkDeadline: { _ in },
+                post: { posted.append($0.type) },
+                delay: { _ in }
+            )
+            XCTFail("drag should have failed closed")
+        } catch let failure as HelperFailure {
+            XCTAssertEqual(failure.code, "OUTCOME_UNKNOWN")
+            XCTAssertEqual(failure.details?["underlyingCode"] as? String, "INPUT_CANCELLED")
+        }
+        XCTAssertEqual(posted, [.leftMouseDown, .leftMouseDragged, .leftMouseUp])
+    }
+
+    func testBoundedDragDeadlineAfterMouseDownPostsRelease() async throws {
+        let events = try dragFixtureEvents()
+        var posted: [CGEventType] = []
+        var deadlineChecks = 0
+
+        do {
+            _ = try await performBoundedDrag(
+                down: events.down,
+                startRelease: events.startRelease,
+                stages: events.stages,
+                ownerPid: 42,
+                downType: .leftMouseDown,
+                draggedType: .leftMouseDragged,
+                upType: .leftMouseUp,
+                delayMilliseconds: 0,
+                validateSurface: {},
+                checkCancellation: {},
+                checkPhysicalInput: {},
+                checkDeadline: { _ in
+                    deadlineChecks += 1
+                    if deadlineChecks == 2 {
+                        throw HelperFailure("OUTCOME_UNKNOWN", "test deadline")
+                    }
+                },
+                post: { posted.append($0.type) },
+                delay: { _ in }
+            )
+            XCTFail("drag should have failed closed")
+        } catch let failure as HelperFailure {
+            XCTAssertEqual(failure.code, "OUTCOME_UNKNOWN")
+            XCTAssertEqual(failure.details?["underlyingCode"] as? String, "OUTCOME_UNKNOWN")
+        }
+        XCTAssertEqual(posted, [.leftMouseDown, .leftMouseUp])
+    }
+
+    func testBoundedDragSurfaceChangeAfterMouseDownPostsRelease() async throws {
+        let events = try dragFixtureEvents()
+        var posted: [CGEventType] = []
+        var surfaceChecks = 0
+
+        do {
+            _ = try await performBoundedDrag(
+                down: events.down,
+                startRelease: events.startRelease,
+                stages: events.stages,
+                ownerPid: 42,
+                downType: .leftMouseDown,
+                draggedType: .leftMouseDragged,
+                upType: .leftMouseUp,
+                delayMilliseconds: 0,
+                validateSurface: {
+                    surfaceChecks += 1
+                    if surfaceChecks == 2 {
+                        throw HelperFailure("SURFACE_CHANGED", "test surface change")
+                    }
+                },
+                checkCancellation: {},
+                checkPhysicalInput: {},
+                checkDeadline: { _ in },
+                post: { posted.append($0.type) },
+                delay: { _ in }
+            )
+            XCTFail("drag should have failed closed")
+        } catch let failure as HelperFailure {
+            XCTAssertEqual(failure.code, "OUTCOME_UNKNOWN")
+            XCTAssertEqual(failure.details?["underlyingCode"] as? String, "SURFACE_CHANGED")
+        }
+        XCTAssertEqual(posted, [.leftMouseDown, .leftMouseUp])
+    }
+
+    func testBoundedDragPhysicalInputAfterDelayPostsRelease() async throws {
+        let events = try dragFixtureEvents()
+        var posted: [CGEventType] = []
+        var physicalInputChanged = false
+
+        do {
+            _ = try await performBoundedDrag(
+                down: events.down,
+                startRelease: events.startRelease,
+                stages: events.stages,
+                ownerPid: 42,
+                downType: .leftMouseDown,
+                draggedType: .leftMouseDragged,
+                upType: .leftMouseUp,
+                delayMilliseconds: 1,
+                validateSurface: {},
+                checkCancellation: {},
+                checkPhysicalInput: {
+                    if physicalInputChanged {
+                        throw HelperFailure(
+                            "PHYSICAL_INPUT_DETECTED",
+                            "test physical takeover"
+                        )
+                    }
+                },
+                checkDeadline: { _ in },
+                post: { posted.append($0.type) },
+                delay: { _ in physicalInputChanged = true }
+            )
+            XCTFail("drag should have stopped after physical input")
+        } catch let failure as HelperFailure {
+            XCTAssertEqual(failure.code, "OUTCOME_UNKNOWN")
+            XCTAssertEqual(
+                failure.details?["underlyingCode"] as? String,
+                "PHYSICAL_INPUT_DETECTED"
+            )
+        }
+        XCTAssertEqual(posted, [.leftMouseDown, .leftMouseDragged, .leftMouseUp])
+    }
+
+    func testFocusedInputTargetRejectsElementOrWindowChanges() throws {
+        let application = AXUIElementCreateApplication(getpid())
+        let sameApplication = AXUIElementCreateApplication(getpid())
+        let otherApplication = AXUIElementCreateApplication(getpid() + 1)
+        let bound = FocusedInputTarget(element: application, window: application)
+        XCTAssertTrue(bound.matches(FocusedInputTarget(element: sameApplication, window: sameApplication)))
+        XCTAssertFalse(bound.matches(FocusedInputTarget(element: otherApplication, window: sameApplication)))
+        XCTAssertFalse(bound.matches(FocusedInputTarget(element: sameApplication, window: otherApplication)))
+    }
+
     func testProductionInputDispatchIsBoundToTheLeaseOwnerPid() throws {
         let packageRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -573,7 +960,7 @@ final class ProtocolTests: XCTestCase {
                 $0.contains("postInputEvent(")
                     && !$0.contains("func postInputEvent(")
             }
-        XCTAssertEqual(dispatchLines.count, 11)
+        XCTAssertEqual(dispatchLines.count, 4)
         for line in dispatchLines {
             XCTAssertTrue(
                 line.contains("ownerPid: lease.identity.ownerPid"),
@@ -581,7 +968,7 @@ final class ProtocolTests: XCTestCase {
             )
         }
 
-        for operation in ["move", "click", "typeText", "drag", "keypress", "scroll"] {
+        for operation in ["move", "click", "drag", "scroll"] {
             let marker = "static func \(operation)("
             let start = try XCTUnwrap(inputSource.range(of: marker))
             let remainder = inputSource[start.lowerBound...]
@@ -596,6 +983,47 @@ final class ProtocolTests: XCTestCase {
                 "\(operation) must dispatch through the process-scoped input poster"
             )
         }
+
+        for operation in ["move", "click", "typeText", "drag", "keypress", "scroll"] {
+            let marker = "static func \(operation)("
+            let start = try XCTUnwrap(inputSource.range(of: marker))
+            let remainder = inputSource[start.lowerBound...]
+            let nextOperation = remainder.dropFirst(marker.count).range(of: "\n    static func ")
+            let nextHelper = remainder.dropFirst(marker.count).range(of: "\n    private static func ")
+            let end = [nextOperation?.lowerBound, nextHelper?.lowerBound]
+                .compactMap { $0 }
+                .min() ?? inputSource.endIndex
+            let body = inputSource[start.lowerBound..<end]
+            XCTAssertTrue(
+                body.contains("captureBaseline: lease.physicalAnyInputBaseline"),
+                "\(operation) must use the HID baseline bound to the captured lease"
+            )
+            XCTAssertTrue(
+                body.contains("physicalInputGuard.requireUnchanged()"),
+                "\(operation) must check physical-HID takeover before native input"
+            )
+        }
+
+        let typeStart = try XCTUnwrap(inputSource.range(of: "static func typeText("))
+        let typeRemainder = inputSource[typeStart.lowerBound...]
+        let typeEnd = try XCTUnwrap(typeRemainder.range(of: "\n    static func drag("))
+        let typeBody = inputSource[typeStart.lowerBound..<typeEnd.lowerBound]
+        XCTAssertTrue(typeBody.contains("focusedTarget.insertSelectedText("))
+        XCTAssertTrue(typeBody.contains("physicalInputGuard.requireUnchanged()"))
+        XCTAssertFalse(typeBody.contains("postInputEvent("))
+        XCTAssertFalse(typeBody.contains("keyboardSetUnicodeString"))
+        XCTAssertFalse(typeBody.contains("kAXValueAttribute"))
+
+        let keypressStart = try XCTUnwrap(inputSource.range(of: "static func keypress("))
+        let keypressRemainder = inputSource[keypressStart.lowerBound...]
+        let keypressEnd = try XCTUnwrap(keypressRemainder.range(of: "\n    static func scroll("))
+        let keypressBody = inputSource[keypressStart.lowerBound..<keypressEnd.lowerBound]
+        XCTAssertTrue(keypressBody.contains("EXACT_KEY_TARGET_UNAVAILABLE"))
+        XCTAssertFalse(keypressBody.contains("postInputEvent("))
+        XCTAssertFalse(keypressBody.contains("CGEvent(keyboardEventSource:"))
+
+        XCTAssertTrue(inputSource.contains("checkDeadline: { inputStarted in"))
+        XCTAssertTrue(inputSource.contains("validateSurface: { try lease.identity.requireStillCurrent() }"))
     }
 
     func testSurfaceIdentityRequiresWindowPidBundleAndBoundsToRemainStable() {
@@ -645,6 +1073,60 @@ final class ProtocolTests: XCTestCase {
                     bounds: CGRect(x: 11, y: 20, width: 800, height: 600)
                 )
             )
+        )
+    }
+
+    private func dragFixtureEvents() throws -> (
+        down: CGEvent,
+        startRelease: CGEvent,
+        stages: [DragEventStage]
+    ) {
+        let start = CGPoint(x: 10, y: 20)
+        let middle = CGPoint(x: 30, y: 40)
+        let end = CGPoint(x: 50, y: 60)
+        let down = try XCTUnwrap(CGEvent(
+            mouseEventSource: nil,
+            mouseType: .leftMouseDown,
+            mouseCursorPosition: start,
+            mouseButton: .left
+        ))
+        let startRelease = try XCTUnwrap(CGEvent(
+            mouseEventSource: nil,
+            mouseType: .leftMouseUp,
+            mouseCursorPosition: start,
+            mouseButton: .left
+        ))
+        let middleDrag = try XCTUnwrap(CGEvent(
+            mouseEventSource: nil,
+            mouseType: .leftMouseDragged,
+            mouseCursorPosition: middle,
+            mouseButton: .left
+        ))
+        let middleRelease = try XCTUnwrap(CGEvent(
+            mouseEventSource: nil,
+            mouseType: .leftMouseUp,
+            mouseCursorPosition: middle,
+            mouseButton: .left
+        ))
+        let endDrag = try XCTUnwrap(CGEvent(
+            mouseEventSource: nil,
+            mouseType: .leftMouseDragged,
+            mouseCursorPosition: end,
+            mouseButton: .left
+        ))
+        let endRelease = try XCTUnwrap(CGEvent(
+            mouseEventSource: nil,
+            mouseType: .leftMouseUp,
+            mouseCursorPosition: end,
+            mouseButton: .left
+        ))
+        return (
+            down,
+            startRelease,
+            [
+                DragEventStage(drag: middleDrag, release: middleRelease),
+                DragEventStage(drag: endDrag, release: endRelease)
+            ]
         )
     }
 

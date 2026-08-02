@@ -784,7 +784,10 @@ export class NativeComputerHostSupervisor implements NativeComputerService {
     const launching = this.#launching;
     const host = this.#host;
     this.#host = undefined;
-    if (host && !host.closed) await host.close();
+    // `closed` is the protocol actor's fail-closed state, not proof that the
+    // process has exited. Always await close() so cooperative input cleanup
+    // finishes (or reaches its bounded SIGKILL fallback) before returning.
+    if (host) await host.close();
     if (launching) {
       const launched = await launching.catch(() => undefined);
       if (launched && !launched.closed) await launched.close();
@@ -792,15 +795,34 @@ export class NativeComputerHostSupervisor implements NativeComputerService {
   }
 
   async #replaceHost(failed: NativeComputerHost): Promise<NativeComputerHost> {
-    if (this.#host === failed) this.#host = undefined;
+    // Do not overlap two Accessibility-capable actors. A forced cancellation
+    // first gives the old Helper its bounded SIGTERM cleanup window (notably a
+    // drag mouse-up), then close() retains SIGKILL as the one-second fallback.
+    if (this.#host === failed) {
+      return this.#ensureHost(() => failed.close());
+    }
+    await failed.close();
     return this.#ensureHost();
   }
 
-  async #ensureHost(): Promise<NativeComputerHost> {
+  async #ensureHost(beforeLaunch?: () => Promise<void>): Promise<NativeComputerHost> {
     if (this.#closed) throw new NativeHostClosedError("native computer supervisor is closed");
     if (this.#host && !this.#host.closed) return this.#host;
+    if (this.#host?.closed) {
+      const retired = this.#host;
+      this.#host = undefined;
+      beforeLaunch ??= () => retired.close();
+    }
     if (this.#launching) return this.#launching;
-    const launching = NativeComputerHost.launch(this.#options);
+    const launching = (async () => {
+      await beforeLaunch?.();
+      if (this.#closed) {
+        throw new NativeHostClosedError(
+          "native computer supervisor closed during Helper cleanup"
+        );
+      }
+      return NativeComputerHost.launch(this.#options);
+    })();
     this.#launching = launching;
     try {
       const host = await launching;
@@ -1308,8 +1330,11 @@ export class NativeComputerHost {
     }
     this.#closed = true;
     this.#rejectForDisconnect(error, primaryId);
+    // SIGTERM is cooperatively consumed by the native input self-pipe so an
+    // in-flight drag can release mouse-down. close() and its bounded SIGKILL
+    // fallback are awaited by the supervisor before a replacement is launched.
+    this.#child.kill("SIGTERM");
     this.#child.stdin.destroy();
-    this.#child.kill("SIGKILL");
     this.#log("warn", "native-helper.terminated", {
       code: error instanceof NativeComputerHostError ? error.code : "UNKNOWN"
     });

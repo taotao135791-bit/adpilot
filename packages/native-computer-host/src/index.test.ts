@@ -1,7 +1,7 @@
-import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
   NativeComputerHost,
@@ -25,6 +25,16 @@ const readline = require("node:readline");
 const fs = require("node:fs");
 const config = JSON.parse(process.argv[1] || "{}");
 const token = process.env.ADPILOT_NATIVE_HELPER_TOKEN;
+if (config.lifecycleFile) fs.appendFileSync(config.lifecycleFile, "start:" + process.pid + "\n");
+if (config.lifecycleFile) {
+  process.on("SIGTERM", () => {
+    fs.appendFileSync(config.lifecycleFile, "term-start:" + process.pid + "\n");
+    setTimeout(() => {
+      fs.appendFileSync(config.lifecycleFile, "term-end:" + process.pid + "\n");
+      process.exit(0);
+    }, config.termDelayMs || 0);
+  });
+}
 let lastSequence = 0;
 const claimedActions = new Set();
 const actionMethods = new Set([
@@ -163,6 +173,7 @@ type FakeConfig = {
   exitOnceFile?: string;
   hangMethod?: string;
   invalidInputResult?: boolean;
+  lifecycleFile?: string;
   identity?: {
     pid: number;
     bundleIdentifier: string;
@@ -172,6 +183,7 @@ type FakeConfig = {
   };
   leakToken?: boolean;
   remoteError?: boolean;
+  termDelayMs?: number;
   wrongSequenceMethod?: string;
 };
 
@@ -278,6 +290,87 @@ describe("NativeComputerHost protocol actor", () => {
       await expect(supervisor.request("frontmost", {})).resolves.toMatchObject({ ownerPid: 42 });
     } finally {
       await supervisor.close();
+    }
+  });
+
+  it("lets an aborted Helper finish SIGTERM cleanup before launching its replacement", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "adpilot-native-cleanup-"));
+    const lifecycleFile = join(directory, "lifecycle.log");
+    const entries: LogEntry[] = [];
+    const supervisor = await launchSupervisor({
+      hangMethod: "input.type",
+      lifecycleFile,
+      termDelayMs: 40
+    }, entries);
+    try {
+      const firstPid = supervisor.pid!;
+      const controller = new AbortController();
+      const pending = supervisor.request(
+        "input.type",
+        { text: "value", surfaceLease },
+        { sessionId: "session-test", actionId: "cooperative-stop", signal: controller.signal }
+      );
+      await vi.waitFor(() => expect(entries.some((entry) =>
+        entry.event === "native-helper.request" && entry.fields.method === "input.type"
+      )).toBe(true));
+      controller.abort(new Error("user stop"));
+      const concurrentRead = supervisor.request("frontmost", {});
+
+      await expect(pending).rejects.toBeInstanceOf(NativeHostOutcomeUnknownError);
+      await expect(concurrentRead).resolves.toMatchObject({ ownerPid: 42 });
+      expect(supervisor.epoch).toBe(2);
+      const replacementPid = supervisor.pid!;
+      expect(replacementPid).not.toBe(firstPid);
+      const lifecycle = (await readFile(lifecycleFile, "utf8")).trim().split("\n");
+      expect(lifecycle).toEqual([
+        `start:${firstPid}`,
+        `term-start:${firstPid}`,
+        `term-end:${firstPid}`,
+        `start:${replacementPid}`
+      ]);
+    } finally {
+      await supervisor.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not relaunch while closing an already-terminated Helper", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "adpilot-native-close-cleanup-"));
+    const lifecycleFile = join(directory, "lifecycle.log");
+    const entries: LogEntry[] = [];
+    const supervisor = await launchSupervisor({
+      hangMethod: "input.type",
+      lifecycleFile,
+      termDelayMs: 40
+    }, entries);
+    try {
+      const firstPid = supervisor.pid!;
+      const controller = new AbortController();
+      const pending = supervisor.request(
+        "input.type",
+        { text: "value", surfaceLease },
+        { sessionId: "session-test", actionId: "close-during-cleanup", signal: controller.signal }
+      );
+      await vi.waitFor(() => expect(entries.some((entry) =>
+        entry.event === "native-helper.request" && entry.fields.method === "input.type"
+      )).toBe(true));
+      controller.abort(new Error("user stop"));
+      const racingRead = supervisor.request("frontmost", {});
+      const pendingFailure = expect(pending).rejects.toBeInstanceOf(NativeHostOutcomeUnknownError);
+      const racingFailure = expect(racingRead).rejects.toBeInstanceOf(NativeHostClosedError);
+
+      await supervisor.close();
+      await pendingFailure;
+      await racingFailure;
+      const lifecycle = (await readFile(lifecycleFile, "utf8")).trim().split("\n");
+      expect(lifecycle).toEqual([
+        `start:${firstPid}`,
+        `term-start:${firstPid}`,
+        `term-end:${firstPid}`
+      ]);
+    } finally {
+      await supervisor.close();
+      await rm(directory, { recursive: true, force: true });
     }
   });
 

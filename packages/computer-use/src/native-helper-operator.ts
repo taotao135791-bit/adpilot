@@ -168,13 +168,10 @@ export class NativeHelperOperator implements NativeOperator {
           }, options);
           return;
         case "hotkey": {
-          const keypress = parseHotkey(action.keys);
-          await this.host.request("input.keypress", {
-            key: keypress.key,
-            ...(keypress.modifiers.length ? { modifiers: keypress.modifiers } : {}),
-            surfaceLease: lease
-          }, options);
-          return;
+          throw new NativeHelperOperatorError(
+            "EXACT_KEY_TARGET_UNAVAILABLE",
+            "native hotkeys are disabled because macOS cannot bind a key event to the exact captured Accessibility element"
+          );
         }
         case "scroll": {
           const point = {
@@ -328,9 +325,10 @@ export type NativeInputActivityTakeoverReason = "physical_input" | "activity_mon
 type InputActivitySample = NativeResult<"input.activity">;
 
 /**
- * One Helper-session activity watcher. HID deltas caused by Helper-posted
- * events are subtracted by event type; any remainder transfers control to the
- * user and stops this watcher until a fresh task capture re-arms it.
+ * One Helper-session activity watcher. `input.activity.counters` comes from
+ * CoreGraphics `hidSystemState`, so it contains physical input only. Helper-
+ * posted telemetry must not be subtracted: if the user and Helper emit the
+ * same event type concurrently, subtraction would hide the user takeover.
  */
 export class NativeInputActivityMonitor {
   private baseline: InputActivitySample | undefined;
@@ -411,7 +409,7 @@ export class NativeInputActivityMonitor {
     const previous = this.baseline;
     this.baseline = current;
     this.baselineEpoch = epochAfter;
-    if (!previous || !hasUnattributedHidDelta(previous, current)) return false;
+    if (!previous || !hasPhysicalHidDelta(previous, current)) return false;
     this.stop();
     await this.onTakeover("physical_input");
     return true;
@@ -568,20 +566,14 @@ function sameComputerBinding(
     && left.browserSessionId === right.browserSessionId;
 }
 
-function hasUnattributedHidDelta(previous: InputActivitySample, current: InputActivitySample): boolean {
+function hasPhysicalHidDelta(previous: InputActivitySample, current: InputActivitySample): boolean {
   const eventTypes = new Set([
     ...Object.keys(previous.counters),
-    ...Object.keys(current.counters),
-    ...Object.keys(previous.helperPostedCounters),
-    ...Object.keys(current.helperPostedCounters)
+    ...Object.keys(current.counters)
   ]);
   for (const eventType of eventTypes) {
     const hidDelta = monotonicDelta(previous.counters[eventType], current.counters[eventType]);
-    const helperDelta = monotonicDelta(
-      previous.helperPostedCounters[eventType],
-      current.helperPostedCounters[eventType]
-    );
-    if (hidDelta > helperDelta) return true;
+    if (hidDelta > 0) return true;
   }
   return false;
 }
@@ -673,37 +665,6 @@ function displayForWindow(window: NativeWindow, displays: NativeDisplay[]): Nati
   ) ?? displays.find((candidate) => candidate.isMain);
   if (!display) throw new NativeHelperOperatorError("DISPLAY_UNAVAILABLE", "native Helper returned no display for the active window");
   return display;
-}
-
-function parseHotkey(keys: string): {
-  key: string;
-  modifiers: Array<"command" | "shift" | "option" | "control" | "capsLock" | "function">;
-} {
-  const tokens = keys.split("+").map((token) => token.trim()).filter(Boolean);
-  if (!tokens.length) throw new NativeHelperOperatorError("HOTKEY_INVALID", "hotkey is empty");
-  const key = tokens.pop()!;
-  const aliases: Record<string, "command" | "shift" | "option" | "control" | "capsLock" | "function"> = {
-    cmd: "command",
-    command: "command",
-    meta: "command",
-    shift: "shift",
-    alt: "option",
-    option: "option",
-    ctrl: "control",
-    control: "control",
-    capslock: "capsLock",
-    fn: "function",
-    function: "function"
-  };
-  const modifiers = tokens.map((token) => {
-    const modifier = aliases[token.toLowerCase().replace(/\s+/g, "")];
-    if (!modifier) throw new NativeHelperOperatorError("HOTKEY_INVALID", `unsupported hotkey modifier: ${token}`);
-    return modifier;
-  });
-  if (new Set(modifiers).size !== modifiers.length) {
-    throw new NativeHelperOperatorError("HOTKEY_INVALID", "hotkey modifiers must not repeat");
-  }
-  return { key, modifiers };
 }
 
 function scrollDelta(direction: "up" | "down" | "left" | "right"): { deltaX: number; deltaY: number } {

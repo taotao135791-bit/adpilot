@@ -77,6 +77,30 @@ struct WindowSurfaceLease: Equatable, Sendable {
     let capturePixelHeight: Int
     let capturedAtUnixMs: Int64
     let expiresAtUnixMs: Int64
+    /// Internal-only HID aggregate sampled immediately before the screenshot.
+    /// It is deliberately omitted from the public descriptor so callers
+    /// cannot select or replace the takeover authority stored by the Helper.
+    let physicalAnyInputBaseline: UInt32?
+
+    init(
+        generation: String,
+        sessionId: String,
+        identity: WindowSurfaceIdentity,
+        capturePixelWidth: Int,
+        capturePixelHeight: Int,
+        capturedAtUnixMs: Int64,
+        expiresAtUnixMs: Int64,
+        physicalAnyInputBaseline: UInt32? = nil
+    ) {
+        self.generation = generation
+        self.sessionId = sessionId
+        self.identity = identity
+        self.capturePixelWidth = capturePixelWidth
+        self.capturePixelHeight = capturePixelHeight
+        self.capturedAtUnixMs = capturedAtUnixMs
+        self.expiresAtUnixMs = expiresAtUnixMs
+        self.physicalAnyInputBaseline = physicalAnyInputBaseline
+    }
 
     var dictionary: [String: Any] {
         [
@@ -188,6 +212,16 @@ struct WindowSurfaceLease: Equatable, Sendable {
         )
     }
 
+    func matchesPublicDescriptor(_ descriptor: WindowSurfaceLease) -> Bool {
+        generation == descriptor.generation
+            && sessionId == descriptor.sessionId
+            && identity == descriptor.identity
+            && capturePixelWidth == descriptor.capturePixelWidth
+            && capturePixelHeight == descriptor.capturePixelHeight
+            && capturedAtUnixMs == descriptor.capturedAtUnixMs
+            && expiresAtUnixMs == descriptor.expiresAtUnixMs
+    }
+
     func globalPoint(pixelX: Double, pixelY: Double) throws -> CGPoint {
         guard pixelX >= 0, pixelX < Double(capturePixelWidth),
               pixelY >= 0, pixelY < Double(capturePixelHeight) else {
@@ -221,6 +255,7 @@ actor SurfaceLeaseStore {
         capturePixelWidth: Int,
         capturePixelHeight: Int,
         durationMs: Int,
+        physicalAnyInputBaseline: UInt32,
         nowUnixMs: Int64 = unixMilliseconds()
     ) -> WindowSurfaceLease {
         prune(nowUnixMs: nowUnixMs)
@@ -235,7 +270,8 @@ actor SurfaceLeaseStore {
             capturePixelWidth: capturePixelWidth,
             capturePixelHeight: capturePixelHeight,
             capturedAtUnixMs: nowUnixMs,
-            expiresAtUnixMs: nowUnixMs + Int64(durationMs)
+            expiresAtUnixMs: nowUnixMs + Int64(durationMs),
+            physicalAnyInputBaseline: physicalAnyInputBaseline
         )
         leases[lease.generation] = lease
         return lease
@@ -246,7 +282,8 @@ actor SurfaceLeaseStore {
         sessionId: String,
         nowUnixMs: Int64 = unixMilliseconds()
     ) throws -> WindowSurfaceLease {
-        guard let stored = leases[descriptor.generation], stored == descriptor else {
+        guard let stored = leases[descriptor.generation],
+              stored.matchesPublicDescriptor(descriptor) else {
             throw HelperFailure(
                 "SURFACE_LEASE_INVALID",
                 "surface lease is unknown, consumed, or does not match its issued generation"

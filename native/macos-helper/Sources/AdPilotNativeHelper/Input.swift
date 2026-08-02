@@ -3,6 +3,92 @@ import CoreGraphics
 import Darwin
 import Foundation
 
+nonisolated(unsafe) private var nativeInputCancellationWriteFD: Int32 = -1
+
+private func nativeInputCancellationSignalHandler(_ signal: Int32) {
+    guard signal == SIGTERM, nativeInputCancellationWriteFD >= 0 else {
+        return
+    }
+    var marker: UInt8 = 1
+    withUnsafePointer(to: &marker) { pointer in
+        _ = Darwin.write(nativeInputCancellationWriteFD, pointer, 1)
+    }
+}
+
+/// Converts the host's catchable SIGTERM into a non-blocking self-pipe marker.
+/// The signal handler only calls async-signal-safe `write`; normal Swift code
+/// consumes the marker at bounded input checkpoints.
+final class InputCancellationChannel: @unchecked Sendable {
+    static let shared = InputCancellationChannel(installSignalHandler: true)
+
+    private let readFD: Int32
+    private let writeFD: Int32
+    private let setupFailure: HelperFailure?
+
+    init(installSignalHandler: Bool = false) {
+        var descriptors = [Int32](repeating: -1, count: 2)
+        guard Darwin.pipe(&descriptors) == 0 else {
+            readFD = -1
+            writeFD = -1
+            setupFailure = HelperFailure(
+                "INPUT_CANCELLATION_UNAVAILABLE",
+                "could not create the bounded native input cancellation channel"
+            )
+            return
+        }
+        readFD = descriptors[0]
+        writeFD = descriptors[1]
+        setupFailure = nil
+        _ = Darwin.fcntl(readFD, F_SETFL, O_NONBLOCK)
+        _ = Darwin.fcntl(writeFD, F_SETFL, O_NONBLOCK)
+        if installSignalHandler {
+            nativeInputCancellationWriteFD = writeFD
+            _ = Darwin.signal(SIGTERM, nativeInputCancellationSignalHandler)
+        }
+    }
+
+    deinit {
+        if readFD >= 0 {
+            _ = Darwin.close(readFD)
+        }
+        if writeFD >= 0 {
+            _ = Darwin.close(writeFD)
+        }
+    }
+
+    func requireMayContinue() throws {
+        if let setupFailure {
+            throw setupFailure
+        }
+        if Task.isCancelled {
+            throw HelperFailure("INPUT_CANCELLED", "native input was cancelled")
+        }
+        var marker: UInt8 = 0
+        let count = withUnsafeMutablePointer(to: &marker) { pointer in
+            Darwin.read(readFD, pointer, 1)
+        }
+        if count > 0 {
+            throw HelperFailure("INPUT_CANCELLED", "native input was cancelled")
+        }
+        if count < 0, errno != EAGAIN, errno != EWOULDBLOCK {
+            throw HelperFailure(
+                "INPUT_CANCELLATION_UNAVAILABLE",
+                "could not read the native input cancellation channel"
+            )
+        }
+    }
+
+    func cancelForTesting() {
+        guard writeFD >= 0 else {
+            return
+        }
+        var marker: UInt8 = 1
+        withUnsafePointer(to: &marker) { pointer in
+            _ = Darwin.write(writeFD, pointer, 1)
+        }
+    }
+}
+
 enum InputService {
     static func move(
         _ params: [String: Any],
@@ -22,8 +108,13 @@ enum InputService {
         let point = try lease.globalPoint(pixelX: pixelX, pixelY: pixelY)
         try requireInputDeadline(deadlineUnixMs, inputStarted: false)
         try await surfaceLeaseStore.consume(generation: lease.generation)
+        let physicalInputGuard = try PhysicalInputGuard(
+            captureBaseline: lease.physicalAnyInputBaseline
+        )
         try requireAccessibilityPermission()
         try lease.identity.requireStillCurrent()
+        try InputCancellationChannel.shared.requireMayContinue()
+        try requireInputDeadline(deadlineUnixMs, inputStarted: false)
         guard let event = CGEvent(
             mouseEventSource: nil,
             mouseType: .mouseMoved,
@@ -32,6 +123,7 @@ enum InputService {
         ) else {
             throw HelperFailure("INPUT_EVENT_FAILED", "could not create a mouse movement event")
         }
+        try physicalInputGuard.requireUnchanged()
         try postInputEvent(event, ownerPid: lease.identity.ownerPid)
         InputActivityTracker.shared.record(.mouseMoved)
         return ["posted": true, "eventCount": 1]
@@ -88,6 +180,9 @@ enum InputService {
         let point = try lease.globalPoint(pixelX: pixelX, pixelY: pixelY)
         try requireInputDeadline(deadlineUnixMs, inputStarted: false)
         try await surfaceLeaseStore.consume(generation: lease.generation)
+        let physicalInputGuard = try PhysicalInputGuard(
+            captureBaseline: lease.physicalAnyInputBaseline
+        )
         try requireAccessibilityPermission()
         try lease.identity.requireStillCurrent()
 
@@ -114,18 +209,30 @@ enum InputService {
         var eventCount = 0
         for (down, up) in pairs {
             do {
-                try requireInputDeadline(deadlineUnixMs, inputStarted: eventCount > 0)
-                try lease.identity.requireStillCurrent()
+                let priorEventCount = eventCount
+                let pairEventCount = try performBoundedClickPair(
+                    down: down,
+                    up: up,
+                    ownerPid: lease.identity.ownerPid,
+                    downType: downType,
+                    upType: upType,
+                    checkpoint: { pairStarted in
+                        try lease.identity.requireStillCurrent()
+                        try requireInputDeadline(
+                            deadlineUnixMs,
+                            inputStarted: priorEventCount > 0 || pairStarted
+                        )
+                        try InputCancellationChannel.shared.requireMayContinue()
+                        try physicalInputGuard.requireUnchanged()
+                    },
+                    post: { event in
+                        try postInputEvent(event, ownerPid: lease.identity.ownerPid)
+                    }
+                )
+                eventCount += pairEventCount
             } catch let failure as HelperFailure {
                 throw inputOutcomeFailure(afterEvents: eventCount, underlying: failure)
             }
-            // Never leave a mouse-down half posted: a pair is deliberately
-            // emitted without an interruptible await or deadline check.
-            try postInputEvent(down, ownerPid: lease.identity.ownerPid)
-            try postInputEvent(up, ownerPid: lease.identity.ownerPid)
-            InputActivityTracker.shared.record(downType)
-            InputActivityTracker.shared.record(upType)
-            eventCount += 2
         }
 
         return ["posted": true, "eventCount": eventCount]
@@ -156,41 +263,33 @@ enum InputService {
         )
         try requireInputDeadline(deadlineUnixMs, inputStarted: false)
         try await surfaceLeaseStore.consume(generation: lease.generation)
+        let physicalInputGuard = try PhysicalInputGuard(
+            captureBaseline: lease.physicalAnyInputBaseline
+        )
         try requireAccessibilityPermission()
-        try lease.identity.requireStillCurrent()
-        try requireNonSensitiveFocusedInput(expectedPid: lease.identity.ownerPid)
+        try InputCancellationChannel.shared.requireMayContinue()
+        let focusedTarget = try requireNonSensitiveFocusedInput(on: lease.identity)
 
-        let utf16 = Array(text.utf16)
-        var start = 0
-        var eventCount = 0
-        while start < utf16.count {
-            do {
-                try requireInputDeadline(deadlineUnixMs, inputStarted: eventCount > 0)
-                try lease.identity.requireStillCurrent()
-                var end = min(start + 20, utf16.count)
-                if end < utf16.count, (0xD800...0xDBFF).contains(utf16[end - 1]) {
-                    end -= 1
+        do {
+            // Text is one exact-element Accessibility mutation. There is no
+            // fallback to focus-routed CGEvents, the clipboard, or a whole-
+            // value replacement if the target cannot insert selected text.
+            try focusedTarget.insertSelectedText(
+                text,
+                on: lease.identity,
+                beforeWrite: {
+                    // Accessibility probes are cross-process IPC. Recheck all
+                    // non-target control signals at the last possible point.
+                    try requireInputDeadline(deadlineUnixMs, inputStarted: false)
+                    try InputCancellationChannel.shared.requireMayContinue()
+                    try physicalInputGuard.requireUnchanged()
                 }
-                var chunk = Array(utf16[start..<end])
-                guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
-                      let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else {
-                    throw HelperFailure("INPUT_EVENT_FAILED", "could not create a keyboard event")
-                }
-                down.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
-                up.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
-                // As with clicks, keep each key down/up pair indivisible.
-                try postInputEvent(down, ownerPid: lease.identity.ownerPid)
-                try postInputEvent(up, ownerPid: lease.identity.ownerPid)
-                InputActivityTracker.shared.record(.keyDown)
-                InputActivityTracker.shared.record(.keyUp)
-                eventCount += 2
-                start = end
-            } catch let failure as HelperFailure {
-                throw inputOutcomeFailure(afterEvents: eventCount, underlying: failure)
-            }
+            )
+        } catch let failure as HelperFailure {
+            throw inputOutcomeFailure(afterEvents: 0, underlying: failure)
         }
 
-        return ["posted": true, "eventCount": eventCount, "utf8Bytes": text.utf8.count]
+        return ["posted": true, "eventCount": 1, "utf8Bytes": text.utf8.count]
     }
 
     static func drag(
@@ -251,6 +350,9 @@ enum InputService {
         let end = try lease.globalPoint(pixelX: toPixelX, pixelY: toPixelY)
         try requireInputDeadline(deadlineUnixMs, inputStarted: false)
         try await surfaceLeaseStore.consume(generation: lease.generation)
+        let physicalInputGuard = try PhysicalInputGuard(
+            captureBaseline: lease.physicalAnyInputBaseline
+        )
         try requireAccessibilityPermission()
         try lease.identity.requireStillCurrent()
 
@@ -260,48 +362,63 @@ enum InputService {
             mouseType: downType,
             mouseCursorPosition: start,
             mouseButton: button
-        ), let up = CGEvent(
+        ), let startRelease = CGEvent(
             mouseEventSource: nil,
             mouseType: upType,
-            mouseCursorPosition: end,
+            mouseCursorPosition: start,
             mouseButton: button
         ) else {
             throw HelperFailure("INPUT_EVENT_FAILED", "could not create drag boundary events")
         }
-        var dragEvents: [CGEvent] = []
+        var stages: [DragEventStage] = []
         for step in 1...stepCount {
             let fraction = CGFloat(step) / CGFloat(stepCount)
             let point = CGPoint(
                 x: start.x + (end.x - start.x) * fraction,
                 y: start.y + (end.y - start.y) * fraction
             )
-            guard let event = CGEvent(
+            guard let drag = CGEvent(
                 mouseEventSource: nil,
                 mouseType: draggedType,
+                mouseCursorPosition: point,
+                mouseButton: button
+            ), let release = CGEvent(
+                mouseEventSource: nil,
+                mouseType: upType,
                 mouseCursorPosition: point,
                 mouseButton: button
             ) else {
                 throw HelperFailure("INPUT_EVENT_FAILED", "could not create a drag movement event")
             }
-            dragEvents.append(event)
+            stages.append(DragEventStage(drag: drag, release: release))
         }
 
-        // Once mouse-down is posted, finish the bounded drag without an
-        // interruptible await so the helper can never strand the system in a
-        // pressed-button state. A timeout after this point is outcome-unknown.
-        try postInputEvent(down, ownerPid: lease.identity.ownerPid)
-        let delayMicroseconds = stepCount > 0 ? (durationMs * 1_000) / stepCount : 0
-        for event in dragEvents {
-            try postInputEvent(event, ownerPid: lease.identity.ownerPid)
-            if delayMicroseconds > 0 {
-                usleep(useconds_t(delayMicroseconds))
+        let delayMilliseconds = stepCount > 0 ? durationMs / stepCount : 0
+        let eventCount = try await performBoundedDrag(
+            down: down,
+            startRelease: startRelease,
+            stages: stages,
+            ownerPid: lease.identity.ownerPid,
+            downType: downType,
+            draggedType: draggedType,
+            upType: upType,
+            delayMilliseconds: delayMilliseconds,
+            validateSurface: { try lease.identity.requireStillCurrent() },
+            checkCancellation: { try InputCancellationChannel.shared.requireMayContinue() },
+            checkPhysicalInput: { try physicalInputGuard.requireUnchanged() },
+            checkDeadline: { inputStarted in
+                try requireInputDeadline(deadlineUnixMs, inputStarted: inputStarted)
+            },
+            post: { event in
+                try postInputEvent(event, ownerPid: lease.identity.ownerPid)
+            },
+            delay: { milliseconds in
+                if milliseconds > 0 {
+                    try await Task.sleep(for: .milliseconds(milliseconds))
+                }
             }
-        }
-        try postInputEvent(up, ownerPid: lease.identity.ownerPid)
-        InputActivityTracker.shared.record(downType)
-        InputActivityTracker.shared.record(draggedType, count: dragEvents.count)
-        InputActivityTracker.shared.record(upType)
-        return ["posted": true, "eventCount": dragEvents.count + 2]
+        )
+        return ["posted": true, "eventCount": eventCount]
     }
 
     static func keypress(
@@ -312,7 +429,7 @@ enum InputService {
     ) async throws -> [String: Any] {
         try strictKeys(params, allowed: ["key", "modifiers", "surfaceLease"])
         guard let key = params["key"] as? String,
-              let keyCode = virtualKeyCode(key) else {
+              virtualKeyCode(key) != nil else {
             throw HelperFailure("INVALID_PARAMS", "key is not a supported macOS key name")
         }
         let modifierNames: [String]
@@ -327,7 +444,7 @@ enum InputService {
         guard Set(modifierNames).count == modifierNames.count else {
             throw HelperFailure("INVALID_PARAMS", "modifiers must not contain duplicates")
         }
-        let flags = try eventFlags(modifierNames)
+        _ = try eventFlags(modifierNames)
 
         let lease = try await resolveLease(
             params["surfaceLease"],
@@ -337,20 +454,18 @@ enum InputService {
         )
         try requireInputDeadline(deadlineUnixMs, inputStarted: false)
         try await surfaceLeaseStore.consume(generation: lease.generation)
+        let physicalInputGuard = try PhysicalInputGuard(
+            captureBaseline: lease.physicalAnyInputBaseline
+        )
         try requireAccessibilityPermission()
         try lease.identity.requireStillCurrent()
-        try requireNonSensitiveFocusedInput(expectedPid: lease.identity.ownerPid)
-        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
-              let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else {
-            throw HelperFailure("INPUT_EVENT_FAILED", "could not create a keypress event")
-        }
-        down.flags = flags
-        up.flags = flags
-        try postInputEvent(down, ownerPid: lease.identity.ownerPid)
-        try postInputEvent(up, ownerPid: lease.identity.ownerPid)
-        InputActivityTracker.shared.record(.keyDown)
-        InputActivityTracker.shared.record(.keyUp)
-        return ["posted": true, "eventCount": 2]
+        try InputCancellationChannel.shared.requireMayContinue()
+        try requireInputDeadline(deadlineUnixMs, inputStarted: false)
+        try physicalInputGuard.requireUnchanged()
+        throw HelperFailure(
+            "EXACT_KEY_TARGET_UNAVAILABLE",
+            "focus-routed keypress and hotkey input is disabled because macOS cannot bind it to an exact Accessibility element"
+        )
     }
 
     static func scroll(
@@ -408,6 +523,9 @@ enum InputService {
         let point = try lease.globalPoint(pixelX: pixelX, pixelY: pixelY)
         try requireInputDeadline(deadlineUnixMs, inputStarted: false)
         try await surfaceLeaseStore.consume(generation: lease.generation)
+        let physicalInputGuard = try PhysicalInputGuard(
+            captureBaseline: lease.physicalAnyInputBaseline
+        )
         try requireAccessibilityPermission()
         try lease.identity.requireStillCurrent()
         guard let event = CGEvent(
@@ -423,7 +541,9 @@ enum InputService {
         event.location = point
 
         try lease.identity.requireStillCurrent()
+        try InputCancellationChannel.shared.requireMayContinue()
         try requireInputDeadline(deadlineUnixMs, inputStarted: false)
+        try physicalInputGuard.requireUnchanged()
         try postInputEvent(event, ownerPid: lease.identity.ownerPid)
         InputActivityTracker.shared.record(.scrollWheel)
         return ["posted": true, "eventCount": 1]
@@ -435,9 +555,175 @@ enum InputService {
         deadlineUnixMs: Int64,
         store: SurfaceLeaseStore
     ) async throws -> WindowSurfaceLease {
+        try InputCancellationChannel.shared.requireMayContinue()
         try requireInputDeadline(deadlineUnixMs, inputStarted: false)
         let descriptor = try WindowSurfaceLease.parse(raw)
         return try await store.resolve(descriptor, sessionId: sessionId)
+    }
+}
+
+struct DragEventStage {
+    let drag: CGEvent
+    let release: CGEvent
+}
+
+/// Posts one click pair with a takeover checkpoint before both the down and
+/// up events. If authority changes after down, cleanup still targets the
+/// original lease owner and the result is outcome-unknown rather than success.
+func performBoundedClickPair(
+    down: CGEvent,
+    up: CGEvent,
+    ownerPid: Int,
+    downType: CGEventType,
+    upType: CGEventType,
+    checkpoint: (Bool) throws -> Void,
+    post: (CGEvent) throws -> Void
+) throws -> Int {
+    var eventCount = 0
+    var mouseDownMayBePosted = false
+    do {
+        try checkpoint(false)
+        // A throwing transport cannot prove that mouse-down was not posted.
+        mouseDownMayBePosted = true
+        try post(down)
+        InputActivityTracker.shared.record(downType)
+        eventCount += 1
+
+        try checkpoint(true)
+        try post(up)
+        InputActivityTracker.shared.record(upType)
+        eventCount += 1
+        mouseDownMayBePosted = false
+        return eventCount
+    } catch {
+        let underlying: HelperFailure
+        if let failure = error as? HelperFailure {
+            underlying = failure
+        } else if error is CancellationError {
+            underlying = HelperFailure("INPUT_CANCELLED", "native input was cancelled")
+        } else {
+            underlying = HelperFailure(
+                "INPUT_EVENT_FAILED",
+                "the bounded click pair failed while native input was in flight"
+            )
+        }
+        if mouseDownMayBePosted {
+            do {
+                // Cleanup bypasses the failed authority check so a takeover
+                // cannot strand the lease owner's mouse button in down state.
+                try post(up)
+                InputActivityTracker.shared.record(upType)
+                eventCount += 1
+                mouseDownMayBePosted = false
+            } catch {
+                throw HelperFailure(
+                    "MOUSE_RELEASE_FAILED",
+                    "native click cleanup could not post mouse-up to the lease owner",
+                    details: [
+                        "eventsPosted": eventCount,
+                        "ownerPid": ownerPid,
+                        "underlyingCode": underlying.code
+                    ]
+                )
+            }
+        }
+        throw inputOutcomeFailure(afterEvents: eventCount, underlying: underlying)
+    }
+}
+
+/// Posts a drag as a sequence of independently authorized stages. Every normal
+/// event is preceded by cancellation, deadline, exact-surface, and physical-HID
+/// validation. Once a down event may have been posted, all error paths attempt
+/// a process-scoped up event at the last authorized point before propagating an
+/// outcome-unknown failure.
+func performBoundedDrag(
+    down: CGEvent,
+    startRelease: CGEvent,
+    stages: [DragEventStage],
+    ownerPid: Int,
+    downType: CGEventType,
+    draggedType: CGEventType,
+    upType: CGEventType,
+    delayMilliseconds: Int,
+    validateSurface: () throws -> Void,
+    checkCancellation: () throws -> Void,
+    checkPhysicalInput: () throws -> Void,
+    checkDeadline: (Bool) throws -> Void,
+    post: (CGEvent) throws -> Void,
+    delay: (Int) async throws -> Void
+) async throws -> Int {
+    var eventCount = 0
+    var mouseDownMayBePosted = false
+    var releaseEvent = startRelease
+
+    func checkpoint(inputStarted: Bool) throws {
+        try validateSurface()
+        try checkDeadline(inputStarted)
+        try checkCancellation()
+        try checkPhysicalInput()
+    }
+
+    do {
+        try checkpoint(inputStarted: false)
+        // Mark this before calling the poster: a thrown transport error cannot
+        // prove that the target process did not receive the mouse-down.
+        mouseDownMayBePosted = true
+        try post(down)
+        InputActivityTracker.shared.record(downType)
+        eventCount += 1
+
+        for stage in stages {
+            try checkpoint(inputStarted: true)
+            try post(stage.drag)
+            InputActivityTracker.shared.record(draggedType)
+            eventCount += 1
+            releaseEvent = stage.release
+            if delayMilliseconds > 0 {
+                try await delay(delayMilliseconds)
+            }
+        }
+
+        try checkpoint(inputStarted: true)
+        try post(releaseEvent)
+        InputActivityTracker.shared.record(upType)
+        eventCount += 1
+        mouseDownMayBePosted = false
+        return eventCount
+    } catch {
+        let underlying: HelperFailure
+        if let failure = error as? HelperFailure {
+            underlying = failure
+        } else if error is CancellationError {
+            underlying = HelperFailure("INPUT_CANCELLED", "native input was cancelled")
+        } else {
+            underlying = HelperFailure(
+                "INPUT_EVENT_FAILED",
+                "the bounded drag sequence failed while native input was in flight"
+            )
+        }
+
+        if mouseDownMayBePosted {
+            do {
+                // Cleanup intentionally bypasses surface/deadline/cancel/HID
+                // checks: releasing the lease owner's button is safer than
+                // preserving a logically pressed state after authority changed.
+                try post(releaseEvent)
+                InputActivityTracker.shared.record(upType)
+                eventCount += 1
+                mouseDownMayBePosted = false
+            } catch {
+                throw HelperFailure(
+                    "MOUSE_RELEASE_FAILED",
+                    "native drag cleanup could not post mouse-up to the lease owner",
+                    details: [
+                        "eventsPosted": eventCount,
+                        "ownerPid": ownerPid,
+                        "underlyingCode": underlying.code
+                    ]
+                )
+            }
+        }
+        throw inputOutcomeFailure(afterEvents: eventCount, underlying: underlying)
     }
 }
 
