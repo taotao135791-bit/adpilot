@@ -530,7 +530,8 @@ export class AdPilotTools {
    * stay local; the reader and independent verifier receive separately audited
    * sanitized ROIs. Scrolling is a one-attempt, scroll-only Computer Use task.
    */
-  async readVisualTable(context: ToolContext, rawInput: z.input<typeof VisualTableReadToolInput>): Promise<VisualTableReadResult> {
+  async readVisualTable(context: ToolContext, rawInput: z.input<typeof VisualTableReadToolInput>, signal?: AbortSignal): Promise<VisualTableReadResult> {
+    signal?.throwIfAborted();
     if (!this.computer || !this.browserSessions || !this.visualTables) {
       throw new Error("managed visual table reading is unavailable");
     }
@@ -552,6 +553,7 @@ export class AdPilotTools {
       throw new Error(permissionIssue);
     }
     const found = await this.browserSessions.get(context.clientId, input.browserProfile);
+    signal?.throwIfAborted();
     if (!found) throw new Error("visual table reading requires a connected managed browser session");
     if (found.platform !== input.platform) throw new Error("visual table platform differs from the managed browser session");
     const session = await this.browserSessions.assertActive(context.clientId, found.browserProfile, input.platform);
@@ -582,10 +584,12 @@ export class AdPilotTools {
         allowedDomains: [domain]
       }
     });
+    signal?.throwIfAborted();
     await this.assertClientSurfaceBinding(context, captureTask);
 
     try {
       const firstNative = await this.computer.captureForTask(captureTask);
+      signal?.throwIfAborted();
       assertTaskSurfaceExact(captureTask, firstNative);
       const tableRoi = resolveVisualTableRoi(input.tableRoi, firstNative);
       const tableTask: VisualMicroTask = { ...captureTask, allowedRegion: tableRoi };
@@ -625,7 +629,7 @@ export class AdPilotTools {
             allowedScrollDirections: [direction],
             retryPolicy: "none"
           };
-          const result = await this.executeVisualTask(context, scrollTask);
+          const result = await this.executeVisualTask(context, scrollTask, undefined, signal);
           if (result.status === "failed") throw new Error(`visual table scroll failed: ${result.blocker}`);
           if (result.action.action === "done") return "end";
           if (result.action.action !== "scroll" || result.action.direction !== direction) {
@@ -681,6 +685,7 @@ export class AdPilotTools {
         factTtlMs: input.factTtlMs,
         maxPages: input.maxPages
       });
+      signal?.throwIfAborted();
       await this.audit.append({
         clientId: context.clientId,
         taskId: context.taskId,
@@ -716,16 +721,20 @@ export class AdPilotTools {
     }
   }
 
-  async executeVisualTask(context: ToolContext, task: VisualMicroTask, initialScreenshot?: Screenshot): Promise<VisualStepResult> {
+  async executeVisualTask(context: ToolContext, task: VisualMicroTask, initialScreenshot?: Screenshot, signal?: AbortSignal): Promise<VisualStepResult> {
+    signal?.throwIfAborted();
     if (!this.computer) throw new Error("native computer runtime is unavailable");
     if (task.permission !== context.permission) throw new Error("visual task permission differs from tool context");
     const boundTask = await this.bindManagedTask(context, task);
+    signal?.throwIfAborted();
     await this.assertClientSurfaceBinding(context, boundTask);
     const result = await this.computer.runMicroTask(
       boundTask,
       initialScreenshot,
-      boundTask.allowedActions ? { allowedActions: boundTask.allowedActions } : undefined
+      boundTask.allowedActions ? { allowedActions: boundTask.allowedActions } : undefined,
+      signal
     );
+    signal?.throwIfAborted();
     if (result.status === "done") {
       await this.workspace.writeJson(context.clientId, `screenshots/${context.taskId}-${Date.now()}.json`, {
         task: {
@@ -1299,7 +1308,7 @@ export class AdPilotTools {
           maxPages: Type.Optional(Type.Number({ minimum: 1, maximum: 100 }))
         }),
         executionMode: "sequential",
-        execute: async (_id, params) => textResult(await this.readVisualTable(context, VisualTableReadToolInput.parse(params)))
+        execute: async (_id, params, signal) => textResult(await this.readVisualTable(context, VisualTableReadToolInput.parse(params), signal))
       });
     }
     // The workspace-confined general read-only set travels with the domain

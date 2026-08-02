@@ -11,6 +11,14 @@ import { ConversationMessage, TaskState, type SharedFactLedger } from "@adpilot/
 import { visualTaskFromExecutionPlan, type VisualApprovalPlanDraft } from "@adpilot/tools";
 import { createServer, scopeTasksForConversation } from "./index.js";
 
+function deferredSignal() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
 function operation(): ApprovalOperation {
   return {
     platform: "google_ads", account: "acct", campaign: "campaign", operation: "set_daily_budget",
@@ -350,6 +358,204 @@ describe("product server", () => {
     const failedState = await server.inject({ method: "GET", url: "/api/state" });
     expect(failedState.json().messages.at(-1)).toMatchObject({ role: "system", status: "error" });
     expect(failedState.json().messages.at(-1).content).not.toContain("expected");
+    await server.close();
+  });
+
+  it("returns an aborted conversation without persisting a fabricated assistant reply", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-conversation-stop-"));
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+    vi.spyOn(system.agent, "respond").mockResolvedValue({ reply: "Stopped.", task: null, aborted: true });
+    const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/messages",
+      payload: { conversationId: "stop-response", message: "Open the browser", locale: "en" }
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({ aborted: true, message: null, task: null });
+    const messages = (await system.workspace.readJsonl("personal", "conversation.jsonl", ConversationMessage))
+      .filter((message) => message.conversationId === "stop-response");
+    expect(messages).toMatchObject([{ role: "user", content: "Open the browser" }]);
+    expect(await system.workspace.listTasks("personal")).toHaveLength(0);
+    await server.close();
+  });
+
+  it("requires explicit client scope for a message runId and threads the exact run into the agent", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-message-run-scope-"));
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+    await system.workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
+    const respond = vi.spyOn(system.agent, "respond").mockResolvedValue({ reply: "Scoped reply", task: null });
+    const server = await createServer(system, { uiRoot: join(root, "missing-ui") });
+    const conversationId = "scoped-run-conversation";
+    const runId = crypto.randomUUID();
+
+    const missingClient = await server.inject({
+      method: "POST",
+      url: "/api/messages",
+      payload: { conversationId, runId, message: "Hello", locale: "en" }
+    });
+    expect(missingClient.statusCode).toBe(400);
+    expect(missingClient.json()).toMatchObject({ code: "RUN_SCOPE_REQUIRED" });
+    expect(respond).not.toHaveBeenCalled();
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/messages",
+      payload: { clientId: "client-a", conversationId, runId, message: "Hello", locale: "en" }
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({ runId, message: { role: "assistant", content: "Scoped reply" } });
+    expect(respond).toHaveBeenCalledTimes(1);
+    expect(respond.mock.calls[0]?.[0]).toBe("client-a");
+    expect(respond.mock.calls[0]?.[2]).toMatchObject({ conversationId, runId });
+    const messages = (await system.workspace.readJsonl("client-a", "conversation.jsonl", ConversationMessage))
+      .filter((message) => message.conversationId === conversationId);
+    expect(messages.map(({ role, content }) => ({ role, content }))).toEqual([
+      { role: "user", content: "Hello" },
+      { role: "assistant", content: "Scoped reply" }
+    ]);
+    await server.close();
+  });
+
+  it("single-flights one conversation and stops only the exact running run without persisting an assistant", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-exact-run-stop-"));
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+    await system.workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
+    await system.workspace.initializeClient({ profile: { id: "client-b", name: "B" }, kpi: { primary: "CPA", target: 20 } });
+    const entered = deferredSignal();
+    const finishAgent = deferredSignal();
+    const respond = vi.spyOn(system.agent, "respond").mockImplementation(async () => {
+      entered.release();
+      await finishAgent.promise;
+      return { reply: "This late assistant reply must not persist", task: null };
+    });
+    const desktopToken = "stop-test-token-".padEnd(64, "x");
+    const stopHeaders = {
+      cookie: `adpilot_native_instance=${desktopToken}`,
+      "sec-fetch-site": "same-origin"
+    };
+    const server = await createServer(system, {
+      uiRoot: join(root, "missing-ui"),
+      desktopNativeAuthToken: desktopToken
+    });
+    const conversationId = "one-running-conversation";
+    const runId = crypto.randomUUID();
+    const competingRunId = crypto.randomUUID();
+    const pendingMessage = server.inject({
+      method: "POST",
+      url: "/api/messages",
+      payload: { clientId: "client-a", conversationId, runId, message: "Start work", locale: "en" }
+    });
+    await entered.promise;
+
+    const busy = await server.inject({
+      method: "POST",
+      url: "/api/messages",
+      payload: { clientId: "client-a", conversationId, runId: competingRunId, message: "Competing work", locale: "en" }
+    });
+    expect(busy.statusCode).toBe(409);
+    expect(busy.json()).toMatchObject({ code: "CONVERSATION_BUSY" });
+    expect(busy.json()).not.toHaveProperty("activeRunId");
+    expect(respond).toHaveBeenCalledTimes(1);
+
+    const wrongClient = await server.inject({
+      method: "POST",
+      url: `/api/clients/client-b/conversations/${conversationId}/stop`,
+      headers: stopHeaders,
+      payload: { runId }
+    });
+    expect(wrongClient.statusCode).toBe(200);
+    expect(wrongClient.json()).toEqual({ stopped: false, status: "not_found" });
+
+    const wrongRun = await server.inject({
+      method: "POST",
+      url: `/api/clients/client-a/conversations/${conversationId}/stop`,
+      headers: stopHeaders,
+      payload: { runId: competingRunId }
+    });
+    expect(wrongRun.statusCode).toBe(200);
+    expect(wrongRun.json()).toEqual({ stopped: false, status: "run_mismatch" });
+
+    const stopped = await server.inject({
+      method: "POST",
+      url: `/api/clients/client-a/conversations/${conversationId}/stop`,
+      headers: stopHeaders,
+      payload: { runId }
+    });
+    expect(stopped.statusCode).toBe(200);
+    expect(stopped.json()).toEqual({ stopped: true, status: "stopped" });
+    finishAgent.release();
+
+    const response = await pendingMessage;
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({ aborted: true, message: null, task: null, runId });
+    const messages = (await system.workspace.readJsonl("client-a", "conversation.jsonl", ConversationMessage))
+      .filter((message) => message.conversationId === conversationId);
+    expect(messages.map(({ role, content }) => ({ role, content }))).toEqual([
+      { role: "user", content: "Start work" }
+    ]);
+
+    const afterCompletion = await server.inject({
+      method: "POST",
+      url: `/api/clients/client-a/conversations/${conversationId}/stop`,
+      headers: stopHeaders,
+      payload: { runId }
+    });
+    expect(afterCompletion.json()).toEqual({ stopped: false, status: "not_found" });
+    await server.close();
+  });
+
+  it("requires runId in the Stop body and distinguishes completed from unknown active state", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-stop-contract-"));
+    const system = await createAdPilotSystem({ workspaceRoot: root, env: {} });
+    await system.workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
+    const desktopToken = "stop-contract-token-".padEnd(64, "x");
+    const headers = {
+      cookie: `adpilot_native_instance=${desktopToken}`,
+      "sec-fetch-site": "same-origin"
+    };
+    const server = await createServer(system, {
+      uiRoot: join(root, "missing-ui"),
+      desktopNativeAuthToken: desktopToken
+    });
+    const conversationId = "stop-contract-conversation";
+    const runId = crypto.randomUUID();
+    const stop = vi.spyOn(system.agent, "stopConversationRun");
+
+    for (const request of [
+      { url: `/api/clients/client-a/conversations/${conversationId}/stop` },
+      { url: `/api/clients/client-a/conversations/${conversationId}/stop`, payload: {} },
+      { url: `/api/clients/client-a/conversations/${conversationId}/stop?runId=${runId}` },
+      { url: `/api/clients/client-a/conversations/${conversationId}/stop`, payload: { runId: "not-a-uuid" } },
+      { url: `/api/clients/client-a/conversations/${conversationId}/stop`, payload: { runId, extra: true } }
+    ]) {
+      const response = await server.inject({ method: "POST", headers, ...request });
+      expect(response.statusCode, request.url).toBe(400);
+    }
+    expect(stop).not.toHaveBeenCalled();
+
+    expect(system.agent.reserveConversationRun("client-a", conversationId, runId)).toMatchObject({ accepted: true, runId });
+    expect(system.agent.commitConversationRun("client-a", conversationId, runId)).toBe(true);
+    const completed = await server.inject({
+      method: "POST",
+      url: `/api/clients/client-a/conversations/${conversationId}/stop`,
+      headers,
+      payload: { runId }
+    });
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json()).toEqual({ stopped: false, status: "already_completed" });
+    system.agent.releaseConversationRun("client-a", conversationId, runId);
+
+    const unknown = await server.inject({
+      method: "POST",
+      url: `/api/clients/client-a/conversations/${conversationId}/stop`,
+      headers,
+      payload: { runId: crypto.randomUUID() }
+    });
+    expect(unknown.statusCode).toBe(200);
+    expect(unknown.json()).toEqual({ stopped: false, status: "not_found" });
     await server.close();
   });
 

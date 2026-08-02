@@ -18,6 +18,7 @@ import {
   MAX_RUNTIME_BUDGET,
   PiAgentRuntime,
   RuntimeBudgetExceeded,
+  RuntimeUserStopped,
   resolvePiSessionId,
   resolveRuntimeBudgetLimits,
   type PiAgentRuntimeOptions,
@@ -279,7 +280,7 @@ describe("PiAgentRuntime hard budgets", () => {
     expect(runtime.isSessionActive("client-a", "wall-clock-budget")).toBe(false);
   });
 
-  it("keeps explicit user Stop on the existing non-budget cancellation path", async () => {
+  it("reports explicit user Stop as typed non-budget control flow", async () => {
     const { faux, runtime } = await setup();
     let toolStarted = false;
     const tool = {
@@ -310,11 +311,72 @@ describe("PiAgentRuntime hard budgets", () => {
     await waitFor(() => toolStarted, "abort-aware tool");
     expect(runtime.stopConversation("client-a", conversationId)).toBe(true);
 
-    await expect(running).resolves.toMatchObject({
-      messages: expect.arrayContaining([
-        expect.objectContaining({ role: "assistant", stopReason: "aborted" })
-      ])
+    await expect(running).rejects.toBeInstanceOf(RuntimeUserStopped);
+    expect(runtime.isSessionActive("client-a", conversationId)).toBe(false);
+  });
+
+  it("propagates an owning request AbortSignal through the active tool", async () => {
+    const { faux, runtime } = await setup();
+    const owner = new AbortController();
+    let toolStarted = false;
+    let toolSignal: AbortSignal | undefined;
+    const tool = {
+      name: "analyze_campaign_metrics",
+      label: "Analyze campaign metrics",
+      description: "abort-aware request ownership probe",
+      parameters: { type: "object", properties: {} },
+      executionMode: "sequential",
+      execute: async (_toolCallId: string, _args: unknown, signal?: AbortSignal) => {
+        toolSignal = signal;
+        toolStarted = true;
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("owner stopped tool")), { once: true });
+        });
+        return { content: [{ type: "text" as const, text: "unreachable" }], details: {} };
+      }
+    } as AgentTool;
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("analyze_campaign_metrics", {}), { stopReason: "toolUse" })
+    ]);
+
+    const conversationId = "external-owner-stop";
+    const running = runtime.run({
+      ...request(conversationId),
+      tools: [tool],
+      signal: owner.signal
     });
+    await waitFor(() => toolStarted, "externally owned tool");
+    owner.abort();
+
+    expect(toolSignal?.aborted).toBe(true);
+    await expect(running).rejects.toBeInstanceOf(RuntimeUserStopped);
+    expect(runtime.isSessionActive("client-a", conversationId)).toBe(false);
+  });
+
+  it("does not enter structured repair after user Stop", async () => {
+    const { faux, runtime } = await setup({
+      tokensPerSecond: 4,
+      tokenSize: { min: 1, max: 1 }
+    });
+    let providerStarted = false;
+    faux.setResponses([
+      () => {
+        providerStarted = true;
+        return fauxAssistantMessage('{"approved":true}');
+      },
+      fauxAssistantMessage('{"approved":false,"reason":"repair must not run"}')
+    ]);
+
+    const conversationId = "structured-user-stop";
+    const running = runtime.runStructuredDetailed({
+      ...request(conversationId),
+      budget: { maxTurns: 4, maxToolCalls: 4, wallClockMs: 5_000 }
+    }, z.object({ approved: z.boolean(), reason: z.string() }));
+    await waitFor(() => providerStarted, "structured provider run");
+    expect(runtime.stopConversation("client-a", conversationId)).toBe(true);
+
+    await expect(running).rejects.toBeInstanceOf(RuntimeUserStopped);
+    expect(faux.state.callCount).toBe(1);
     expect(runtime.isSessionActive("client-a", conversationId)).toBe(false);
   });
 
@@ -351,7 +413,7 @@ describe("PiAgentRuntime hard budgets", () => {
     expect(compactionSignal?.aborted).toBe(true);
 
     let timeout: ReturnType<typeof setTimeout> | undefined;
-    const result = await Promise.race([
+    const stopped = Promise.race([
       running,
       new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => reject(new Error("user Stop did not release post-run compaction")), 500);
@@ -359,8 +421,7 @@ describe("PiAgentRuntime hard budgets", () => {
     ]).finally(() => {
       if (timeout) clearTimeout(timeout);
     });
-    expect(result.text).toBe("campaign-42 analysis completed");
-    expect(result.compacted).toBe(false);
+    await expect(stopped).rejects.toBeInstanceOf(RuntimeUserStopped);
     expect(runtime.isSessionActive("client-a", conversationId)).toBe(false);
 
     const storage = await AdPilotSessionStorage.openOrCreate(workspace, "client-a", conversationId);

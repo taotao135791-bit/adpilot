@@ -76,10 +76,12 @@ describe("desktop native REST boundary", () => {
 
   it("protects conversation Stop with the desktop instance boundary and returns an explicit hit result", async () => {
     const { server, system } = await boot();
-    const stopConversation = vi.spyOn(system.runtime, "stopConversation")
-      .mockReturnValueOnce(false)
-      .mockReturnValueOnce(true);
+    const stopConversation = vi.spyOn(system.agent, "stopConversationRun")
+      .mockReturnValueOnce({ stopped: false, status: "not_found" })
+      .mockReturnValueOnce({ stopped: true, status: "stopped" });
     const url = "/api/clients/client-a/conversations/conversation-42/stop";
+    const firstRunId = crypto.randomUUID();
+    const secondRunId = crypto.randomUUID();
 
     const missing = await server.inject({ method: "POST", url });
     expect(missing.statusCode).toBe(403);
@@ -95,21 +97,23 @@ describe("desktop native REST boundary", () => {
     const idle = await server.inject({
       method: "POST",
       url,
-      headers: { cookie, "sec-fetch-site": "same-origin" }
+      headers: { cookie, "sec-fetch-site": "same-origin" },
+      payload: { runId: firstRunId }
     });
     expect(idle.statusCode).toBe(200);
     expect(idle.headers["cache-control"]).toBe("no-store");
-    expect(idle.json()).toEqual({ stopped: false });
+    expect(idle.json()).toEqual({ stopped: false, status: "not_found" });
 
     const stopped = await server.inject({
       method: "POST",
       url,
-      headers: { cookie, "sec-fetch-site": "same-origin" }
+      headers: { cookie, "sec-fetch-site": "same-origin" },
+      payload: { runId: secondRunId }
     });
     expect(stopped.statusCode).toBe(200);
-    expect(stopped.json()).toEqual({ stopped: true });
-    expect(stopConversation).toHaveBeenNthCalledWith(1, "client-a", "conversation-42");
-    expect(stopConversation).toHaveBeenNthCalledWith(2, "client-a", "conversation-42");
+    expect(stopped.json()).toEqual({ stopped: true, status: "stopped" });
+    expect(stopConversation).toHaveBeenNthCalledWith(1, "client-a", "conversation-42", firstRunId);
+    expect(stopConversation).toHaveBeenNthCalledWith(2, "client-a", "conversation-42", secondRunId);
     await server.close();
   });
 

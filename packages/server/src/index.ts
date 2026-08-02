@@ -76,7 +76,7 @@ import { registerAutomationRoutes } from "./automation-routes.js";
 import { registerTerminalRoutes } from "./terminal-routes.js";
 import { registerFsRoutes } from "./fs-routes.js";
 import { TerminalService } from "./terminal-service.js";
-import { ensureProjectSession } from "./session-binding.js";
+import { ensureProjectSession, isComplexMission, MISSION_GOAL_TITLE_LENGTH } from "./session-binding.js";
 import type { Project as KernelProject } from "@adpilot/kernel";
 
 export * from "./desktop-native.js";
@@ -457,7 +457,31 @@ export async function createServer(system: AdPilotSystem, options: {
   });
 
   app.post("/api/messages", async (request, reply) => {
-    const body = z.object({ clientId: z.string().optional(), conversationId: z.string().trim().min(1).max(120).default("primary"), sessionId: z.string().uuid().optional(), projectId: z.string().uuid().optional(), goalId: z.string().uuid().optional(), taskId: z.string().uuid().optional(), message: z.string().trim().min(1).max(20_000), locale: z.enum(["zh-CN", "en"]).default("zh-CN") }).parse(request.body);
+    const body = z.object({ clientId: z.string().optional(), conversationId: z.string().trim().min(1).max(120).default("primary"), runId: z.string().uuid().optional(), sessionId: z.string().uuid().optional(), projectId: z.string().uuid().optional(), goalId: z.string().uuid().optional(), taskId: z.string().uuid().optional(), message: z.string().trim().min(1).max(20_000), locale: z.enum(["zh-CN", "en"]).default("zh-CN") }).parse(request.body);
+    let reservedRun: { clientId: string; conversationId: string; runId: string; signal: AbortSignal } | undefined;
+    if (body.runId) {
+      if (!body.clientId) return reply.code(400).send({ error: "runId requires an explicit clientId", code: "RUN_SCOPE_REQUIRED" });
+      const reservation = system.agent.reserveConversationRun(body.clientId, body.conversationId, body.runId);
+      if (!reservation.accepted) {
+        return reply.code(409).send({ error: "conversation already has an active run", code: "CONVERSATION_BUSY" });
+      }
+      reservedRun = { clientId: body.clientId, conversationId: body.conversationId, runId: body.runId, signal: reservation.signal };
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        system.agent.releaseConversationRun(body.clientId!, body.conversationId, body.runId!);
+      };
+      const stopDisconnectedRun = () => {
+        if (released) return;
+        system.agent.stopConversationRun(body.clientId!, body.conversationId, body.runId!);
+        release();
+      };
+      reply.raw.once("finish", release);
+      // A renderer crash/navigation must not orphan a model/tool loop. Normal
+      // replies emit finish first; a premature socket close owns cancellation.
+      reply.raw.once("close", stopDisconnectedRun);
+    }
     const clients = await system.workspace.listClients();
     let clientId = body.clientId ?? clients[0]?.id;
     if (!clientId) return reply.code(409).send({ error: "workspace is not available" });
@@ -470,7 +494,7 @@ export async function createServer(system: AdPilotSystem, options: {
       project = await system.kernel.getProject(body.projectId);
       if (!project) return reply.code(404).send({ error: `project not found: ${body.projectId}`, code: "PROJECT_NOT_FOUND" });
       if (body.clientId && project.workspaceId !== body.clientId) {
-        return reply.code(400).send({ error: `project ${body.projectId} belongs to client ${project.workspaceId}`, code: "PROJECT_CLIENT_MISMATCH" });
+        return reply.code(404).send({ error: "project not found in this workspace", code: "PROJECT_NOT_FOUND" });
       }
       clientId = project.workspaceId;
     }
@@ -494,7 +518,7 @@ export async function createServer(system: AdPilotSystem, options: {
       session = await system.sessions.get(body.sessionId);
       if (!session) return reply.code(404).send({ error: `session not found: ${body.sessionId}`, code: "SESSION_NOT_FOUND" });
       if (body.clientId && session.clientId !== body.clientId) {
-        return reply.code(400).send({ error: `session ${body.sessionId} belongs to client ${session.clientId}`, code: "SESSION_CLIENT_MISMATCH" });
+        return reply.code(404).send({ error: "session not found in this workspace", code: "SESSION_NOT_FOUND" });
       }
       clientId = session.clientId;
     } else {
@@ -505,6 +529,13 @@ export async function createServer(system: AdPilotSystem, options: {
       if (mapping) session = await system.sessions.get(mapping.sessionId);
     }
     const conversationId = session ? session.runtimeConversationId : body.conversationId;
+    if (reservedRun && (reservedRun.clientId !== clientId || reservedRun.conversationId !== conversationId)) {
+      return reply.code(409).send({ error: "run scope does not match the resolved session", code: "RUN_SCOPE_MISMATCH" });
+    }
+    if (reservedRun?.signal.aborted) {
+      reply.code(201);
+      return { aborted: true, message: null, task: null, runId: reservedRun.runId, ...(session ? { session } : {}) };
+    }
     const existing = (await system.workspace.readJsonl(clientId, "conversation.jsonl", ConversationMessage)).filter((message) => message.conversationId === conversationId);
     const userMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId, ...(session ? { sessionId: session.id } : {}), role: "user", content: body.message, at: new Date().toISOString() });
     await system.workspace.appendJsonl(clientId, "conversation.jsonl", userMessage);
@@ -516,6 +547,60 @@ export async function createServer(system: AdPilotSystem, options: {
       const mapping = await system.sessions.repository.findLegacyMapping(clientId, conversationId);
       if (mapping) session = await system.sessions.get(mapping.sessionId);
     }
+    // Project mission triage is part of the exact reserved message run. The
+    // workbench previously called /mission first, leaving a pre-registration
+    // window where Stop could not own or cancel the work. Complex plain-text
+    // missions now materialize their Goal/Task here, after run reservation.
+    let resolvedGoalId = body.goalId;
+    let resolvedTaskId = body.taskId;
+    if (
+      project
+      && !resolvedGoalId
+      && !resolvedTaskId
+      && !body.message.startsWith("/")
+      && isComplexMission(body.message)
+    ) {
+      if (reservedRun?.signal.aborted) {
+        reply.code(201);
+        return { aborted: true, message: null, task: null, runId: reservedRun.runId, ...(session ? { session } : {}), projectId: project.id };
+      }
+      const goal = await system.kernel.createGoal({
+        projectId: project.id,
+        title: body.message.slice(0, MISSION_GOAL_TITLE_LENGTH),
+        objective: body.message
+      });
+      resolvedGoalId = goal.id;
+      const task = await system.kernel.createTask({
+        goalId: goal.id,
+        title: "规划执行路径",
+        description: body.message
+      });
+      resolvedTaskId = task.id;
+      await system.audit.append({
+        clientId,
+        actor: "workspace-owner",
+        action: "kernel_mission_goal_create",
+        status: "succeeded",
+        details: { projectId: project.id, goalId: goal.id, taskId: task.id, runId: reservedRun?.runId ?? null }
+      });
+      if (reservedRun?.signal.aborted) {
+        reply.code(201);
+        return {
+          aborted: true,
+          message: null,
+          task: null,
+          runId: reservedRun.runId,
+          goalId: resolvedGoalId,
+          taskId: resolvedTaskId,
+          ...(session ? { session } : {}),
+          projectId: project.id
+        };
+      }
+    }
+    const projectMission = () => ({
+      ...(resolvedGoalId ? { goalId: resolvedGoalId } : {}),
+      ...(resolvedTaskId ? { taskId: resolvedTaskId } : {})
+    });
     const modelOverride = session ? sessionModelOverride(session.modelBinding) : undefined;
     const setSessionStatus = async (status: "running" | "completed" | "failed") => {
       if (!session) return;
@@ -524,6 +609,14 @@ export async function createServer(system: AdPilotSystem, options: {
     };
     const slash = parseSlashCommand(body.message);
     const directAnswer = async (markdown: string, commandName: string) => {
+      if (reservedRun?.signal.aborted) {
+        reply.code(201);
+        return { aborted: true, message: null, task: null, runId: reservedRun.runId, ...projectMission(), ...(session ? { session } : {}) };
+      }
+      if (reservedRun && !system.agent.commitConversationRun(clientId, conversationId, reservedRun.runId)) {
+        reply.code(201);
+        return { aborted: true, message: null, task: null, runId: reservedRun.runId, ...projectMission(), ...(session ? { session } : {}) };
+      }
       const systemMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId, ...(session ? { sessionId: session.id } : {}), role: "system", content: markdown, status: "complete", at: new Date().toISOString() });
       await system.workspace.appendJsonl(clientId, "conversation.jsonl", systemMessage);
       if (session && isUntitledSession(session.title)) {
@@ -535,16 +628,32 @@ export async function createServer(system: AdPilotSystem, options: {
       }
       system.events.publish({ type: "task", clientId, status: "completed", message: markdown });
       reply.code(201);
-      return { message: systemMessage, task: null, command: commandName, ...(session ? { session } : {}) };
+      return { message: systemMessage, task: null, command: commandName, ...(reservedRun ? { runId: reservedRun.runId } : {}), ...projectMission(), ...(session ? { session } : {}) };
     };
     // Shared tail of this route: publish + model call + persistence, so
     // built-in and user-template expansions take the identical path.
     const runConversation = async (prompt: string) => {
+      if (reservedRun?.signal.aborted) {
+        reply.code(201);
+        return { aborted: true, message: null, task: null, runId: reservedRun.runId, ...projectMission(), ...(session ? { session } : {}), ...(project ? { projectId: project.id } : {}) };
+      }
       system.events.publish({ type: "task", clientId, status: "running", message: body.message });
       await setSessionStatus("running");
       try {
-        const response = await system.agent.respond(clientId, prompt, { conversationId, interfaceLocale: body.locale, userMessageId: userMessage.id, ...(session ? { sessionId: session.id } : {}), ...(modelOverride ? { modelOverride } : {}), ...(project ? { executionContext: { projectId: project.id, ...(body.goalId ? { goalId: body.goalId } : {}), ...(body.taskId ? { taskId: body.taskId } : {}), rootPaths: project.rootPaths, enabledCapabilityPacks: project.enabledCapabilityPacks } } : {}), recentConversation: existing.slice(-12).map((item) => sanitizeLegacyConversationError(item, body.locale)).map(({ role, content }) => ({ role, content })) });
+        const response = await system.agent.respond(clientId, prompt, { conversationId, ...(reservedRun ? { runId: reservedRun.runId } : {}), interfaceLocale: body.locale, userMessageId: userMessage.id, ...(session ? { sessionId: session.id } : {}), ...(modelOverride ? { modelOverride } : {}), ...(project ? { executionContext: { projectId: project.id, ...(resolvedGoalId ? { goalId: resolvedGoalId } : {}), ...(resolvedTaskId ? { taskId: resolvedTaskId } : {}), rootPaths: project.rootPaths, enabledCapabilityPacks: project.enabledCapabilityPacks } } : {}), recentConversation: existing.slice(-12).map((item) => sanitizeLegacyConversationError(item, body.locale)).map(({ role, content }) => ({ role, content })) });
+        if (response.aborted || reservedRun?.signal.aborted) {
+          await setSessionStatus("completed");
+          system.events.publish({ type: "task", clientId, status: "cancelled", message: response.reply });
+          reply.code(201);
+          return { aborted: true, message: null, task: null, ...(reservedRun ? { runId: reservedRun.runId } : {}), ...projectMission(), ...(session ? { session } : {}), ...(project ? { projectId: project.id } : {}) };
+        }
         const assistantMessage = ConversationMessage.parse({ id: crypto.randomUUID(), clientId, conversationId, ...(session ? { sessionId: session.id } : {}), role: "assistant", content: response.reply, ...(response.task ? { taskId: response.task.id } : {}), at: new Date().toISOString() });
+        if (reservedRun && !system.agent.commitConversationRun(clientId, conversationId, reservedRun.runId)) {
+          await setSessionStatus("completed");
+          system.events.publish({ type: "task", clientId, status: "cancelled", message: body.locale === "en" ? "Stopped." : "已停止。" });
+          reply.code(201);
+          return { aborted: true, message: null, task: null, runId: reservedRun.runId, ...projectMission(), ...(session ? { session } : {}), ...(project ? { projectId: project.id } : {}) };
+        }
         await system.workspace.appendJsonl(clientId, "conversation.jsonl", assistantMessage);
         if (session) {
           if (isUntitledSession(session.title)) {
@@ -559,7 +668,7 @@ export async function createServer(system: AdPilotSystem, options: {
         }
         await setSessionStatus("completed");
         system.events.publish({ type: "task", clientId, status: response.task?.phase ?? "completed", ...(response.task ? { taskId: response.task.id } : {}), message: response.reply });
-        reply.code(201); return { message: assistantMessage, task: response.task, ...(session ? { session } : {}), ...(project ? { projectId: project.id } : {}) };
+        reply.code(201); return { message: assistantMessage, task: response.task, ...(reservedRun ? { runId: reservedRun.runId } : {}), ...projectMission(), ...(session ? { session } : {}), ...(project ? { projectId: project.id } : {}) };
       } catch (error) {
         await setSessionStatus("failed").catch(() => undefined);
         const incidentId = crypto.randomUUID();
@@ -884,9 +993,10 @@ export async function createServer(system: AdPilotSystem, options: {
       id: z.string().trim().min(1).max(256),
       cid: z.string().trim().min(1).max(120)
     }).parse(request.params);
-    const stopped = system.runtime.stopConversation(params.id, params.cid);
+    const body = z.object({ runId: z.string().uuid() }).strict().parse(request.body ?? {});
+    const result = system.agent.stopConversationRun(params.id, params.cid, body.runId);
     reply.header("cache-control", "no-store");
-    return { stopped };
+    return result;
   });
 
   /* ------------------------- product Session authority ------------------------- */

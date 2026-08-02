@@ -168,7 +168,7 @@ describe("specialist agents", () => {
     expect(readVisualTable).toHaveBeenCalledWith(expect.objectContaining({ clientId: "client-a", taskId }), expect.objectContaining({
       platform: "google_ads",
       targetColumns: [expect.objectContaining({ key: "campaign", valueType: "text" })]
-    }));
+    }), undefined);
   });
 
   it("rejects a conversational click disguised as an interaction before Computer Use", async () => {

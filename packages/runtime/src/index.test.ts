@@ -13,7 +13,7 @@ import { ModelRouter } from "@adpilot/model-router";
 import { SkillRegistry } from "@adpilot/skills";
 import { AdPilotTools, type ToolContext } from "@adpilot/tools";
 import { WorkspaceStore } from "@adpilot/workspace";
-import { AdPilotSessionStorage, PiAgentRuntime, StructuredOutputBlocker, resolvePiSessionId } from "./index.js";
+import { AdPilotSessionStorage, PiAgentRuntime, RuntimeUserStopped, StructuredOutputBlocker, resolvePiSessionId } from "./index.js";
 
 describe("PiAgentRuntime", () => {
   it("starts a Pi session, calls a skill through a tool, streams events, and returns structured output", async () => {
@@ -73,6 +73,81 @@ describe("PiAgentRuntime", () => {
     expect(requestPayload).toContain("<available_skills>");
     expect(requestPayload).toContain("currentCtr: number >= 0 (required)");
     expect(requestPayload).not.toContain("detect-creative-fatigue.md");
+  });
+
+  it("shows captured pixels to the current model turn but never persists or returns them", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-runtime-image-privacy-"));
+    const workspace = new WorkspaceStore(root);
+    await workspace.initializeClient({ profile: { id: "client-a", name: "A" }, kpi: { primary: "CPA", target: 10 } });
+    const encodedPixels = "U0NSRUVOU0hPVF9TRU5USU5FTF8=".repeat(128);
+    let liveToolContext = "";
+    let restoredContext = "";
+    const faux = fauxProvider({ provider: "test", models: [{ id: "fast" }, { id: "strong", reasoning: true }] });
+    const models = createModels(); models.setProvider(faux.provider);
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("computer.observe", {}), { stopReason: "toolUse" }),
+      (context) => {
+        liveToolContext = JSON.stringify(context.messages);
+        return fauxAssistantMessage("I inspected the current window.");
+      },
+      (context) => {
+        restoredContext = JSON.stringify(context.messages);
+        return fauxAssistantMessage("The prior pixels are no longer available.");
+      }
+    ]);
+    const router = new ModelRouter({ fast: { provider: "test", model: "fast" }, strong: { provider: "test", model: "strong" }, gui: { provider: "test", model: "fast" } });
+    const tools = new AdPilotTools(workspace, new AuditLog(workspace), new ApprovalService(workspace, "0123456789abcdef0123456789abcdef"), new ExperimentStore(workspace));
+    const runtime = new PiAgentRuntime(models, router, workspace, new SkillRegistry(), tools);
+    const observe = {
+      name: "computer.observe",
+      label: "Observe exact window",
+      description: "privacy test double",
+      parameters: { type: "object", properties: {} },
+      executionMode: "sequential",
+      execute: async () => {
+        const details = {
+          data: { app: "AdPilot", window: { id: 42 } },
+          image: { data: encodedPixels, mimeType: "image/jpeg" }
+        };
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(details) },
+            { type: "image", data: encodedPixels, mimeType: "image/jpeg" }
+          ],
+          details
+        };
+      }
+    } as AgentTool;
+    const conversationId = "image-private";
+    const first = await runtime.run({
+      context: { clientId: "client-a", conversationId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", sessionId: crypto.randomUUID(), role: "adpilot_agent" },
+      systemPrompt: "Inspect the image only for this turn.",
+      prompt: "What is visible?",
+      signals: { task: "conversation" },
+      tools: [observe]
+    });
+
+    expect(liveToolContext).toContain(encodedPixels);
+    expect(liveToolContext).toContain("\"type\":\"image\"");
+    expect(JSON.stringify(first.messages)).not.toContain(encodedPixels);
+    expect(JSON.stringify(first.events)).not.toContain(encodedPixels);
+    expect(JSON.stringify(first.messages)).toContain("captured image omitted from persisted session");
+
+    const sessionText = await workspace.readText("client-a", `sessions/${first.sessionId}.jsonl`);
+    const traceText = await workspace.readText("client-a", `traces/${first.sessionId}.jsonl`);
+    expect(sessionText).not.toContain(encodedPixels);
+    expect(traceText).not.toContain(encodedPixels);
+    expect(sessionText).toContain("captured image omitted from persisted session");
+
+    await runtime.run({
+      context: { clientId: "client-a", conversationId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", sessionId: crypto.randomUUID(), role: "adpilot_agent" },
+      systemPrompt: "Continue without stale pixels.",
+      prompt: "Continue.",
+      signals: { task: "conversation" }
+    });
+    expect(restoredContext).not.toContain(encodedPixels);
+    expect(restoredContext).not.toContain("\"type\":\"image\"");
+    expect(restoredContext).toContain("captured image omitted from persisted session");
   });
 
   it("reopens the same disk session for a stable client and conversation mapping", async () => {
@@ -336,9 +411,7 @@ describe("PiAgentRuntime session injection", () => {
     expect(signalAborted).toBe(true);
     expect(toolSignal?.aborted).toBe(true);
 
-    const result = await running;
-    expect(JSON.stringify(result.messages)).not.toContain("queued steer");
-    expect(JSON.stringify(result.messages)).not.toContain("queued follow-up");
+    await expect(running).rejects.toBeInstanceOf(RuntimeUserStopped);
     expect(runtime.isSessionActive("client-a", conversationId)).toBe(false);
     expect(runtime.stopConversation("client-a", conversationId)).toBe(false);
   });

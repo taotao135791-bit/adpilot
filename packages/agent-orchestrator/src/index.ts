@@ -10,7 +10,7 @@ import {
   listKnowledgeSkills,
   type KnowledgeSkillSummary
 } from "@adpilot/advertising-core";
-import { PiAgentRuntime, type SessionModelOverride } from "@adpilot/runtime";
+import { PiAgentRuntime, RuntimeUserStopped, type SessionModelOverride } from "@adpilot/runtime";
 import { SpecialistCoordinator } from "@adpilot/specialist-agents";
 import {
   Evidence,
@@ -42,6 +42,8 @@ const LongTermMemory = z.object({
 export type MainAgentOutput = z.infer<typeof MainAgentOutput>;
 export interface AgentConversationContext extends Record<string, unknown> {
   conversationId?: string;
+  /** Unguessable request generation used to stop only this exact turn. */
+  runId?: string;
   interfaceLocale?: string;
   /** conversation.jsonl id of the user message being answered; threaded into the decision run for fork labeling. */
   userMessageId?: string;
@@ -62,6 +64,37 @@ export interface AgentConversationContext extends Record<string, unknown> {
     enabledCapabilityPacks?: string[];
   };
 }
+
+export interface AgentConversationResponse {
+  reply: string;
+  task: Task | null;
+  result?: MainAgentOutput;
+  aborted?: true;
+}
+
+class ConversationStopped extends Error {
+  constructor() {
+    super("conversation stopped by user");
+    this.name = "ConversationStopped";
+  }
+}
+
+interface ActiveConversationRun {
+  clientId: string;
+  conversationId: string;
+  runId: string;
+  controller: AbortController;
+  committed: boolean;
+}
+
+export type ConversationRunReservation =
+  | { accepted: true; runId: string; signal: AbortSignal }
+  | { accepted: false; activeRunId: string };
+
+export type ConversationStopResult = {
+  stopped: boolean;
+  status: "stopped" | "not_found" | "already_completed" | "run_mismatch";
+};
 
 /** Optional 0.3.1 agent tool registry wiring for AdPilotAgent. */
 export interface AdPilotAgentTools {
@@ -119,6 +152,7 @@ export const embeddedAgentKnowledge: AgentKnowledge = {
 
 export class AdPilotAgent {
   readonly sharedFacts: SharedFactLedger;
+  private readonly activeResponses = new Map<string, ActiveConversationRun>();
 
   constructor(
     private readonly runtime: PiAgentRuntime,
@@ -188,54 +222,150 @@ export class AdPilotAgent {
   /** Registry tools for this turn, empty when the agent has no registry wired. */
   private registryTools(executionContext: AgentExecutionContext): AgentTool[] {
     if (!this.agentTools) return [];
-    return this.agentTools.registry.toPiTools(executionContext, this.agentTools.deps);
+    // Closing a native window is intentionally not part of the conversational
+    // harness. A model-authored bundle/window target is not a user-granted
+    // allowlist and could cross the exact-app isolation boundary even though
+    // the Helper itself requires a fresh observation lease.
+    return this.agentTools.registry
+      .toPiTools(executionContext, this.agentTools.deps)
+      .filter((tool) => tool.name !== "computer.close_window");
   }
 
-  async respond(clientId: string, message: string, context: AgentConversationContext = {}): Promise<{ reply: string; task: Task | null; result?: MainAgentOutput }> {
-    const client = await this.workspace.readClient(clientId);
+  /** Reserve one exact request before the server performs any durable work. */
+  reserveConversationRun(clientId: string, conversationId: string, runId: string): ConversationRunReservation {
+    const normalizedClientId = clientId.trim();
+    const normalizedConversationId = conversationId.trim();
+    const normalizedRunId = runId.trim();
+    if (!normalizedClientId || !normalizedConversationId || !normalizedRunId) {
+      throw new Error("conversation run requires clientId, conversationId, and runId");
+    }
+    const key = conversationRunKey(normalizedClientId, normalizedConversationId);
+    const active = this.activeResponses.get(key);
+    if (active) return { accepted: false, activeRunId: active.runId };
+    const run: ActiveConversationRun = {
+      clientId: normalizedClientId,
+      conversationId: normalizedConversationId,
+      runId: normalizedRunId,
+      controller: new AbortController(),
+      committed: false
+    };
+    this.activeResponses.set(key, run);
+    return { accepted: true, runId: normalizedRunId, signal: run.controller.signal };
+  }
+
+  /** Mark the durable assistant response as the Stop linearization point. */
+  commitConversationRun(clientId: string, conversationId: string, runId: string): boolean {
+    const key = conversationRunKey(clientId, conversationId);
+    const run = this.activeResponses.get(key);
+    if (!run || run.runId !== runId || run.controller.signal.aborted) return false;
+    run.committed = true;
+    return true;
+  }
+
+  releaseConversationRun(clientId: string, conversationId: string, runId: string): void {
+    const key = conversationRunKey(clientId, conversationId);
+    const run = this.activeResponses.get(key);
+    if (run?.runId === runId) this.activeResponses.delete(key);
+  }
+
+  stopConversationRun(clientId: string, conversationId: string, runId?: string): ConversationStopResult {
+    const normalizedConversationId = conversationId.trim();
+    if (!clientId.trim() || !normalizedConversationId) return { stopped: false, status: "not_found" };
+    const run = this.activeResponses.get(conversationRunKey(clientId, normalizedConversationId));
+    if (!run) return { stopped: false, status: "not_found" };
+    if (runId !== undefined && run.runId !== runId) return { stopped: false, status: "run_mismatch" };
+    if (run.committed) return { stopped: false, status: "already_completed" };
+    run.controller.abort(new ConversationStopped());
+    // The external signal reaches queued/nested runtime work; this direct
+    // call also wakes a currently bound Pi agent immediately.
+    this.runtime.stopConversation(clientId, normalizedConversationId);
+    return { stopped: true, status: "stopped" };
+  }
+
+  /** Compatibility seam for internal callers; the desktop always supplies runId. */
+  stopConversation(clientId: string, conversationId: string, runId?: string): boolean {
+    return this.stopConversationRun(clientId, conversationId, runId).stopped;
+  }
+
+  async respond(clientId: string, message: string, context: AgentConversationContext = {}): Promise<AgentConversationResponse> {
     const conversationId = typeof context.conversationId === "string" && context.conversationId.trim() ? context.conversationId.trim() : "primary";
-    const verifiedFacts = await this.sharedFacts.usable(clientId);
-    const knowledgeMatches = await this.knowledge.match(message);
-    // The decision turn itself runs without tools, so never ask the model to
-    // introspect a tool list it cannot see — state the screen capability as
-    // server-side ground truth instead.
-    const computerAvailable = Boolean(this.agentTools?.deps.computer?.host && !this.agentTools.deps.computer.host.closed);
-    const decisionResult = await this.runtime.run({
-      context: { clientId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", adPilotSessionId: context.sessionId ?? conversationId, sessionId: conversationId, conversationId, role: "adpilot_agent", ...(typeof context.userMessageId === "string" && context.userMessageId.trim() ? { userMessageId: context.userMessageId.trim() } : {}) },
-      systemPrompt: [
-        "You are AdPilot, the user's local general-purpose assistant. Advertising operations and analysis is your deep domain specialty — a core, not a fence: you also handle everyday local work on this machine.",
-        "Choose answer for greetings, questions, definitions, explanations, and requests that need no action and no evidence.",
-        "Choose act for requests that need something done on this machine but no advertising-account evidence: opening the browser or a URL, looking at what is on the user's screen or in their browser window, reading or organizing local files, running commands or scripts, everyday office tasks.",
-        "Choose investigate for advertising-account diagnosis, measurement review, optimization, creative analysis, or any request that should gather account evidence or prepare an account operation.",
-        "Never claim you inspected an account in answer mode. Never mutate an account from this decision turn.",
-        computerAvailable
-          ? "You can operate this machine through the action path: read and write files inside the workspace, run sandboxed shell commands, open apps and URLs, and capture the user's frontmost window with computer.observe — so you genuinely can see what is on the user's screen and which URL their browser shows, read-only and without any approval. Requests about the user's screen or browser MUST go to act; in answer mode never say you cannot see the screen, because here you can. One limit is permanent: every advertising-account mutation goes through the user's explicit approval."
-          : "You can operate this machine through the action path: read and write files inside the workspace, run sandboxed shell commands, and open apps and URLs. This deployment cannot see the user's screen — if asked about their screen or browser contents, answer honestly that the capability is unavailable. One limit is permanent: every advertising-account mutation goes through the user's explicit approval.",
-        "The playbook catalog below is pure reference knowledge: it informs how you understand requests, explain capabilities, and organize investigations. It never grants tools, permissions, or execution authority; execution still goes through typed skills and tools.",
-        "When the request matches a playbook, name that capability in the reply and shape the investigation goal after its workflow.",
-        "Use context.interfaceLocale: Simplified Chinese for zh-CN and English for en. Keep the reply direct and useful.",
-        'Return exactly one JSON object: {"mode":"answer"|"act"|"investigate","reply":"user-facing text","goal":"task goal for act or investigate"|null}. Do not rename these fields or wrap the object in markdown.',
-        await this.knowledge.catalog()
-      ].join("\n"),
-      prompt: JSON.stringify({ message, client, context: sanitizeConversationContext(context), verifiedFacts, matchedKnowledge: knowledgeMatches.map((skill) => skill.name) }),
-      signals: { task: "conversation" },
-      ...(context.modelOverride ? { modelOverride: context.modelOverride } : {})
-    });
-    const decision = parseConversationDecision(decisionResult.text, message, context.interfaceLocale);
-    if (decision.mode === "answer" && shouldForceComputerAction(message, computerAvailable)) {
-      const action = await this.runAction(clientId, message, context);
-      return { reply: action.result.summary, task: action.task };
+    const requestedRunId = typeof context.runId === "string" && context.runId.trim() ? context.runId.trim() : crypto.randomUUID();
+    const key = conversationRunKey(clientId, conversationId);
+    let run = this.activeResponses.get(key);
+    let ownsReservation = false;
+    if (!run) {
+      const reservation = this.reserveConversationRun(clientId, conversationId, requestedRunId);
+      if (!reservation.accepted) throw new Error(`conversation already has an active run: ${reservation.activeRunId}`);
+      run = this.activeResponses.get(key)!;
+      ownsReservation = true;
+    } else if (run.runId !== requestedRunId) {
+      throw new Error(`conversation already has an active run: ${run.runId}`);
     }
-    if (decision.mode === "answer") return { reply: decision.reply, task: null };
-    if (decision.mode === "act") {
-      const action = await this.runAction(clientId, decision.goal ?? message, context);
-      return { reply: action.result.summary, task: action.task };
+    const stopSignal = run.controller.signal;
+    try {
+      const client = await this.workspace.readClient(clientId);
+      throwIfConversationStopped(stopSignal);
+      const verifiedFacts = await this.sharedFacts.usable(clientId);
+      throwIfConversationStopped(stopSignal);
+      const knowledgeMatches = await this.knowledge.match(message);
+      throwIfConversationStopped(stopSignal);
+      const knowledgeCatalog = await this.knowledge.catalog();
+      throwIfConversationStopped(stopSignal);
+      // The decision turn itself runs without tools, so never ask the model to
+      // introspect a tool list it cannot see — state the screen capability as
+      // server-side ground truth instead.
+      const computerAvailable = Boolean(this.agentTools?.deps.computer?.host && !this.agentTools.deps.computer.host.closed);
+      const decisionResult = await this.runtime.run({
+        context: { clientId, taskId: crypto.randomUUID(), actor: "adpilot_agent", permission: "OBSERVE", adPilotSessionId: context.sessionId ?? conversationId, sessionId: conversationId, conversationId, role: "adpilot_agent", ...(typeof context.userMessageId === "string" && context.userMessageId.trim() ? { userMessageId: context.userMessageId.trim() } : {}) },
+        systemPrompt: [
+          "You are AdPilot, the user's local general-purpose assistant. Advertising operations and analysis is your deep domain specialty — a core, not a fence: you also handle everyday local work on this machine.",
+          "Choose answer for greetings, questions, definitions, explanations, and requests that need no action and no evidence.",
+          "Choose act for requests that need something done locally but no advertising-account evidence: looking at the exact window exposed by computer.observe, reading or organizing files inside the active project, running confined commands or scripts, and other work covered by the tools actually present.",
+          "Choose investigate for advertising-account diagnosis, measurement review, optimization, creative analysis, or any request that should gather account evidence or prepare an account operation.",
+          "Never claim you inspected an account in answer mode. Never mutate an account from this decision turn.",
+          computerAvailable
+            ? "Through the action path you can inspect the exact window selected by computer.observe, use bounded project-file tools, and run root-confined shell commands. This build exposes no general mouse, keyboard, app-launch, URL-launch, or arbitrary window-close tool. Requests about the user's visible window MUST go to act; in answer mode never invent an observation. Project writes require Full Access, and every advertising-account mutation requires the user's explicit approval."
+            : "Through the action path you can use bounded project-file tools and root-confined shell commands. This build exposes no screen observation, general mouse, keyboard, app-launch, URL-launch, or arbitrary window-close tool. If asked about screen or browser contents, answer honestly that the capability is unavailable. Project writes require Full Access, and every advertising-account mutation requires the user's explicit approval.",
+          "The playbook catalog below is pure reference knowledge: it informs how you understand requests, explain capabilities, and organize investigations. It never grants tools, permissions, or execution authority; execution still goes through typed skills and tools.",
+          "When the request matches a playbook, name that capability in the reply and shape the investigation goal after its workflow.",
+          "Use context.interfaceLocale: Simplified Chinese for zh-CN and English for en. Keep the reply direct and useful.",
+          'Return exactly one JSON object: {"mode":"answer"|"act"|"investigate","reply":"user-facing text","goal":"task goal for act or investigate"|null}. Do not rename these fields or wrap the object in markdown.',
+          knowledgeCatalog
+        ].join("\n"),
+        prompt: JSON.stringify({ message, client, context: sanitizeConversationContext(context), verifiedFacts, matchedKnowledge: knowledgeMatches.map((skill) => skill.name) }),
+        signals: { task: "conversation" },
+        signal: stopSignal,
+        ...(context.modelOverride ? { modelOverride: context.modelOverride } : {})
+      });
+      throwIfConversationStopped(stopSignal);
+      const decision = parseConversationDecision(decisionResult.text, message, context.interfaceLocale);
+      throwIfConversationStopped(stopSignal);
+      if (decision.mode === "answer" && shouldForceComputerAction(message, computerAvailable)) {
+        const action = await this.runAction(clientId, message, context, stopSignal);
+        throwIfConversationStopped(stopSignal);
+        return { reply: action.result.summary, task: action.task };
+      }
+      if (decision.mode === "answer") return { reply: decision.reply, task: null };
+      if (decision.mode === "act") {
+        const action = await this.runAction(clientId, decision.goal ?? message, context, stopSignal);
+        throwIfConversationStopped(stopSignal);
+        return { reply: action.result.summary, task: action.task };
+      }
+      const investigation = await this.runTask(clientId, decision.goal ?? message, context, stopSignal);
+      throwIfConversationStopped(stopSignal);
+      return { reply: investigation.result.summary, task: investigation.task, result: investigation.result };
+    } catch (error) {
+      if (stopSignal.aborted || error instanceof ConversationStopped || error instanceof RuntimeUserStopped) {
+        return { reply: stoppedReply(context.interfaceLocale), task: null, aborted: true };
+      }
+      throw error;
+    } finally {
+      if (ownsReservation) this.releaseConversationRun(clientId, conversationId, requestedRunId);
     }
-    const investigation = await this.runTask(clientId, decision.goal ?? message, context);
-    return { reply: investigation.result.summary, task: investigation.task, result: investigation.result };
   }
 
-  async startTask(clientId: string, goal: string, context: AgentConversationContext = {}): Promise<Task> {
+  async startTask(clientId: string, goal: string, context: AgentConversationContext = {}, stopSignal?: AbortSignal): Promise<Task> {
+    throwIfConversationStopped(stopSignal);
     const now = new Date().toISOString();
     // Conversation/session attribution lets the product scope each task to the
     // conversation it was started from; tasks started without a conversation
@@ -248,7 +378,15 @@ export class AdPilotAgent {
         : {}),
       ...(typeof context.sessionId === "string" && context.sessionId.trim() ? { sessionId: context.sessionId.trim() } : {})
     });
+    throwIfConversationStopped(stopSignal);
     await this.persistTask(task);
+    try {
+      throwIfConversationStopped(stopSignal);
+    } catch (error) {
+      const cancelled = TaskState.parse({ ...task, phase: "cancelled", owner: null, nextStep: null, updatedAt: new Date().toISOString() });
+      await this.persistTask(cancelled).catch(() => undefined);
+      throw error;
+    }
     return task;
   }
 
@@ -263,11 +401,11 @@ export class AdPilotAgent {
    * Every tool call still passes the runtime tool gate, so guarded mode keeps
    * the approval chain and deny-classified commands stay hard-blocked.
    */
-  async runAction(clientId: string, goal: string, context: AgentConversationContext = {}): Promise<{ task: Task; result: { summary: string } }> {
+  async runAction(clientId: string, goal: string, context: AgentConversationContext = {}, stopSignal?: AbortSignal): Promise<{ task: Task; result: { summary: string } }> {
+    throwIfConversationStopped(stopSignal);
     const clientContext = await this.workspace.readClient(clientId);
-    let task = await this.startTask(clientId, goal, context);
-    task = TaskState.parse({ ...task, phase: "executing", owner: null, nextStep: "Run the local action with the general tools", updatedAt: new Date().toISOString() });
-    await this.persistTask(task);
+    throwIfConversationStopped(stopSignal);
+    let task = await this.startTask(clientId, goal, context, stopSignal);
     const conversationId = typeof context.conversationId === "string" && context.conversationId.trim() ? context.conversationId.trim() : `task-${task.id}`;
     const runContext = {
       clientId,
@@ -279,53 +417,95 @@ export class AdPilotAgent {
     const executionContext = this.agentExecutionContext(clientId, context, conversationId);
     const registryTools = this.agentTools ? this.registryTools(executionContext) : [];
     const projectRoot = executionContext.rootPaths[0];
-    let summary: string;
     try {
+      throwIfConversationStopped(stopSignal);
+      task = TaskState.parse({ ...task, phase: "executing", owner: null, nextStep: "Run the local action with the general tools", updatedAt: new Date().toISOString() });
+      await this.persistTask(task);
+      throwIfConversationStopped(stopSignal);
       const pluginTools = this.pluginToolProvider ? await this.pluginToolProvider.tools(runContext) : [];
+      throwIfConversationStopped(stopSignal);
       const run = await this.runtime.run({
         context: { ...runContext, sessionId: conversationId, conversationId, role: "adpilot_agent" },
         systemPrompt: [
           "You are AdPilot, the user's local general-purpose assistant, now executing a local action request. Advertising operations is your domain specialty, but this task is ordinary local work.",
           "Available tools: read, grep, find and ls observe the active project root when one is bound, otherwise the private AdPilot workspace; write and edit modify only that same root; bash runs in a root-confined, no-network sandbox.",
-          "Bash commands are deterministically classified. Read-level commands run directly. Write-level commands (file changes and installs) run without an approval reference when the operator granted full access; in guarded mode the gate denial explains exactly what is missing — report it to the user instead of retrying the same call. Deny-classified commands (GUI application launch such as `open`, network tools, shell-level screen capture, credential and browser-profile stores, process control, protected paths, rm -rf) are hard-blocked at both the gate and tool in every mode; never request approval or try to work around them. Use a dedicated bounded Computer Use tool for visible app work when one is available. That deny list covers shell commands only: computer.observe, when it appears in your tool list, is the sanctioned read-only way to see the user's screen and it never needs an approval, an approvalId, or a workaround.",
-          "When computer.close_window appears, it is the sanctioned routine local action for closing one app window. First call computer.observe, then pass only the fresh observationId it returned. That one-time id is bound to this session and the captured PID, bundle, window, and bounds; never guess or reuse it. Full Access allows this write directly, while guarded mode keeps its approval reference.",
+          "Bash commands are deterministically classified. Read-level commands run directly. Bounded project writes require explicit Full Access because these tool schemas do not carry a truthful per-action approval. Deny-classified commands (GUI launch, network tools, shell screen capture, credential/profile stores, process control, protected paths, and destructive deletion) are hard-blocked in every mode; never work around the policy.",
+          "computer.observe, when present, is read-only and returns only the selected exact window for the current turn. This build intentionally exposes no general mouse, keyboard, app-launch, URL-launch, or window-closing tool; say so instead of claiming an action you cannot perform.",
           "Two red lines: you never change an advertising account from this path — account mutations go through an investigation and the full approval chain. And when computer.observe is not among your tools you cannot see the user's screen; say so honestly instead of claiming an observation.",
-          "Do the work, then report: use tools until the request is actually done, and finish with a concise user-facing summary of what you did (files touched, commands run, apps or pages opened). Use the conversation interfaceLocale: Simplified Chinese for zh-CN and English for en.",
+          "Do the work, then report: use tools until the request is actually done, and finish with a concise user-facing summary of files touched and commands run. Use the conversation interfaceLocale: Simplified Chinese for zh-CN and English for en.",
           ...(this.agentTools ? [agentToolsPromptSection()] : [])
         ].join("\n"),
         prompt: JSON.stringify({ goal, client: clientContext, conversation: sanitizeConversationContext(context) }),
         signals: { task: "conversation" },
+        ...(stopSignal ? { signal: stopSignal } : {}),
         tools: [...this.tools.generalAgentTools(runContext, projectRoot), ...registryTools, ...pluginTools],
         ...(context.modelOverride ? { modelOverride: context.modelOverride } : {})
       });
-      summary = run.text.trim();
+      throwIfConversationStopped(stopSignal);
+      const summary = run.text.trim();
       if (!summary) throw new Error("the action run produced an empty report");
+      await this.workspace.appendJsonl(clientId, "decisions.jsonl", { taskId: task.id, at: new Date().toISOString(), goal, result: { mode: "act", summary } });
+      throwIfConversationStopped(stopSignal);
+      // Final task persistence is the local-action commit point. There are no
+      // Stop checks after it: a later Stop must report already_completed.
+      task = TaskState.parse({ ...task, phase: "completed", owner: null, nextStep: null, updatedAt: new Date().toISOString() });
+      await this.persistTask(task);
+      return { task, result: { summary } };
     } catch (error) {
+      if (stopSignal?.aborted || error instanceof ConversationStopped || error instanceof RuntimeUserStopped) {
+        task = TaskState.parse({ ...task, phase: "cancelled", owner: null, nextStep: null, updatedAt: new Date().toISOString() });
+        await this.persistTask(task).catch(() => undefined);
+        throw new ConversationStopped();
+      }
       const blocker = error instanceof Error ? error.message : String(error);
       task = TaskState.parse({ ...task, phase: "blocked", owner: null, blockers: [...task.blockers, blocker], nextStep: "Resolve the recorded blocker and retry", updatedAt: new Date().toISOString() });
       await this.persistTask(task);
       throw error;
     }
-    task = TaskState.parse({ ...task, phase: "completed", owner: null, nextStep: null, updatedAt: new Date().toISOString() });
-    await this.persistTask(task);
-    await this.workspace.appendJsonl(clientId, "decisions.jsonl", { taskId: task.id, at: new Date().toISOString(), goal, result: { mode: "act", summary } });
-    return { task, result: { summary } };
   }
 
-  async runTask(clientId: string, goal: string, context: AgentConversationContext = {}): Promise<{
+  async runTask(clientId: string, goal: string, context: AgentConversationContext = {}, stopSignal?: AbortSignal): Promise<{
     task: Task;
     result: MainAgentOutput;
     specialistResults: Record<string, unknown>;
     sharedFacts: SharedFactValue[];
   }> {
+    throwIfConversationStopped(stopSignal);
     const [clientContext, memory] = await Promise.all([
       this.workspace.readClient(clientId),
       this.workspace.readJsonl(clientId, "memory/agent.jsonl", LongTermMemory)
     ]);
-    let task = await this.startTask(clientId, goal, context);
+    throwIfConversationStopped(stopSignal);
+    let task = await this.startTask(clientId, goal, context, stopSignal);
+    const specialistResults: Record<string, unknown> = {};
+    const createdApprovalIds: string[] = [];
+    const failTask = async (error: unknown): Promise<never> => {
+      if (stopSignal?.aborted || error instanceof ConversationStopped || error instanceof RuntimeUserStopped) {
+        for (const approvalId of createdApprovalIds) {
+          await this.tools.approvals.cancel(clientId, approvalId).catch(() => undefined);
+        }
+        task = TaskState.parse({ ...task, phase: "cancelled", owner: null, nextStep: null, updatedAt: new Date().toISOString() });
+        await this.persistTask(task).catch(() => undefined);
+        throw new ConversationStopped();
+      }
+      const blocker = error instanceof Error ? error.message : String(error);
+      task = TaskState.parse({ ...task, phase: "blocked", owner: null, blockers: [...task.blockers, blocker], nextStep: "Resolve the recorded blocker and retry", updatedAt: new Date().toISOString() });
+      await this.persistTask(task);
+      throw error;
+    };
+    const ensureActive = async (): Promise<void> => {
+      try {
+        throwIfConversationStopped(stopSignal);
+      } catch (error) {
+        await failTask(error);
+      }
+    };
     const inherited = await this.sharedFacts.usable(clientId);
+    await ensureActive();
     await this.sharedFacts.deriveForTask(clientId, task.id, inherited);
+    await ensureActive();
     let taskFacts = await this.sharedFacts.usable(clientId, { taskId: task.id });
+    await ensureActive();
     const projectContext = {
       client: clientContext,
       verifiedFacts: taskFacts,
@@ -335,19 +515,21 @@ export class AdPilotAgent {
     const conversationId = typeof context.conversationId === "string" && context.conversationId.trim() ? context.conversationId.trim() : `task-${task.id}`;
     task = TaskState.parse({ ...task, phase: "investigating", owner: null, nextStep: "Dispatch specialists and collect evidence", updatedAt: new Date().toISOString() });
     await this.persistTask(task);
-    const specialistResults: Record<string, unknown> = {};
-    const createdApprovalIds: string[] = [];
+    await ensureActive();
     const dispatchTool: AgentTool = {
       name: "dispatch_specialist",
       label: "Dispatch an isolated specialist",
       description: "Run one specialist with an isolated context and structured input. For performance_analyst, media_buyer, and measurement_reviewer, include factIds mapping every account-number field path (for example metrics.spend or change.currentValue) to the exact verified Shared Fact id; code rejects missing, stale, mismatched, cross-Campaign, migration, or non-visual evidence. The account operator can observe the managed browser, read a visible advertising table, or prepare a field without submitting it. Measurement should be reviewed before optimization changes.",
       parameters: Type.Object({ role: Type.Union(SpecialistRole.options.map((role) => Type.Literal(role))), input: Type.Unknown() }),
       executionMode: "sequential",
-      execute: async (_id, raw) => {
+      execute: async (_id, raw, runtimeSignal) => {
+        throwIfConversationStopped(stopSignal, runtimeSignal);
         const params = z.object({ role: SpecialistRole, input: z.unknown() }).parse(raw);
         task = TaskState.parse({ ...task, owner: params.role, updatedAt: new Date().toISOString() });
         await this.persistTask(task);
+        throwIfConversationStopped(stopSignal, runtimeSignal);
         taskFacts = await this.sharedFacts.usable(clientId, { taskId: task.id });
+        throwIfConversationStopped(stopSignal, runtimeSignal);
         const output = await this.specialists.dispatch(params.role, {
           context: {
             clientId,
@@ -357,8 +539,10 @@ export class AdPilotAgent {
             adPilotSessionId: context.sessionId ?? conversationId
           },
           input: params.input,
-          sharedFacts: taskFacts
+          sharedFacts: taskFacts,
+          ...(stopSignal ? { signal: stopSignal } : {})
         });
+        throwIfConversationStopped(stopSignal, runtimeSignal);
         specialistResults[params.role] = output;
         await this.sharedFacts.create({
           clientId,
@@ -376,8 +560,10 @@ export class AdPilotAgent {
           expiresAt: null,
           status: "hypothesis"
         });
+        throwIfConversationStopped(stopSignal, runtimeSignal);
         task = TaskState.parse({ ...task, owner: null, updatedAt: new Date().toISOString() });
         await this.persistTask(task);
+        throwIfConversationStopped(stopSignal, runtimeSignal);
         return { content: [{ type: "text", text: JSON.stringify(output) }], details: output };
       }
     };
@@ -387,7 +573,8 @@ export class AdPilotAgent {
       description: "Persist one exact, evidence-backed advertising operation and its visual execution plan. This does not approve or execute it.",
       parameters: Type.Object({ operation: Type.Unknown(), executionPlan: Type.Unknown(), guardrailEvidence: Type.Unknown() }),
       executionMode: "sequential",
-      execute: async (_id, raw) => {
+      execute: async (_id, raw, runtimeSignal) => {
+        throwIfConversationStopped(stopSignal, runtimeSignal);
         const params = z.object({ operation: ApprovalOperation, executionPlan: VisualApprovalPlanInput, guardrailEvidence: ApprovalGuardrailEvidenceInput }).parse(raw);
         const approval = await this.tools.createApproval(
           {
@@ -402,11 +589,13 @@ export class AdPilotAgent {
           params.guardrailEvidence
         );
         createdApprovalIds.push(approval.id);
+        throwIfConversationStopped(stopSignal, runtimeSignal);
         return { content: [{ type: "text", text: JSON.stringify({ approvalId: approval.id, status: approval.status }) }], details: { approvalId: approval.id, status: approval.status } };
       }
     };
     let modelResult: MainAgentOutput;
     const knowledgeContext = await this.knowledge.context(await this.knowledge.match(goal));
+    await ensureActive();
     const executionContext = this.agentExecutionContext(clientId, context, conversationId);
     const registryTools = this.agentTools ? this.registryTools(executionContext) : [];
     const projectRoot = executionContext.rootPaths[0];
@@ -419,6 +608,7 @@ export class AdPilotAgent {
         adPilotSessionId: context.sessionId ?? conversationId
       };
       const pluginTools = this.pluginToolProvider ? await this.pluginToolProvider.tools(runContext) : [];
+      throwIfConversationStopped(stopSignal);
       modelResult = await this.runtime.runStructured({
         context: { ...runContext, sessionId: conversationId, conversationId, role: "adpilot_agent" },
         systemPrompt: [
@@ -440,52 +630,58 @@ export class AdPilotAgent {
         ].join("\n"),
         prompt: JSON.stringify({ goal, projectContext, currentTask: task }),
         signals: { task: "planning" }, tools: [dispatchTool, prepareApprovalTool, ...this.tools.generalAgentTools(runContext, projectRoot), ...registryTools, ...pluginTools],
+        ...(stopSignal ? { signal: stopSignal } : {}),
         ...(context.modelOverride ? { modelOverride: context.modelOverride } : {})
       }, MainAgentOutput);
+      throwIfConversationStopped(stopSignal);
     } catch (error) {
-      const blocker = error instanceof Error ? error.message : String(error);
-      task = TaskState.parse({ ...task, phase: "blocked", owner: null, blockers: [...task.blockers, blocker], nextStep: "Resolve the recorded blocker and retry", updatedAt: new Date().toISOString() });
-      await this.persistTask(task);
-      throw error;
+      return await failTask(error);
     }
-    const result = MainAgentOutput.parse({ ...modelResult, proposedApprovalIds: createdApprovalIds });
-    task = TaskState.parse({
-      ...task,
-      phase: result.proposedApprovalIds.length ? "awaiting_approval" : "completed",
-      completedSteps: result.investigationTree.filter((node) => node.status === "complete").map((node) => node.question),
-      evidence: result.evidence,
-      hypotheses: result.hypotheses,
-      blockers: result.investigationTree.filter((node) => node.status === "blocked").map((node) => node.conclusion ?? node.question),
-      nextStep: result.nextStep, reviewAt: result.reviewAt, updatedAt: new Date().toISOString()
-    });
-    await this.persistTask(task);
-    await this.workspace.appendJsonl(clientId, "decisions.jsonl", { taskId: task.id, at: new Date().toISOString(), goal, result });
-    await this.workspace.appendJsonl(clientId, "memory/agent.jsonl", LongTermMemory.parse({
-      taskId: task.id, at: new Date().toISOString(), goal, summary: result.summary,
-      nextStep: result.nextStep, reviewAt: result.reviewAt, proposedApprovalIds: result.proposedApprovalIds
-    }));
-    await this.sharedFacts.create({
-      clientId,
-      taskId: task.id,
-      subject: `task:${task.id}`,
-      predicate: "root_agent_synthesis",
-      value: { summary: result.summary, nextStep: result.nextStep },
-      unit: "",
-      sourceType: "specialist_output",
-      sourceScreenshotId: null,
-      sourceBoundingBox: null,
-      evidenceIds: result.evidence.map((item) => item.id),
-      confidence: result.evidence.length ? Math.min(...result.evidence.map((item) => confidenceFromUnknown(item.facts))) : 0.5,
-      createdBy: "adpilot_agent",
-      expiresAt: result.reviewAt,
-      status: "hypothesis"
-    });
-    return {
-      task,
-      result,
-      specialistResults,
-      sharedFacts: await this.sharedFacts.list(clientId, { taskId: task.id, includeTerminal: true })
-    };
+    try {
+      await ensureActive();
+      const result = MainAgentOutput.parse({ ...modelResult, proposedApprovalIds: createdApprovalIds });
+      const finalTask = TaskState.parse({
+        ...task,
+        phase: result.proposedApprovalIds.length ? "awaiting_approval" : "completed",
+        completedSteps: result.investigationTree.filter((node) => node.status === "complete").map((node) => node.question),
+        evidence: result.evidence,
+        hypotheses: result.hypotheses,
+        blockers: result.investigationTree.filter((node) => node.status === "blocked").map((node) => node.conclusion ?? node.question),
+        nextStep: result.nextStep, reviewAt: result.reviewAt, updatedAt: new Date().toISOString()
+      });
+      await this.workspace.appendJsonl(clientId, "decisions.jsonl", { taskId: task.id, at: new Date().toISOString(), goal, result });
+      await ensureActive();
+      await this.workspace.appendJsonl(clientId, "memory/agent.jsonl", LongTermMemory.parse({
+        taskId: task.id, at: new Date().toISOString(), goal, summary: result.summary,
+        nextStep: result.nextStep, reviewAt: result.reviewAt, proposedApprovalIds: result.proposedApprovalIds
+      }));
+      await ensureActive();
+      await this.sharedFacts.create({
+        clientId,
+        taskId: task.id,
+        subject: `task:${task.id}`,
+        predicate: "root_agent_synthesis",
+        value: { summary: result.summary, nextStep: result.nextStep },
+        unit: "",
+        sourceType: "specialist_output",
+        sourceScreenshotId: null,
+        sourceBoundingBox: null,
+        evidenceIds: result.evidence.map((item) => item.id),
+        confidence: result.evidence.length ? Math.min(...result.evidence.map((item) => confidenceFromUnknown(item.facts))) : 0.5,
+        createdBy: "adpilot_agent",
+        expiresAt: result.reviewAt,
+        status: "hypothesis"
+      });
+      await ensureActive();
+      const sharedFacts = await this.sharedFacts.list(clientId, { taskId: task.id, includeTerminal: true });
+      await ensureActive();
+      task = finalTask;
+      await this.persistTask(task);
+      await ensureActive();
+      return { task, result, specialistResults, sharedFacts };
+    } catch (error) {
+      return await failTask(error);
+    }
   }
 
   private async persistTask(task: Task): Promise<void> {
@@ -494,16 +690,32 @@ export class AdPilotAgent {
   }
 }
 
+function conversationRunKey(clientId: string, conversationId: string): string {
+  return `${clientId.length}:${clientId}${conversationId}`;
+}
+
+function throwIfConversationStopped(...signals: Array<AbortSignal | undefined>): void {
+  for (const signal of signals) {
+    if (!signal?.aborted) continue;
+    if (signal.reason instanceof ConversationStopped) throw signal.reason;
+    throw new ConversationStopped();
+  }
+}
+
+function stoppedReply(locale: unknown): string {
+  return locale === "en" ? "Stopped." : "已停止。";
+}
+
 /**
  * One system-prompt paragraph describing the dot-named registry tool groups,
  * appended only when the agent was constructed with `agentTools`.
  */
 function agentToolsPromptSection(): string {
   return [
-    "Workspace tools (dot-named) call the Universal Workspace directly: project.* reads and updates the current project, goal.* and task.* manage goals and the task graph, terminal.* runs shell commands inside the project roots, git.* inspects and mutates repositories, artifact.* renders real deliverables, ads.* reads the advertising registry and records decisions, automation.* manages scheduled actors, workflow.* runs recorded workflows.",
-    "When computer.observe is present, you CAN see the user's screen: it captures the frontmost window and returns app/title/bounds, the browser URL when readable, and a JPEG of the window for you to inspect. Use it whenever the user asks what is on their screen or in their browser; never claim you cannot see the screen while it is available, and never describe a screen you did not capture.",
+    "Workspace tools (dot-named) call the Universal Workspace directly: project.*, goal.*, task.*, terminal.*, git.*, artifact.*, ads.*, automation.*, and workflow.* expose only the operations present in this run. Read operations stay available in Guarded mode; project, repository, automation, or workflow writes whose schema cannot carry a truthful per-action grant require explicit Full Access.",
+    "When computer.observe is present, you can inspect only the exact native window selected and captured for this turn. It returns app/title/bounds, a browser URL when readable, and a JPEG of that window. Never generalize that observation to another app/window and never describe a screen you did not capture.",
     "computer.observe is a read-only observation and NEVER requires an approval, an approvalId, or any user grant beyond the OS permission the user already gave. Do not invent approval requirements for it; only account mutations and destructive operations go through the approval chain.",
-    "When computer.close_window is present, close a window only after computer.observe and only with the fresh observationId returned by that observation. The one-time id expires quickly and is bound to this session plus the captured PID, bundle, window, and bounds. It is a routine local write, not an advertising-account mutation; Full Access permits it, while guarded mode may block it.",
+    "This conversational harness intentionally omits computer.close_window and every general mouse, keyboard, app-launch, and URL-launch primitive. Do not claim those actions were performed.",
     "Every dot-named call is audited and its structured result (success/data or a coded, recoverable error) is written back to the project/task record. Create a git checkpoint before mutating a repository, attach produced artifacts to the task, and when a call returns a non-recoverable permission error, ask the user instead of retrying."
   ].join("\n");
 }

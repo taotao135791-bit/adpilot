@@ -47,6 +47,16 @@ export class RuntimeBudgetExceeded extends Error {
   }
 }
 
+/** Distinct, non-retryable control flow for an operator-requested Stop. */
+export class RuntimeUserStopped extends Error {
+  readonly code = "RUNTIME_USER_STOPPED";
+
+  constructor() {
+    super("runtime stopped by user");
+    this.name = "RuntimeUserStopped";
+  }
+}
+
 export function resolveRuntimeBudgetLimits(
   override: RuntimeBudgetOverride | undefined,
   base: Readonly<RuntimeBudgetLimits> = DEFAULT_RUNTIME_BUDGET
@@ -79,8 +89,11 @@ export class RuntimeBudgetController {
   private stoppedByUser = false;
   private turnCount = 0;
   private toolCallCount = 0;
+  private readonly externalSignal: AbortSignal | undefined;
+  private readonly onExternalAbort = (): void => this.cancelForUserStop();
 
-  constructor(readonly limits: RuntimeBudgetLimits) {
+  constructor(readonly limits: RuntimeBudgetLimits, externalSignal?: AbortSignal) {
+    this.externalSignal = externalSignal;
     this.deadlinePromise = new Promise((resolve) => {
       this.resolveDeadline = resolve;
     });
@@ -88,6 +101,8 @@ export class RuntimeBudgetController {
       this.exceed("wallClockMs");
     }, limits.wallClockMs);
     this.timer.unref?.();
+    if (externalSignal?.aborted) this.cancelForUserStop();
+    else externalSignal?.addEventListener("abort", this.onExternalAbort, { once: true });
   }
 
   get signal(): AbortSignal {
@@ -123,8 +138,8 @@ export class RuntimeBudgetController {
 
   /**
    * Wait for an abort-aware maintenance operation without trusting it to
-   * settle promptly. User Stop resolves as an ordinary cancellation; a budget
-   * abort is converted back to RuntimeBudgetExceeded by throwIfExceeded().
+   * settle promptly. Either abort releases the waiter immediately; the next
+   * boundary converts it to RuntimeUserStopped or RuntimeBudgetExceeded.
    */
   settleUntilAbort<T>(operation: Promise<T>): Promise<{ aborted: true } | { aborted: false; value: T }> {
     if (this.signal.aborted) {
@@ -161,7 +176,7 @@ export class RuntimeBudgetController {
 
   bind(agent: Agent): void {
     this.activeAgent = agent;
-    if (this.failure) this.stopAgent(agent);
+    if (this.failure || this.stoppedByUser) this.stopAgent(agent);
     this.throwIfExceeded();
   }
 
@@ -170,7 +185,6 @@ export class RuntimeBudgetController {
   }
 
   claimTurn(): void {
-    if (this.stoppedByUser) return;
     this.throwIfExceeded();
     if (this.turnCount >= this.limits.maxTurns) {
       this.exceed("maxTurns");
@@ -180,7 +194,6 @@ export class RuntimeBudgetController {
   }
 
   claimToolCall(): void {
-    if (this.stoppedByUser) return;
     this.throwIfExceeded();
     if (this.toolCallCount >= this.limits.maxToolCalls) {
       this.exceed("maxToolCalls");
@@ -194,10 +207,11 @@ export class RuntimeBudgetController {
       this.exceed("wallClockMs");
     }
     if (this.failure) throw this.failure;
+    if (this.stoppedByUser) throw new RuntimeUserStopped();
   }
 
   /**
-   * User Stop remains a distinct, non-error cancellation path. Clearing the
+   * User Stop remains distinct typed control flow, not a budget failure. Clearing the
    * deadline prevents an already requested Stop from racing into a budget
    * failure while the Agent is settling its abort events.
    */
@@ -206,10 +220,12 @@ export class RuntimeBudgetController {
     this.stoppedByUser = true;
     clearTimeout(this.timer);
     this.abortController.abort(new Error("Runtime stopped by user"));
+    if (this.activeAgent) this.stopAgent(this.activeAgent);
   }
 
   dispose(): void {
     clearTimeout(this.timer);
+    this.externalSignal?.removeEventListener("abort", this.onExternalAbort);
     this.activeAgent = undefined;
   }
 

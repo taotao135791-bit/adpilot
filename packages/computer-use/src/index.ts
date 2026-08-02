@@ -802,17 +802,22 @@ export class VisualComputerRuntime {
   async runMicroTask(
     task: VisualMicroTask,
     initialScreenshot?: Screenshot,
-    constraintInput?: VisualExecutionConstraints
+    constraintInput?: VisualExecutionConstraints,
+    externalSignal?: AbortSignal
   ): Promise<VisualStepResult> {
     const state = this.sessionForTask(task);
     const unavailable = this.controlFailure(state, 0);
     if (unavailable) return unavailable;
     const revision = state.controlRevision;
     const controller = new AbortController();
+    const stopFromParent = (): void => controller.abort(externalSignal?.reason);
+    if (externalSignal?.aborted) stopFromParent();
+    else externalSignal?.addEventListener("abort", stopFromParent, { once: true });
     state.activeControllers.add(controller);
     try {
       return await this.runControlledMicroTask(state, task, initialScreenshot, constraintInput, revision, controller.signal);
     } finally {
+      externalSignal?.removeEventListener("abort", stopFromParent);
       state.activeControllers.delete(controller);
     }
   }

@@ -12,10 +12,12 @@ import { isPlanModeSkill, isPlanModeTool, PLAN_MODE_SYSTEM_PROMPT, PlanModeStore
 import type { AutonomyProbe } from "./autonomy-mode.js";
 import {
   RuntimeBudgetController,
+  RuntimeUserStopped,
   resolveRuntimeBudgetLimits,
   type RuntimeBudgetLimits,
   type RuntimeBudgetOverride
 } from "./runtime-budget.js";
+import { sanitizeEventForPersistence, sanitizeMessageForPersistence } from "./message-persistence.js";
 
 export { AdPilotSessionStorage, resolvePiSessionId } from "./session-storage.js";
 export type { AdPilotSessionMetadata } from "./session-storage.js";
@@ -31,9 +33,11 @@ export {
   DEFAULT_RUNTIME_BUDGET,
   MAX_RUNTIME_BUDGET,
   RuntimeBudgetExceeded,
+  RuntimeUserStopped,
   resolveRuntimeBudgetLimits
 } from "./runtime-budget.js";
 export type { RuntimeBudgetExceededReason, RuntimeBudgetLimits, RuntimeBudgetOverride } from "./runtime-budget.js";
+export { sanitizeEventForPersistence, sanitizeMessageForPersistence } from "./message-persistence.js";
 
 export interface RuntimeExtension {
   name: string;
@@ -75,6 +79,8 @@ export interface RuntimeRequest {
    * clamped to the runtime's hard safety envelope.
    */
   budget?: RuntimeBudgetOverride;
+  /** External request ownership. Aborting it stops queued, model, tool, and compaction work. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -131,6 +137,7 @@ export class StructuredOutputBlocker extends Error {
   }
 }
 
+/** Structured output plus the exact runtime attempt that produced it. */
 export interface StructuredRuntimeResult<S extends z.ZodTypeAny> {
   output: z.output<S>;
   runtime: RuntimeResult;
@@ -157,10 +164,10 @@ export interface PiAgentRuntimeOptions {
    */
   planMode?: PlanModeProbe;
   /**
-   * Client-level autonomy probe. In `full_access` the tool gate waives the
-   * executed-approval reference for the general local write surface
-   * (write/edit, write-classified bash). Destructive classifications and
-   * account mutations are never waived.
+   * Client-level autonomy probe. Only `full_access` authorizes the general
+   * local write surface (write/edit and write-classified bash), whose schemas
+   * cannot carry a truthful action-bound grant. Destructive classifications
+   * and account mutations are never waived.
    */
   autonomy?: AutonomyProbe;
   /**
@@ -296,7 +303,9 @@ export class PiAgentRuntime {
         return result;
       } catch (unknownError) {
         const error = unknownError instanceof Error ? unknownError : new Error(String(unknownError));
-        for (const extension of this.extensions) await extension.onError?.(error, resolvedRequest.context);
+        if (!(error instanceof RuntimeUserStopped)) {
+          for (const extension of this.extensions) await extension.onError?.(error, resolvedRequest.context);
+        }
         throw error;
       }
     });
@@ -326,6 +335,7 @@ export class PiAgentRuntime {
       ...request,
       systemPrompt: `${request.systemPrompt}\nReturn the final answer as one JSON object matching the requested schema. Do not wrap it in markdown.`
     }, budget);
+    if (budget.wasStoppedByUser) throw new RuntimeUserStopped();
     budget.throwIfExceeded();
     const firstParsed = parseStructured(first.text, schema);
     if (firstParsed.success) return { output: firstParsed.data, runtime: first, attempts: 1, repaired: false };
@@ -336,6 +346,7 @@ export class PiAgentRuntime {
       prompt: structuredRepairPrompt(first.text, firstParsed.issues),
       tools: [], allowedSkills: []
     }, budget);
+    if (budget.wasStoppedByUser) throw new RuntimeUserStopped();
     budget.throwIfExceeded();
     const secondParsed = parseStructured(sameModelRepair.text, schema);
     if (secondParsed.success) return { output: secondParsed.data, runtime: sameModelRepair, attempts: 2, repaired: true };
@@ -347,6 +358,7 @@ export class PiAgentRuntime {
       signals: { ...request.signals, reviewerEscalated: true },
       tools: [], allowedSkills: []
     }, budget);
+    if (budget.wasStoppedByUser) throw new RuntimeUserStopped();
     budget.throwIfExceeded();
     const thirdParsed = parseStructured(strongRepair.text, schema);
     if (thirdParsed.success) return { output: thirdParsed.data, runtime: strongRepair, attempts: 3, repaired: true };
@@ -620,7 +632,7 @@ export class PiAgentRuntime {
     if (existingEntries.length === 0 && request.priorMessages?.length) {
       for (const message of request.priorMessages) {
         budget.throwIfExceeded();
-        await session.appendMessage(message);
+        await session.appendMessage(sanitizeMessageForPersistence(message));
         budget.throwIfExceeded();
       }
     }
@@ -677,17 +689,19 @@ export class PiAgentRuntime {
       budget.bind(agent);
       agent.subscribe(async (event) => {
         budget.throwIfExceeded();
-        events.push(event);
+        const persistedEvent = sanitizeEventForPersistence(event);
+        events.push(persistedEvent);
         for (const extension of this.extensions) {
           budget.throwIfExceeded();
-          await extension.onEvent?.(event, request.context);
+          await extension.onEvent?.(persistedEvent, request.context);
           budget.throwIfExceeded();
         }
         if (event.type === "message_end") {
+          const persistedMessage = sanitizeMessageForPersistence(event.message);
           budget.throwIfExceeded();
-          await session.appendMessage(event.message);
+          await session.appendMessage(persistedMessage);
           budget.throwIfExceeded();
-          await this.workspace.appendJsonl(request.context.clientId, `traces/${request.context.sessionId}.jsonl`, { type: "message", at: new Date().toISOString(), message: event.message });
+          await this.workspace.appendJsonl(request.context.clientId, `traces/${request.context.sessionId}.jsonl`, { type: "message", at: new Date().toISOString(), message: persistedMessage });
           budget.throwIfExceeded();
         }
       });
@@ -705,7 +719,15 @@ export class PiAgentRuntime {
       compacted = compacted || Boolean(compactionEntryId);
       await this.writeCheckpoint(session, request.context, "idle", lastCompactionEntryId ? { compactionEntryId: lastCompactionEntryId } : undefined);
       budget.throwIfExceeded();
-      return { text, sessionId: request.context.sessionId, model: { provider: model.provider, id: model.id, tier }, messages: agent.state.messages.slice(), events, recovered, compacted };
+      return {
+        text,
+        sessionId: request.context.sessionId,
+        model: { provider: model.provider, id: model.id, tier },
+        messages: agent.state.messages.map(sanitizeMessageForPersistence),
+        events,
+        recovered,
+        compacted
+      };
     } catch (error) {
       await this.writeCheckpoint(session, request.context, "failed", { error: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
       throw error;
@@ -824,7 +846,7 @@ export class PiAgentRuntime {
   }
 
   private createBudget(request: RuntimeRequest): RuntimeBudgetController {
-    return new RuntimeBudgetController(resolveRuntimeBudgetLimits(request.budget, this.defaultBudgetLimits));
+    return new RuntimeBudgetController(resolveRuntimeBudgetLimits(request.budget, this.defaultBudgetLimits), request.signal);
   }
 
   private releaseActiveBudget(request: RuntimeRequest, budget: RuntimeBudgetController): void {

@@ -322,8 +322,8 @@ describe("session message flow", () => {
     const unknown = await server.inject({ method: "POST", url: "/api/messages", payload: { sessionId: crypto.randomUUID(), message: "hi", locale: "en" } });
     expect(unknown.statusCode).toBe(404);
     const mismatch = await server.inject({ method: "POST", url: "/api/messages", payload: { clientId: "someone-else", sessionId: state.selectedSessionId, message: "hi", locale: "en" } });
-    expect(mismatch.statusCode).toBe(400);
-    expect(mismatch.json().code).toBe("SESSION_CLIENT_MISMATCH");
+    expect(mismatch.statusCode).toBe(404);
+    expect(mismatch.json().code).toBe("SESSION_NOT_FOUND");
     await server.close();
   });
 

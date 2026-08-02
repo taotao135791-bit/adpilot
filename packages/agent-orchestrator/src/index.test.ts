@@ -25,6 +25,22 @@ import { WorkspaceStore } from "@adpilot/workspace";
 import { AgentToolRegistry, succeed, type AgentToolDeps } from "@adpilot/agent-tools";
 import { AdPilotAgent, WorkspaceSharedFactRepository, conversationSpecialistPermission, shouldForceComputerAction } from "./index.js";
 
+function deferred() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
+async function waitFor(condition: () => boolean, label: string): Promise<void> {
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
 describe("computer action routing", () => {
   it("forces concrete screen/browser operations into the action path only when Computer Use is available", () => {
     expect(shouldForceComputerAction("What is currently open in my Chrome?", true)).toBe(true);
@@ -381,6 +397,78 @@ describe("AdPilotAgent conversation routing: answer / act / investigate", () => 
     investigationTree: [{ question: "花费是否异常?", specialist: "performance_analyst", status: "complete", conclusion: "未见异常" }],
     nextStep: "继续观察", proposedApprovalIds: [], reviewAt: null
   }));
+
+  it("keeps one active run per client conversation and reports exact lifecycle status", async () => {
+    const { agent } = await makeAgent("run-lifecycle");
+    const conversationId = "single-flight-conversation";
+    const activeRunId = crypto.randomUUID();
+    const competingRunId = crypto.randomUUID();
+
+    expect(agent.reserveConversationRun("client-a", conversationId, activeRunId)).toMatchObject({
+      accepted: true,
+      runId: activeRunId
+    });
+    expect(agent.reserveConversationRun("client-a", conversationId, competingRunId)).toEqual({
+      accepted: false,
+      activeRunId
+    });
+    expect(agent.reserveConversationRun("client-a", conversationId, activeRunId)).toEqual({
+      accepted: false,
+      activeRunId
+    });
+
+    expect(agent.stopConversationRun("client-a", conversationId, competingRunId)).toEqual({
+      stopped: false,
+      status: "run_mismatch"
+    });
+    expect(agent.commitConversationRun("client-a", conversationId, activeRunId)).toBe(true);
+    expect(agent.stopConversationRun("client-a", conversationId, activeRunId)).toEqual({
+      stopped: false,
+      status: "already_completed"
+    });
+
+    agent.releaseConversationRun("client-a", conversationId, activeRunId);
+    expect(agent.stopConversationRun("client-a", conversationId, activeRunId)).toEqual({
+      stopped: false,
+      status: "not_found"
+    });
+    expect(agent.stopConversationRun("client-a", "unknown-conversation", crypto.randomUUID())).toEqual({
+      stopped: false,
+      status: "not_found"
+    });
+  });
+
+  it.each([
+    { mode: "act", message: "打开百度", goal: "打开百度" },
+    { mode: "investigate", message: "诊断广告账户", goal: "诊断广告账户" }
+  ] as const)("Stop after the $mode decision never enters the downstream loop", async ({ mode, message, goal }) => {
+    const { faux, agent, workspace } = await makeAgent(`stop-${mode}`);
+    const hold = deferred();
+    let decisionStarted = false;
+    faux.setResponses([
+      async () => {
+        decisionStarted = true;
+        await hold.promise;
+        return fauxAssistantMessage(JSON.stringify({ mode, reply: "开始处理", goal }));
+      },
+      fauxAssistantMessage("downstream run must not start")
+    ]);
+
+    const conversationId = `stop-${mode}-conversation`;
+    const runId = crypto.randomUUID();
+    const running = agent.respond("client-a", message, { conversationId, runId, interfaceLocale: "zh-CN" });
+    await waitFor(() => decisionStarted, `${mode} decision run`);
+    expect(agent.stopConversationRun("other-client", conversationId, runId)).toEqual({ stopped: false, status: "not_found" });
+    expect(agent.stopConversationRun("client-a", "other-conversation", runId)).toEqual({ stopped: false, status: "not_found" });
+    expect(agent.stopConversationRun("client-a", conversationId, crypto.randomUUID())).toEqual({ stopped: false, status: "run_mismatch" });
+    expect(agent.stopConversationRun("client-a", conversationId, runId)).toEqual({ stopped: true, status: "stopped" });
+    hold.release();
+
+    await expect(running).resolves.toMatchObject({ aborted: true, reply: "已停止。", task: null });
+    expect(agent.stopConversationRun("client-a", conversationId, runId)).toEqual({ stopped: false, status: "not_found" });
+    expect(faux.state.callCount).toBe(1);
+    expect(await workspace.listTasks("client-a")).toHaveLength(0);
+  });
 
   it("answer replies directly, act runs the local-action loop, investigate keeps the account pipeline", async () => {
     const { faux, agent } = await makeAgent("routing");

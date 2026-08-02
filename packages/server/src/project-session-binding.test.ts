@@ -142,8 +142,8 @@ describe("project → session → message binding", () => {
       url: "/api/messages",
       payload: { clientId: "someone-else", projectId: project.id, message: "x" }
     });
-    expect(mismatch.statusCode).toBe(400);
-    expect(mismatch.json().code).toBe("PROJECT_CLIENT_MISMATCH");
+    expect(mismatch.statusCode).toBe(404);
+    expect(mismatch.json().code).toBe("PROJECT_NOT_FOUND");
   });
 
   it("rejects a session bound to another project with 409", async () => {
@@ -211,6 +211,60 @@ describe("project → session → message binding", () => {
     expect(detail.tasks).toHaveLength(2);
     expect(detail.tasks[0]).toMatchObject({ goalId: detail.goals[0].id, title: "规划执行路径" });
     expect(detail.tasks[1]).toMatchObject({ goalId: detail.goals[1].id, title: "规划执行路径" });
+  });
+
+  it("triages a workbench mission inside its exact message run", async () => {
+    const { server, system } = await boot();
+    const project = (await server.inject({
+      method: "POST",
+      url: "/api/kernel/projects",
+      payload: { workspaceId: "personal", name: "Atomic mission" }
+    })).json();
+    const session = (await server.inject({
+      method: "POST",
+      url: `/api/kernel/projects/${project.id}/session`,
+      payload: { workspaceId: "personal" }
+    })).json().session;
+    const calls: Array<Record<string, unknown>> = [];
+    system.agent.respond = async (_clientId: string, _prompt: string, context: Record<string, unknown> = {}) => {
+      calls.push(context);
+      return { reply: "已开始", task: null };
+    };
+    const runId = crypto.randomUUID();
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/messages",
+      payload: {
+        clientId: "personal",
+        conversationId: session.runtimeConversationId,
+        runId,
+        sessionId: session.id,
+        projectId: project.id,
+        message: "帮我修复登陆页按钮错位的问题",
+        locale: "zh-CN"
+      }
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      runId,
+      projectId: project.id,
+      goalId: expect.any(String),
+      taskId: expect.any(String),
+      message: { role: "assistant", content: "已开始" }
+    });
+    expect(calls[0]?.runId).toBe(runId);
+    expect(calls[0]?.executionContext).toMatchObject({
+      projectId: project.id,
+      goalId: response.json().goalId,
+      taskId: response.json().taskId
+    });
+    const detail = (await server.inject({
+      method: "GET",
+      url: `/api/kernel/projects/${project.id}?workspaceId=personal`
+    })).json();
+    expect(detail.goals).toHaveLength(1);
+    expect(detail.tasks).toHaveLength(1);
   });
 });
 

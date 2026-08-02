@@ -115,6 +115,31 @@ describe("AgentToolRegistry", () => {
     expect(auditEvents.map((event) => event.action)).toEqual(["agent_tool:project.ping"]);
   });
 
+  it("hands captured pixels to Pi only as an image block, not duplicated JSON text", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-agent-tools-image-"));
+    const { deps } = makeTestDeps(root);
+    const registry = new AgentToolRegistry();
+    const encodedPixels = "cHJpdmF0ZS1zY3JlZW4tYnl0ZXM=".repeat(32);
+    registry.register(dummy({
+      name: "computer.observe",
+      capabilityPack: "computer-use",
+      permission: "computer-use",
+      execute: async (_params, ctx) => ({
+        ...succeed("computer.observe", ctx, { app: "AdPilot", windowId: 42 }),
+        image: { data: encodedPixels, mimeType: "image/jpeg" }
+      })
+    }));
+
+    const context = makeCtx({
+      enabledCapabilityPacks: ["computer-use"],
+      permissions: { read: true, write: false, destructive: false, computerUse: true, network: false }
+    });
+    const outcome = await registry.toPiTools(context, deps)[0]!.execute("call-image", {});
+    expect(outcome.content).toContainEqual({ type: "image", data: encodedPixels, mimeType: "image/jpeg" });
+    expect((outcome.content[0] as { type: "text"; text: string }).text).not.toContain(encodedPixels);
+    expect(outcome.details).toMatchObject({ image: { data: encodedPixels, mimeType: "image/jpeg" } });
+  });
+
   it("passes the Pi abort signal through the lifecycle to long-running tools", async () => {
     const root = await mkdtemp(join(tmpdir(), "adpilot-agent-tools-abort-"));
     const { deps } = makeTestDeps(root);

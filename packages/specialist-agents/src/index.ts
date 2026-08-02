@@ -16,6 +16,8 @@ export interface SpecialistRequest<I = unknown> {
   input: I;
   /** Canonical facts only. Legacy objects must go through the migration API. */
   sharedFacts: readonly SharedFact[];
+  /** Parent request ownership; specialists must not outlive the conversation run. */
+  signal?: AbortSignal;
 }
 
 export interface SpecialistAgent<I = unknown, O = unknown> {
@@ -112,9 +114,10 @@ export class AccountOperator implements SpecialistAgent<z.infer<typeof AccountOp
   readonly outputSchema = AccountOperatorOutput;
   constructor(private readonly tools: AdPilotTools) {}
   async execute(request: SpecialistRequest<z.infer<typeof AccountOperatorInput>>) {
+    request.signal?.throwIfAborted();
     const input = this.inputSchema.parse(request.input);
     if ("visualTable" in input) {
-      return this.outputSchema.parse(await this.tools.readVisualTable(request.context, input.visualTable));
+      return this.outputSchema.parse(await this.tools.readVisualTable(request.context, input.visualTable, request.signal));
     }
     if (request.context.actor === "adpilot_agent" && input.visualTask.permission === "INTERACT") {
       const allowed = input.visualTask.allowedActions;
@@ -123,7 +126,8 @@ export class AccountOperator implements SpecialistAgent<z.infer<typeof AccountOp
         throw new Error("conversational account interaction must be a one-attempt, type-only preparation step");
       }
     }
-    const result = await this.tools.executeVisualTask(request.context, input.visualTask);
+    const result = await this.tools.executeVisualTask(request.context, input.visualTask, undefined, request.signal);
+    request.signal?.throwIfAborted();
     return this.outputSchema.parse(result.status === "done"
       ? { status: "done", attempts: result.attempts, action: result.action, evidence: [`screenshot:${result.before.sha256}`, `screenshot:${result.after.sha256}`] }
       : { status: "blocked", attempts: result.attempts, evidence: [], blocker: result.blocker });
@@ -144,6 +148,7 @@ abstract class PiSpecialist<I, O> implements SpecialistAgent<I, O> {
     return this.role === "risk_reviewer" ? "risk_review" : "causal_analysis";
   }
   async execute(request: SpecialistRequest<I>): Promise<O> {
+    request.signal?.throwIfAborted();
     const input = this.inputSchema.parse(request.input);
     const key = specialistSessionKey(request.context.taskId, this.role);
     const previous = await this.sessions.load(key);
@@ -169,12 +174,14 @@ abstract class PiSpecialist<I, O> implements SpecialistAgent<I, O> {
       prompt: JSON.stringify({ input, sharedFacts }),
       signals: { task: this.routingTask() },
       allowedSkills: this.allowedSkills,
+      ...(request.signal ? { signal: request.signal } : {}),
       ...(previous ? { priorMessages: previous.messages } : {})
     };
     const structured = this.runtime.runStructuredDetailed
       ? await this.runtime.runStructuredDetailed(runtimeRequest, this.outputSchema)
       : undefined;
     const result = structured?.runtime ?? await this.runtime.run(runtimeRequest);
+    request.signal?.throwIfAborted();
     const output = structured?.output ?? this.outputSchema.parse(parseJsonObject(result.text));
     const now = new Date().toISOString();
     await this.sessions.save({
@@ -186,6 +193,7 @@ abstract class PiSpecialist<I, O> implements SpecialistAgent<I, O> {
       createdAt: previous?.createdAt ?? now,
       updatedAt: now
     });
+    request.signal?.throwIfAborted();
     return output;
   }
 }

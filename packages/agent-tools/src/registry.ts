@@ -87,10 +87,14 @@ export class AgentToolRegistry {
       executionMode: "sequential",
       execute: async (_toolCallId, rawParams, signal) => {
         const result = await runAgentToolCall(definition, rawParams, ctx, deps, signal);
+        // Pixel bytes belong only in Pi's image content block. Duplicating
+        // result.image inside the JSON text wastes context and makes a second
+        // copy available to transcript persistence.
+        const { image, ...textResult } = result;
         return {
           content: [
-            { type: "text", text: JSON.stringify(result) },
-            ...(result.image ? [{ type: "image" as const, data: result.image.data, mimeType: result.image.mimeType }] : [])
+            { type: "text", text: JSON.stringify(textResult) },
+            ...(image ? [{ type: "image" as const, data: image.data, mimeType: image.mimeType }] : [])
           ],
           details: result
         };
