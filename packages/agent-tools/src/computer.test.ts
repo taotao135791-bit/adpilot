@@ -42,6 +42,30 @@ const capture = {
 };
 
 describe("computer tools", () => {
+  it("rejects explicit background targeting of non-browser software before native access", async () => {
+    const root = await mkdtemp(join(tmpdir(), "adpilot-computer-software-isolation-"));
+    const { deps } = makeTestDeps(root);
+    const calls: string[] = [];
+    deps.computer = {
+      host: {
+        closed: false,
+        pid: 1,
+        request: async (method: string) => {
+          calls.push(method);
+          throw new Error(`unexpected method ${method}`);
+        },
+        close: async () => undefined
+      } as NativeComputerService
+    };
+    const observe = createComputerTools().find((tool) => tool.name === "computer.observe")!;
+    await expect(observe.execute(
+      { bundleId: "com.apple.mail", includeImage: false },
+      makeCtx({ enabledCapabilityPacks: ["computer-use"], permissions: { read: true, write: true, destructive: false, computerUse: true, network: false } }),
+      deps
+    )).rejects.toMatchObject({ code: "APPLICATION_NOT_ALLOWED" });
+    expect(calls).toHaveLength(0);
+  });
+
   it("observes the requested Chrome window even while another app is frontmost", async () => {
     const root = await mkdtemp(join(tmpdir(), "adpilot-computer-observe-"));
     const { deps } = makeTestDeps(root);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_REGISTRY_TOOL_PERMISSIONS,
   assertSafeIdentifier,
   classifyToolCall,
   CustomProviderConfig,
@@ -238,42 +239,81 @@ describe("tool permission gate table", () => {
     expect(classifyToolCall("commit_approved_action", {}).class).toBe("destructive");
   });
 
-  it("fails closed on unclassified tools: unknown names are approval-gated writes, never reads", () => {
+  it("marks unclassified tools as the fail-closed write sentinel, never reads", () => {
     const classification = classifyToolCall("brand_new_tool", {});
     expect(classification.defaulted).toBe(true);
     expect(classification.class).toBe("write");
-    expect(classification.rule.authority).toBe("approval_token");
+    expect(classification.rule.authority).toBe("full_access_only");
     expect(classifyToolCall("read_workspace", {}).defaulted).toBe(false);
   });
 
-  it("classifies the main-agent write/edit tools as executed-approval writes, never defaulted", () => {
+  it("classifies model-callable local writes as Full-Access-only, never approval-reference gated", () => {
     for (const name of ["write", "edit", "computer.close_window"]) {
       const classification = classifyToolCall(name, { path: "reports/daily.md" });
       expect(classification.class, name).toBe("write");
       expect(classification.defaulted, name).toBe(false);
-      expect(classification.rule.authority, name).toBe("approval_reference");
-      expect(classification.rule.referenceStatuses, name).toEqual(["executed"]);
+      expect(classification.rule.authority, name).toBe("full_access_only");
     }
   });
 
-  it("classifies bash per command: whitelisted reads flow, writes need the executed approval, deny maps to destructive", () => {
+  it("classifies bash per command: reads flow, writes need Full Access, destructive needs a token", () => {
     for (const command of ["ls -la", "git status", "cat reports/daily.md | grep CPA"]) {
       const classification = classifyToolCall("bash", { command });
       expect(classification.class, command).toBe("read");
       expect(classification.defaulted, command).toBe(false);
     }
     for (const command of ["npm install", "echo hi > notes.md", "node scripts/build.mjs"]) {
-      expect(classifyToolCall("bash", { command }).class, command).toBe("write");
+      const classification = classifyToolCall("bash", { command });
+      expect(classification.class, command).toBe("write");
+      expect(classification.rule.authority, command).toBe("full_access_only");
     }
     for (const command of ["curl https://ads.google.com", "screencapture /tmp/x.png", "sudo ls", "rm -rf /", "cat .adpilot/approval-secret"]) {
-      expect(classifyToolCall("bash", { command }).class, command).toBe("destructive");
+      const classification = classifyToolCall("bash", { command });
+      expect(classification.class, command).toBe("destructive");
+      expect(classification.rule.authority, command).toBe("approval_token");
     }
     const rule = TOOL_GATE_RULES.bash;
-    expect(rule?.authority).toBe("approval_reference");
-    expect(rule?.referenceStatuses).toEqual(["executed"]);
+    expect(rule?.authority).toBe("full_access_only");
     // The gate-level pass runs without args or a workspace root and never floors to read.
     expect(classifyToolCall("bash", {}).class).toBe("write");
     expect(classifyToolCall("bash", { command: "echo $(date)" }).class).toBe("write");
+  });
+
+  it("gates registry terminal and project writes without pretending they carry per-action approvals", () => {
+    const terminalRule = TOOL_GATE_RULES["terminal.execute"];
+    expect(terminalRule?.authority).toBe("full_access_only");
+    expect(classifyToolCall("terminal.execute", { command: "git status" }).class).toBe("read");
+    expect(classifyToolCall("terminal.execute", { command: "npm test" }).class).toBe("write");
+    const destructiveTerminal = classifyToolCall("terminal.execute", { command: "curl https://example.com" });
+    expect(destructiveTerminal.class).toBe("destructive");
+    expect(destructiveTerminal.rule.authority).toBe("approval_token");
+    expect(classifyToolCall("terminal.execute", {}).class).toBe("write");
+
+    for (const name of Object.keys(AGENT_REGISTRY_TOOL_PERMISSIONS)) {
+      const classification = classifyToolCall(name, {});
+      expect(classification.defaulted, name).toBe(false);
+      const declared = AGENT_REGISTRY_TOOL_PERMISSIONS[name as keyof typeof AGENT_REGISTRY_TOOL_PERMISSIONS];
+      expect(classification.class, name).toBe(declared);
+      expect(classification.rule.authority, name).toBe(
+        declared === "destructive" ? "approval_token" : declared === "write" ? "full_access_only" : "self_gated"
+      );
+    }
+  });
+
+  it("does not mistake scheduler, workflow, or product-ledger references for authority", () => {
+    for (const name of [
+      "project.open", "goal.create", "task.create", "artifact.attach_to_task",
+      "ads.create_decision", "ads.record_observation",
+      "automation.create", "automation.pause", "automation.resume", "automation.run_now",
+      "workflow.run"
+    ]) {
+      const classification = classifyToolCall(name, {});
+      expect(classification.class, name).toBe("write");
+      expect(classification.rule.authority, name).toBe("full_access_only");
+    }
+    const artifactExport = classifyToolCall("artifact.export", {});
+    expect(artifactExport.class).toBe("read");
+    expect(artifactExport.rule.authority).toBe("self_gated");
   });
 
   it("covers every Pi tool name with a rule that has a reason", () => {
@@ -299,7 +339,7 @@ describe("tool permission gate table", () => {
     }
   });
 
-  it("extracts approval credentials from top-level and execute_skill input arguments", () => {
+  it("extracts action-token credentials from top-level and nested input arguments", () => {
     const id = crypto.randomUUID();
     expect(extractApprovalCredentials({ approvalId: id, approvalToken: "a.b.c" })).toEqual({ approvalId: id, approvalToken: "a.b.c" });
     expect(extractApprovalCredentials({ name: "create-single-variable-experiment", input: { approvalId: id } })).toEqual({ approvalId: id });

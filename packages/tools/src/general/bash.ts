@@ -9,8 +9,8 @@
  *
  * 1. Every command is classified by the deterministic shell-syntax-aware
  *    classifier in @adpilot/shared BEFORE execution: whitelisted read
- *    commands flow, write-level commands reach here only with an executed
- *    approval reference (enforced by the tool gate), and deny-level commands
+ *    commands flow, write-level commands reach here only under explicit Full
+ *    Access (enforced by the tool gate), and deny-level commands
  *    (network egress, screen capture, credential/profile stores, sudo, kill,
  *    launchctl, rm -rf, ...) are refused here absolutely — no approval can
  *    authorize them, because they are exactly the threat-model channels that
@@ -216,7 +216,7 @@ export function createBashTool(options: BashToolOptions): AgentTool {
   return {
     name: "bash",
     label: "Run a sandboxed bash command",
-    description: `Execute a bash command in the workspace root under a macOS seatbelt sandbox: no network access, file writes confined to the workspace and one per-call private temp home, and protected paths (credentials, approval secrets, audit chain, browser profiles) unreadable. Read-only commands (ls, cat, grep, git status/diff/log, ...) run freely; writes require an executed approval reference; dangerous commands (GUI app launch, curl/wget/ssh, screencapture, sudo, kill, launchctl, rm -rf, browser profile access) are always refused. Output is truncated to the last ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}.`,
+    description: `Execute a bash command in the workspace root under a macOS seatbelt sandbox: no network access, file writes confined to the workspace and one per-call private temp home, and protected paths (credentials, approval secrets, audit chain, browser profiles) unreadable. Read-only commands (ls, cat, grep, git status/diff/log, ...) run freely; bounded writes require explicit Full Access; dangerous commands (GUI app launch, curl/wget/ssh, screencapture, sudo, kill, launchctl, rm -rf, browser profile access) are always refused. Output is truncated to the last ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}.`,
     parameters: bashParameters,
     executionMode: "sequential",
     execute: async (_toolCallId, raw, signal) => {

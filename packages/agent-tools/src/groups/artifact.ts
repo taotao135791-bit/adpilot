@@ -15,6 +15,14 @@ import type { AgentToolDefinition } from "../registry.js";
 import { kernelStores, updateKernelTask } from "../kernel-internal.js";
 import { succeed } from "../result.js";
 import { toolError } from "../errors.js";
+import {
+  artifactNotFound,
+  assertOwnedKernelContext,
+  listOwnedProjects,
+  requireOwnedArtifact,
+  requireOwnedProject,
+  requireOwnedTask
+} from "./kernel-ownership.js";
 
 const IdParams = z.object({ id: z.string().min(1) });
 
@@ -76,12 +84,14 @@ export function createArtifactTools(): AgentToolDefinition[] {
         spec: z.record(z.string(), z.unknown())
       }),
       execute: async (raw, ctx, deps) => {
+        await assertOwnedKernelContext(ctx, deps);
         const params = z.object({
           type: z.enum(["slides", "document", "spreadsheet"]),
           title: z.string().min(1),
           spec: z.record(z.string(), z.unknown())
         }).parse(raw);
         const projectId = requireProjectId(ctx);
+        await requireOwnedProject(projectId, ctx, deps);
         const type = renderableType(params.type);
         const spec = parseSpec(type, params.spec);
         const sessionId = z.string().uuid().safeParse(ctx.sessionId).success ? ctx.sessionId : undefined;
@@ -113,9 +123,9 @@ export function createArtifactTools(): AgentToolDefinition[] {
       permission: "read",
       parameters: IdParams,
       execute: async (raw, ctx, deps) => {
+        await assertOwnedKernelContext(ctx, deps);
         const params = IdParams.parse(raw);
-        const artifact = await deps.artifacts.get(params.id);
-        if (!artifact) throw toolError("ARTIFACT_NOT_FOUND", `artifact not found: ${params.id}`);
+        const { artifact } = await requireOwnedArtifact(params.id, ctx, deps);
         return succeed("artifact.get", ctx, { artifact });
       }
     },
@@ -126,9 +136,12 @@ export function createArtifactTools(): AgentToolDefinition[] {
       permission: "read",
       parameters: z.object({ projectId: z.string().min(1).optional() }),
       execute: async (raw, ctx, deps) => {
+        await assertOwnedKernelContext(ctx, deps);
         const params = z.object({ projectId: z.string().min(1).optional() }).parse(raw);
         const projectId = params.projectId ?? ctx.projectId;
-        const artifacts = await deps.artifacts.list(projectId);
+        const artifacts = projectId !== undefined
+          ? await deps.artifacts.list((await requireOwnedProject(projectId, ctx, deps)).id)
+          : (await Promise.all((await listOwnedProjects(ctx, deps)).map((project) => deps.artifacts.list(project.id)))).flat();
         return succeed("artifact.list", ctx, { artifacts, count: artifacts.length });
       }
     },
@@ -139,9 +152,9 @@ export function createArtifactTools(): AgentToolDefinition[] {
       permission: "read",
       parameters: IdParams,
       execute: async (raw, ctx, deps) => {
+        await assertOwnedKernelContext(ctx, deps);
         const params = IdParams.parse(raw);
-        const artifact = await deps.artifacts.get(params.id);
-        if (!artifact) throw toolError("ARTIFACT_NOT_FOUND", `artifact not found: ${params.id}`);
+        const { artifact } = await requireOwnedArtifact(params.id, ctx, deps);
         const versions = await deps.artifacts.listVersions(params.id);
         const latest = versions.at(-1);
         const previews = (latest?.files ?? []).filter((file) => /thumb|preview/i.test(file) || file.endsWith(".svg"));
@@ -164,13 +177,13 @@ export function createArtifactTools(): AgentToolDefinition[] {
         spec: z.record(z.string(), z.unknown()).optional()
       }),
       execute: async (raw, ctx, deps) => {
+        await assertOwnedKernelContext(ctx, deps);
         const params = IdParams.extend({
           slideIndex: z.number().int().nonnegative().optional(),
           patch: z.record(z.string(), z.unknown()).optional(),
           spec: z.record(z.string(), z.unknown()).optional()
         }).parse(raw);
-        const artifact = await deps.artifacts.get(params.id);
-        if (!artifact) throw toolError("ARTIFACT_NOT_FOUND", `artifact not found: ${params.id}`);
+        const { artifact } = await requireOwnedArtifact(params.id, ctx, deps);
         if (artifact.type === "slides") {
           if (params.slideIndex === undefined || params.patch === undefined) {
             throw toolError("INVALID", "slides revision requires slideIndex and patch");
@@ -183,7 +196,7 @@ export function createArtifactTools(): AgentToolDefinition[] {
           throw toolError("INVALID", `${artifact.type} revision requires a spec object merged over the stored spec`);
         }
         const storedBuffer = await deps.artifacts.readOutput(params.id, "spec.json");
-        if (!storedBuffer) throw toolError("ARTIFACT_NOT_FOUND", `artifact ${params.id} has no stored spec to revise`);
+        if (!storedBuffer) throw artifactNotFound();
         const stored = JSON.parse(storedBuffer.toString("utf8")) as Record<string, unknown>;
         const merged = parseSpec(type, { ...stored, ...params.spec });
         const record = await deps.artifacts.createFromRenderer(
@@ -204,12 +217,12 @@ export function createArtifactTools(): AgentToolDefinition[] {
       permission: "read",
       parameters: IdParams.extend({ format: z.string().min(1).optional() }),
       execute: async (raw, ctx, deps) => {
+        await assertOwnedKernelContext(ctx, deps);
         const params = IdParams.extend({ format: z.string().min(1).optional() }).parse(raw);
-        const artifact = await deps.artifacts.get(params.id);
-        if (!artifact) throw toolError("ARTIFACT_NOT_FOUND", `artifact not found: ${params.id}`);
+        const { artifact } = await requireOwnedArtifact(params.id, ctx, deps);
         const versions = await deps.artifacts.listVersions(params.id);
         const latest = versions.at(-1);
-        if (!latest) throw toolError("ARTIFACT_NOT_FOUND", `artifact ${params.id} has no rendered versions`);
+        if (!latest) throw artifactNotFound();
         const files = params.format !== undefined
           ? latest.files.filter((file) => file.endsWith(`.${params.format!}`))
           : latest.files;
@@ -229,13 +242,16 @@ export function createArtifactTools(): AgentToolDefinition[] {
       permission: "write",
       parameters: IdParams.extend({ taskId: z.string().min(1).optional() }),
       execute: async (raw, ctx, deps) => {
+        await assertOwnedKernelContext(ctx, deps);
         const params = IdParams.extend({ taskId: z.string().min(1).optional() }).parse(raw);
-        const artifact = await deps.artifacts.get(params.id);
-        if (!artifact) throw toolError("ARTIFACT_NOT_FOUND", `artifact not found: ${params.id}`);
+        const ownedArtifact = await requireOwnedArtifact(params.id, ctx, deps);
+        const artifact = ownedArtifact.artifact;
         const taskId = params.taskId ?? ctx.taskId;
         if (!taskId) {
           throw toolError("TASK_NOT_SELECTED", "no taskId was passed and the execution context has no current task");
         }
+        const ownedTask = await requireOwnedTask(taskId, ctx, deps);
+        if (ownedTask.project.id !== ownedArtifact.project.id) throw artifactNotFound();
         const evidenceId = `artifact:${artifact.id}`;
         const task = await updateKernelTask(deps.kernel, taskId, deps.now(), (current) => ({
           evidenceIds: [...new Set([...current.evidenceIds, evidenceId])]

@@ -300,8 +300,9 @@ describe("artifact tools (real renderers and stores)", () => {
   it("creates, previews, revises, exports a slides deck and attaches it to a task", async () => {
     const { deps, kernel } = await workspace();
     const project = await kernel.createProject({ workspaceId: "client-a", name: "Decks" });
-    const task = await kernel.createTask({ title: "build deck" });
-    const ctx = makeCtx({ projectId: project.id, taskId: task.id });
+    const goal = await kernel.createGoal({ projectId: project.id, title: "Ship deck" });
+    const task = await kernel.createTask({ goalId: goal.id, title: "build deck" });
+    const ctx = makeCtx({ projectId: project.id, goalId: goal.id, taskId: task.id });
 
     const created = await call("artifact.create", {
       type: "slides",

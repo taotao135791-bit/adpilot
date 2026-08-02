@@ -214,14 +214,16 @@ describe("ToolPermissionGate plan-mode backstop", () => {
     expect(writeDenial).toContain("Plan mode is active");
     const bashDenial = await gate.check("bash", { command: "npm install", approvalId: crypto.randomUUID() }, context);
     expect(bashDenial).toContain("Plan mode is active");
+    const terminalDenial = await gate.check("terminal.execute", { cwd: "/tmp/project", command: "npm test" }, context);
+    expect(terminalDenial).toContain("Plan mode is active");
     const events = await audit.list("client-a");
-    expect(events).toHaveLength(2);
+    expect(events).toHaveLength(3);
     for (const event of events) {
       expect(event).toMatchObject({ action: "tool_gate", status: "denied", details: { planMode: true } });
     }
   });
 
-  it("lets the normal approval chain decide when plan mode is off", async () => {
+  it("restores the normal Guarded-mode Full-Access boundary when plan mode is off", async () => {
     const { workspace } = await makeWorkspace();
     const audit = new AuditLog(workspace);
     const approvals = new ApprovalService(workspace, SECRET);
@@ -231,6 +233,7 @@ describe("ToolPermissionGate plan-mode backstop", () => {
     };
     const denial = await gate.check("write", { path: "x.md" }, context);
     expect(denial).not.toContain("Plan mode is active");
-    expect(denial).toContain("approvalId");
+    expect(denial).toContain("action-bound approval token");
+    expect(denial).toContain("Full Access");
   });
 });

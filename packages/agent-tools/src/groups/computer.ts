@@ -11,6 +11,12 @@ import { succeed } from "../result.js";
 import { toolError } from "../errors.js";
 
 const BROWSER_BUNDLE_HINTS = ["chrome", "edge", "brave", "arc", "firefox", "safari", "chromium", "opera", "vivaldi", "dia", "zen"];
+const SUPPORTED_BACKGROUND_BROWSER_BUNDLES = new Set([
+  "com.google.Chrome",
+  "com.microsoft.edgemac",
+  "com.brave.Browser",
+  "org.chromium.Chromium"
+]);
 const MAX_IMAGE_EDGE = 1280;
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 
@@ -158,7 +164,7 @@ export function createComputerTools(): AgentToolDefinition[] {
   return [
     {
       name: "computer.observe",
-      description: "Capture the user's frontmost window or a visible window owned by bundleId and report the app, exact windowId, title, bounds, browser URL when available, a short-lived observationId, plus a JPEG for inspection. This is read-only and requires NO approval or approvalId. When the user names Chrome, pass bundleId \"com.google.Chrome\" so AdPilot being frontmost does not hide the browser. Any later window action must use the returned observationId.",
+      description: "Capture the user-selected frontmost window, or a supported browser window when bundleId is supplied, and report the app, exact windowId, title, bounds, browser URL when available, a short-lived observationId, plus a JPEG for inspection. Explicit background targeting is browser-only: other apps must be brought frontmost by the user. This is read-only and requires NO approval or approvalId.",
       capabilityPack: "computer-use",
       permission: "computer-use",
       parameters: z.object({
@@ -171,6 +177,12 @@ export function createComputerTools(): AgentToolDefinition[] {
           includeImage: z.boolean().optional()
         }).parse(raw);
         const host = requireHost(deps);
+        if (params.bundleId && !SUPPORTED_BACKGROUND_BROWSER_BUNDLES.has(params.bundleId)) {
+          throw toolError(
+            "APPLICATION_NOT_ALLOWED",
+            "explicit background observation is restricted to supported browsers; bring another app frontmost to select it explicitly"
+          );
+        }
         const frontmost = params.bundleId
           ? null
           : await host.request("frontmost", {}, {

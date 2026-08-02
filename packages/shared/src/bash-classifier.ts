@@ -12,7 +12,7 @@
  * - write: anything else that is not explicitly dangerous (file redirects,
  *   package installs, inline interpreter code, unknown commands, and anything
  *   the lexer cannot fully resolve, including command substitution) — requires
- *   an executed approval reference of the same client and task.
+ *   explicit Full Access because the shell schema has no action-bound grant.
  * - deny: hard-blocked patterns, not eligible for approval at all. These are
  *   exactly the channels of the reviewed threat model: network egress/ingress
  *   (curl/wget/ssh/rsync/nc/...), screen or UI capture (screencapture,
@@ -244,6 +244,10 @@ const DESTRUCTIVE_FS: DenyRule = {
   rule: "destructive_filesystem",
   reason: "irreversible filesystem destruction is hard-denied"
 };
+const DESTRUCTIVE_REPOSITORY: DenyRule = {
+  rule: "destructive_repository",
+  reason: "destructive repository ref or reflog changes are hard-denied"
+};
 
 const DENY_PROGRAMS: Readonly<Record<string, DenyRule>> = {
   curl: NETWORK_EGRESS, wget: NETWORK_EGRESS, http: NETWORK_EGRESS, https: NETWORK_EGRESS,
@@ -449,6 +453,146 @@ function classifyTokenPaths(tokens: readonly WordToken[]): Pick<SimpleCommandVer
   return null;
 }
 
+function optionMatches(value: string, option: string): boolean {
+  return value === option || (option.startsWith("--") && value.startsWith(`${option}=`));
+}
+
+function hasOption(args: readonly WordToken[], option: string): boolean {
+  return args.some((arg) => optionMatches(arg.value, option));
+}
+
+function hasAnyOption(args: readonly WordToken[], options: readonly string[]): boolean {
+  return options.some((option) => hasOption(args, option));
+}
+
+function hasLongOptionPrefix(args: readonly WordToken[], option: string, minimumPrefixLength: number): boolean {
+  return args.some((arg) => {
+    const candidate = arg.value.split("=", 1)[0]!;
+    return candidate.startsWith("--") && candidate.length >= minimumPrefixLength + 2 && option.startsWith(candidate);
+  });
+}
+
+function hasShortOption(args: readonly WordToken[], options: readonly string[], optionsTakingValues: readonly string[] = []): boolean {
+  const sought = new Set(options);
+  const takesValue = new Set(optionsTakingValues);
+  for (const arg of args) {
+    if (!arg.value.startsWith("-") || arg.value.startsWith("--")) continue;
+    for (const option of arg.value.slice(1)) {
+      if (sought.has(option)) return true;
+      if (takesValue.has(option)) break;
+    }
+  }
+  return false;
+}
+
+function splitGitInvocation(args: readonly WordToken[]): { name: string; args: readonly WordToken[] } {
+  const globalOptionsWithValue = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env"]);
+  let index = 0;
+  while (index < args.length) {
+    const value = args[index]!.value;
+    if (!value.startsWith("-")) return { name: value, args: args.slice(index + 1) };
+    if (globalOptionsWithValue.has(value)) {
+      index += 2;
+      continue;
+    }
+    index += 1;
+  }
+  return { name: "status", args: [] };
+}
+
+function classifyGitBranch(args: readonly WordToken[]): Pick<SimpleCommandVerdict, "verdict" | "rule" | "reason"> {
+  const values = args.map((arg) => arg.value);
+  const destructiveShort = hasShortOption(args, ["d", "D", "f", "M", "C"], ["u", "t"]);
+  const destructiveLong = hasAnyOption(args, ["--delete", "--force"])
+    || hasLongOptionPrefix(args, "--delete", 1)
+    || hasLongOptionPrefix(args, "--force", 4);
+  if (destructiveShort || destructiveLong) {
+    return verdict("deny", DESTRUCTIVE_REPOSITORY.rule, "git branch deletion or forced ref replacement can discard repository history");
+  }
+
+  const mutationShort = hasShortOption(args, ["m", "c", "t", "u"]);
+  if (mutationShort || hasAnyOption(args, [
+    "--move", "--copy", "--track", "--no-track", "--set-upstream-to", "--unset-upstream",
+    "--create-reflog", "--edit-description", "--recurse-submodules"
+  ])) {
+    return verdict("write", "git_mutation", "git branch changes repository refs or branch configuration");
+  }
+
+  const readLongOptions = [
+    "--list", "--show-current", "--contains", "--no-contains", "--merged", "--no-merged",
+    "--points-at", "--format", "--sort", "--column", "--no-column", "--color", "--no-color",
+    "--abbrev", "--no-abbrev", "--all", "--remotes", "--verbose", "--no-verbose", "--quiet",
+    "--no-quiet", "--omit-empty", "--no-omit-empty", "--ignore-case", "--no-ignore-case"
+  ];
+  const listingMode = values.some((value) => value === "-l") || hasAnyOption(args, [
+    "--list", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at"
+  ]);
+  const unknownOption = values.some((value) => value.startsWith("-")
+    && !/^-[avqrli]+$/.test(value)
+    && !readLongOptions.some((option) => optionMatches(value, option)));
+  if (unknownOption) {
+    return verdict("write", "git_mutation", "unrecognized git branch options fail closed because branch options may change repository refs");
+  }
+  const operands = values.filter((value) => !value.startsWith("-"));
+  if (operands.length > 0 && !listingMode) {
+    return verdict("write", "git_mutation", "git branch with a branch-name operand creates or changes a repository ref");
+  }
+  return verdict("read", "read_whitelist", "git branch listing only observes repository refs");
+}
+
+function classifyGitTag(args: readonly WordToken[]): Pick<SimpleCommandVerdict, "verdict" | "rule" | "reason"> {
+  const values = args.map((arg) => arg.value);
+  const destructiveShort = hasShortOption(args, ["d", "f"], ["m", "F", "u", "n"]);
+  const destructiveLong = hasAnyOption(args, ["--delete", "--force"])
+    || hasLongOptionPrefix(args, "--delete", 1)
+    || hasLongOptionPrefix(args, "--force", 4);
+  if (destructiveShort || destructiveLong) {
+    return verdict("deny", DESTRUCTIVE_REPOSITORY.rule, "git tag deletion or forced replacement can discard repository refs");
+  }
+
+  const mutationShort = hasShortOption(args, ["a", "s", "e", "m", "F", "u"], ["m", "F", "u", "n"]);
+  if (mutationShort || hasAnyOption(args, [
+    "--annotate", "--sign", "--edit", "--message", "--file", "--local-user", "--cleanup",
+    "--trailer", "--create-reflog"
+  ])) {
+    return verdict("write", "git_mutation", "git tag creates or changes a repository ref");
+  }
+
+  const readLongOptions = [
+    "--list", "--verify", "--contains", "--no-contains", "--merged", "--no-merged",
+    "--points-at", "--format", "--sort", "--column", "--no-column", "--color", "--no-color",
+    "--omit-empty", "--no-omit-empty", "--ignore-case", "--no-ignore-case"
+  ];
+  const listingMode = values.some((value) => value === "-l" || value.startsWith("-n") || value === "-v") || hasAnyOption(args, [
+    "--list", "--verify", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at"
+  ]);
+  const unknownOption = values.some((value) => value.startsWith("-")
+    && !/^-l$|^-v$|^-i$|^-n\d*$/.test(value)
+    && !readLongOptions.some((option) => optionMatches(value, option)));
+  if (unknownOption) {
+    return verdict("write", "git_mutation", "unrecognized git tag options fail closed because tag options may change repository refs");
+  }
+  const operands = values.filter((value) => !value.startsWith("-"));
+  if (operands.length > 0 && !listingMode) {
+    return verdict("write", "git_mutation", "git tag with a tag-name operand creates a repository ref");
+  }
+  return verdict("read", "read_whitelist", "git tag listing or verification only observes repository refs");
+}
+
+function classifyGitReflog(args: readonly WordToken[]): Pick<SimpleCommandVerdict, "verdict" | "rule" | "reason"> {
+  const action = args.find((arg) => !arg.value.startsWith("-"))?.value;
+  const destructiveAction = action && action.length >= 3
+    ? ["expire", "delete", "drop"].find((candidate) => candidate.startsWith(action))
+    : undefined;
+  if (destructiveAction) {
+    return verdict("deny", DESTRUCTIVE_REPOSITORY.rule, `git reflog ${destructiveAction} can permanently discard repository recovery history`);
+  }
+  if (action && action.length >= 3 && "write".startsWith(action)) {
+    return verdict("write", "git_mutation", "git reflog write changes repository recovery history");
+  }
+  return verdict("read", "read_whitelist", "git reflog show/list/exists only observes repository recovery history");
+}
+
 function unwrapWrapper(words: readonly WordToken[]): readonly WordToken[] {
   // Peel env VAR=x cmd / nice cmd / nohup cmd / time cmd / command cmd wrappers.
   let rest = words;
@@ -515,7 +659,7 @@ function classifySegment(segment: ParsedSegment, context: SegmentContext): Simpl
     return finish(verdict("write", "command_substitution", "command contains a substitution whose result the classifier cannot resolve"), program);
   }
 
-  // find -exec/-delete executes or removes: inspect the delegated program.
+  // find -exec/-delete executes or removes; -fprint/-fprintf variants write output files.
   if (program === "find") {
     const execIndex = args.findIndex((arg) => arg.value === "-exec" || arg.value === "-execdir" || arg.value === "-ok" || arg.value === "-okdir");
     if (execIndex >= 0) {
@@ -531,16 +675,19 @@ function classifySegment(segment: ParsedSegment, context: SegmentContext): Simpl
     if (args.some((arg) => arg.value === "-delete")) {
       return finish(verdict("write", "find_delete", "find -delete removes files"), program);
     }
-    return finish(verdict("read", "read_whitelist", "find without -exec/-delete only lists paths"), program);
+    if (args.some((arg) => arg.value === "-fprint" || arg.value === "-fprint0" || arg.value === "-fprintf" || arg.value === "-fls")) {
+      return finish(verdict("write", "find_output", "find file-output actions write results to a file"), program);
+    }
+    return finish(verdict("read", "read_whitelist", "find without execution, deletion, or file-output actions only lists paths"), program);
   }
 
-  // rm: recursive+force is a hard deny; plain rm stays approval-gated.
+  // rm: recursive+force is a hard deny; plain rm stays Full-Access-only.
   if (program === "rm") {
     const flags = args.filter((arg) => arg.value.startsWith("-")).map((arg) => arg.value).join("");
     if (/r/i.test(flags) && /f/i.test(flags)) {
       return finish(verdict("deny", DESTRUCTIVE_FS.rule, "rm with recursive force flags is irreversible filesystem destruction"), program);
     }
-    return finish(verdict("write", "file_mutation", "rm removes files and therefore requires an executed approval reference"), program);
+    return finish(verdict("write", "file_mutation", "rm removes files and therefore requires explicit Full Access"), program);
   }
 
   // dd writing to a device or file outside confinement.
@@ -557,19 +704,23 @@ function classifySegment(segment: ParsedSegment, context: SegmentContext): Simpl
 
   // git: read subcommands flow, remotes are network channels, everything else writes.
   if (program === "git") {
-    const subcommand = args.find((arg) => !arg.value.startsWith("-"));
-    const name = subcommand?.value ?? "status";
+    const invocation = splitGitInvocation(args);
+    const name = invocation.name;
+    const gitArgs = invocation.args;
     if (GIT_DENY_SUBCOMMANDS.has(name)) {
       return finish(verdict("deny", NETWORK_EGRESS.rule, `git ${name} talks to remotes: ${NETWORK_EGRESS.reason}`), program);
     }
+    if (name === "branch") return finish(classifyGitBranch(gitArgs), program);
+    if (name === "tag") return finish(classifyGitTag(gitArgs), program);
+    if (name === "reflog") return finish(classifyGitReflog(gitArgs), program);
     if (name === "stash") {
-      const second = args.filter((arg) => !arg.value.startsWith("-"))[1]?.value;
+      const second = gitArgs.find((arg) => !arg.value.startsWith("-"))?.value;
       return finish(second === "list" || second === "show"
         ? verdict("read", "read_whitelist", "git stash list/show only observes")
         : verdict("write", "git_mutation", "git stash mutates repository state"), program);
     }
     if (name === "remote") {
-      const second = args.filter((arg) => !arg.value.startsWith("-"))[1]?.value;
+      const second = gitArgs.find((arg) => !arg.value.startsWith("-"))?.value;
       return finish(second === undefined || second === "get-url"
         ? verdict("read", "read_whitelist", "git remote listing only observes")
         : verdict("write", "git_mutation", "git remote mutation changes repository configuration"), program);
@@ -582,7 +733,7 @@ function classifySegment(segment: ParsedSegment, context: SegmentContext): Simpl
       if (redirect) return finish(redirect, program);
       return finish(verdict("read", "read_whitelist", `git ${name} only observes repository state`), program);
     }
-    return finish(verdict("write", "git_mutation", `git ${name} mutates repository state and requires an executed approval reference`), program);
+    return finish(verdict("write", "git_mutation", `git ${name} mutates repository state and requires explicit Full Access`), program);
   }
 
   // Package managers: registry/publish/auth subcommands are network channels.
@@ -591,7 +742,7 @@ function classifySegment(segment: ParsedSegment, context: SegmentContext): Simpl
     if (PACKAGE_MANAGER_DENY_SUBCOMMANDS.has(subcommand)) {
       return finish(verdict("deny", NETWORK_EGRESS.rule, `${program} ${subcommand} talks to the package registry: ${NETWORK_EGRESS.reason}`), program);
     }
-    return finish(verdict("write", "package_manager", `${program} ${subcommand || " invocation"} installs or executes code and requires an executed approval reference`), program);
+    return finish(verdict("write", "package_manager", `${program} ${subcommand || " invocation"} installs or executes code and requires explicit Full Access`), program);
   }
 
   // Shells: `bash -c 'script'` re-classifies the inner script recursively; running a script file writes.
@@ -631,6 +782,17 @@ function classifySegment(segment: ParsedSegment, context: SegmentContext): Simpl
       const output = args.find((arg) => arg.value === "-o" || arg.value.startsWith("-o"));
       if (output) return finish(verdict("write", "file_mutation", "sort -o writes its result to a file"), program);
     }
+    if (program === "yq") {
+      const inPlace = hasShortOption(args, ["i"], ["p", "o", "I"])
+        || hasAnyOption(args, ["--inplace", "--in-place"]);
+      if (inPlace) return finish(verdict("write", "file_mutation", "yq in-place mode rewrites input files"), program);
+    }
+    if (program === "uniq") {
+      const output = hasShortOption(args, ["o"], ["f", "s", "w"])
+        || hasOption(args, "--output")
+        || hasLongOptionPrefix(args, "--output", 1);
+      if (output) return finish(verdict("write", "file_mutation", "uniq --output writes its result to a file"), program);
+    }
     if (program === "echo" || program === "printf") {
       // harmless without a redirect; the redirect check below decides
     }
@@ -649,8 +811,8 @@ function classifySegment(segment: ParsedSegment, context: SegmentContext): Simpl
   const redirect = classifyRedirectTargets(segment, context);
   if (redirect) return finish(redirect, program);
 
-  // Unknown programs fail toward approval, never toward read.
-  return finish(verdict("write", "unknown_program", `${program} is not on the read-only whitelist; unlisted commands require an executed approval reference`), program);
+  // Unknown programs fail toward explicit Full Access, never toward read.
+  return finish(verdict("write", "unknown_program", `${program} is not on the read-only whitelist; unlisted commands require explicit Full Access`), program);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -665,7 +827,7 @@ export function classifyBashCommand(command: string, options: BashClassifierOpti
       verdict: "write",
       parseable: true,
       commands: [],
-      reason: "empty command; fail-closed to the approval-gated write level"
+      reason: "empty command; fail-closed to the Full-Access-only write level"
     };
   }
   const lexed = lex(command);

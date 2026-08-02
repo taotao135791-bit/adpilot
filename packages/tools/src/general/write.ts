@@ -11,8 +11,9 @@
  * - pi-tui renderCall/renderResult, syntax highlighting and promptSnippet
  *   were removed (no TUI here). The file-mutation queue is kept as an
  *   in-process lock per path.
- * - The tool gate classifies write as an approval-gated write: the model call
- *   must reference the executed approval of the same client and task.
+ * - The tool gate classifies this as a Full-Access-only local write. The
+ *   model-callable schema carries no approval id because a ledger reference
+ *   would not be a truthful action-bound grant.
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";

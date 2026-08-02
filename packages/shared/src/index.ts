@@ -645,12 +645,14 @@ export type ToolPermissionClass = z.infer<typeof ToolPermissionClass>;
  * - approval_token: the call must carry `approvalId` + `approvalToken` bound to
  *   an approved, unexpired, single-use token (same semantics as
  *   ApprovalService.consume, minus the final consume).
- * - approval_reference: the call must carry `approvalId` pointing at an
- *   approval of the same client and task in one of `referenceStatuses`.
+ * - full_access_only: the tool performs a bounded local/project side effect,
+ *   but cannot present a verifiable, action-bound approval token. It therefore
+ *   fails closed in Guarded mode and may run only when the user has explicitly
+ *   enabled Full Access. Destructive classifications are never covered.
  * - self_gated: the tool is itself the authority-request pipeline; its internal
  *   deterministic guardrails are the gate (no token can exist yet).
  */
-export const ToolGateAuthority = z.enum(["approval_token", "approval_reference", "self_gated"]);
+export const ToolGateAuthority = z.enum(["approval_token", "full_access_only", "self_gated"]);
 export type ToolGateAuthority = z.infer<typeof ToolGateAuthority>;
 
 export interface ToolGateRule {
@@ -658,8 +660,6 @@ export interface ToolGateRule {
   classify: ToolPermissionClass | ((args: unknown) => ToolPermissionClass);
   /** Authority check applied when the effective class is not read. */
   authority: ToolGateAuthority;
-  /** Approval statuses that authorize an approval_reference call. */
-  referenceStatuses?: readonly string[];
   /** Human- and auditor-facing rationale for the classification. */
   reason: string;
 }
@@ -743,10 +743,10 @@ function classifyDispatchSpecialist(args: unknown): ToolPermissionClass {
 }
 
 /**
- * Permission classification for the typed Agent Tool Registry. Registry
- * writes are self-gated: visibility and execution both re-check the immutable
- * AgentExecutionContext, and each implementation additionally confines
- * workspace/project/session ownership. Destructive tools remain token-gated.
+ * Permission classification for the typed Agent Tool Registry. Classification
+ * and authority are deliberately separate: reads flow, destructive operations
+ * require a real action-bound approval token, and every write without such a
+ * token fails closed in Guarded mode instead of trusting model-supplied ids.
  *
  * The registry package has an invariant test against this map, so adding a new
  * dot-namespaced tool without a gate classification fails CI instead of
@@ -816,16 +816,34 @@ export const AGENT_REGISTRY_TOOL_PERMISSIONS = {
 
 const AGENT_REGISTRY_TOOL_GATE_RULES: Readonly<Record<string, ToolGateRule>> =
   Object.fromEntries(
-    Object.entries(AGENT_REGISTRY_TOOL_PERMISSIONS).map(([name, classification]) => [
-      name,
-      {
+    Object.entries(AGENT_REGISTRY_TOOL_PERMISSIONS).map(([name, classification]) => {
+      if (name === "terminal.execute") {
+        return [name, {
+          classify: (args: unknown): ToolPermissionClass => bashVerdictToGateClass(classifyBashToolArgs(args).verdict),
+          authority: "full_access_only",
+          reason: "Uses the same deterministic command classifier as bash: reads flow, writes require explicit Full Access because the call has no action-bound approval token, and destructive commands are normalized to token authority then hard-blocked by runtime policy."
+        } satisfies ToolGateRule];
+      }
+      if (classification === "destructive") {
+        return [name, {
+          classify: classification,
+          authority: "approval_token",
+          reason: `${name} is a destructive registry operation and requires a task-bound, single-use approval token.`
+        } satisfies ToolGateRule];
+      }
+      if (classification === "write") {
+        return [name, {
+          classify: classification,
+          authority: "full_access_only",
+          reason: `${name} changes product, project, scheduler, or local state without a verifiable action-bound approval token; Guarded mode fails closed and only explicit Full Access can authorize this non-destructive write.`
+        } satisfies ToolGateRule];
+      }
+      return [name, {
         classify: classification,
-        authority: classification === "destructive" ? "approval_token" : "self_gated",
-        reason: classification === "destructive"
-          ? `${name} is a destructive registry operation and requires a task-bound, single-use approval token.`
-          : `${name} is confined by the typed AgentExecutionContext and re-checks its ${classification} permission in the registry lifecycle.`
-      } satisfies ToolGateRule
-    ])
+        authority: "self_gated",
+        reason: `${name} is read-only and re-checks workspace/project/session ownership in the registry lifecycle.`
+      } satisfies ToolGateRule];
+    })
   );
 
 /**
@@ -844,9 +862,8 @@ export const TOOL_GATE_RULES: Readonly<Record<string, ToolGateRule>> = {
   },
   "computer.close_window": {
     classify: "write",
-    authority: "approval_reference",
-    referenceStatuses: ["executed"],
-    reason: "Consumes a one-time, session-bound exact-window observation; guarded mode requires authority and Full Access may waive it."
+    authority: "full_access_only",
+    reason: "Consumes a one-time, session-bound exact-window observation, but has no action-bound approval token; Guarded mode fails closed and explicit Full Access is required."
   },
   "plugin.invoke_readonly": {
     classify: "read",
@@ -880,21 +897,18 @@ export const TOOL_GATE_RULES: Readonly<Record<string, ToolGateRule>> = {
   },
   write: {
     classify: "write",
-    authority: "approval_reference",
-    referenceStatuses: ["executed"],
-    reason: "Writes a file inside the workspace (never outside it, never into .adpilot, never onto a protected path). Persists operational state, so it must reference the executed approval of the same client and task, exactly like ledger-writing skills."
+    authority: "full_access_only",
+    reason: "Writes a confined workspace file, but its model-callable schema has no action-bound approval token; Guarded mode fails closed and explicit Full Access is required."
   },
   edit: {
     classify: "write",
-    authority: "approval_reference",
-    referenceStatuses: ["executed"],
-    reason: "Targeted in-place rewrite of a workspace file under the same confinement and executed-approval semantics as write."
+    authority: "full_access_only",
+    reason: "Performs a confined in-place workspace edit, but has no action-bound approval token; Guarded mode fails closed and explicit Full Access is required."
   },
   bash: {
     classify: (args: unknown): ToolPermissionClass => bashVerdictToGateClass(classifyBashToolArgs(args).verdict),
-    authority: "approval_reference",
-    referenceStatuses: ["executed"],
-    reason: "Deterministic per-command classification: whitelisted read commands flow; writes (redirects, installs, unknown programs, unparseable input) require an executed approval reference; network egress, screen capture, credential/profile-store access, privilege/process control and rm -rf are mapped to destructive and additionally hard-denied inside the tool before any execution, with every decision audited."
+    authority: "full_access_only",
+    reason: "Deterministic per-command classification: whitelisted reads flow; writes require explicit Full Access because no action-bound approval token is available; network egress, screen capture, credential/profile-store access, privilege/process control and rm -rf normalize to destructive token authority and are additionally hard-denied before execution."
   },
   analyze_campaign_metrics: {
     classify: "read",
@@ -923,9 +937,8 @@ export const TOOL_GATE_RULES: Readonly<Record<string, ToolGateRule>> = {
   },
   execute_skill: {
     classify: classifyExecuteSkill,
-    authority: "approval_reference",
-    referenceStatuses: ["executed"],
-    reason: "Read skills are pure calculations. Ledger-writing skills (create-single-variable-experiment) must reference the executed approval of the same client and task they belong to."
+    authority: "full_access_only",
+    reason: "Read skills are pure calculations. A writing or unknown skill has no action-bound approval token at this boundary, so Guarded mode fails closed and explicit Full Access is required; skill-internal ownership and guardrails still apply."
   },
   commit_approved_action: {
     classify: "destructive",
@@ -935,14 +948,14 @@ export const TOOL_GATE_RULES: Readonly<Record<string, ToolGateRule>> = {
 };
 
 /**
- * Fail-closed default: an unclassified tool has unknown side effects, so it is
- * treated as write requiring a valid approval token. Classifying it as read
- * would silently wave any future destructive tool through the gate.
+ * Fail-closed classification sentinel: an unclassified tool is conservatively
+ * shaped as a write, but the runtime hard-denies `defaulted` calls in every
+ * autonomy mode. Full Access applies only to explicitly reviewed rules.
  */
 export const DEFAULT_TOOL_GATE_RULE: ToolGateRule = {
   classify: "write",
-  authority: "approval_token",
-  reason: "Unclassified tool; fail-closed default treats unknown side effects as an approval-gated write."
+  authority: "full_access_only",
+  reason: "Unclassified tool sentinel; runtime policy hard-denies it until an explicit reviewed rule is registered."
 };
 
 export interface ToolGateClassification {
@@ -952,8 +965,14 @@ export interface ToolGateClassification {
 }
 
 export function classifyToolCall(toolName: string, args: unknown): ToolGateClassification {
-  const rule = TOOL_GATE_RULES[toolName] ?? DEFAULT_TOOL_GATE_RULE;
-  const classification = typeof rule.classify === "function" ? rule.classify(args) : rule.classify;
+  const configuredRule = TOOL_GATE_RULES[toolName] ?? DEFAULT_TOOL_GATE_RULE;
+  const classification = typeof configuredRule.classify === "function" ? configuredRule.classify(args) : configuredRule.classify;
+  // Destructive always means a real, action-bound token. This also protects
+  // argument-aware rules such as bash/terminal.execute whose read and write
+  // branches legitimately use a different authority.
+  const rule = classification === "destructive" && configuredRule.authority !== "approval_token"
+    ? { ...configuredRule, authority: "approval_token" as const }
+    : configuredRule;
   return { rule, class: classification, defaulted: !(toolName in TOOL_GATE_RULES) };
 }
 

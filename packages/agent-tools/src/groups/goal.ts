@@ -4,6 +4,11 @@ import type { AgentToolDefinition } from "../registry.js";
 import { kernelStores } from "../kernel-internal.js";
 import { succeed } from "../result.js";
 import { toolError } from "../errors.js";
+import {
+  assertOwnedKernelContext,
+  requireOwnedGoal,
+  requireOwnedProject
+} from "./kernel-ownership.js";
 
 const GoalIdParams = z.object({ goalId: z.string().min(1) });
 
@@ -24,6 +29,7 @@ export function createGoalTools(): AgentToolDefinition[] {
         verificationPlan: z.array(z.string().min(1)).optional()
       }),
       execute: async (raw, ctx, deps) => {
+        await assertOwnedKernelContext(ctx, deps);
         const params = z.object({
           projectId: z.string().min(1).optional(),
           title: z.string().min(1),
@@ -36,6 +42,7 @@ export function createGoalTools(): AgentToolDefinition[] {
         if (!projectId) {
           throw toolError("PROJECT_NOT_SELECTED", "no projectId was passed and the execution context has no current project");
         }
+        await requireOwnedProject(projectId, ctx, deps);
         const goal = await deps.kernel.createGoal({
           projectId,
           title: params.title,
@@ -54,9 +61,9 @@ export function createGoalTools(): AgentToolDefinition[] {
       permission: "read",
       parameters: GoalIdParams,
       execute: async (raw, ctx, deps) => {
+        await assertOwnedKernelContext(ctx, deps);
         const params = GoalIdParams.parse(raw);
-        const goal = await deps.kernel.getGoal(params.goalId);
-        if (!goal) throw toolError("GOAL_NOT_FOUND", `goal not found: ${params.goalId}`);
+        const { goal } = await requireOwnedGoal(params.goalId, ctx, deps);
         return succeed("goal.get", ctx, { goal });
       }
     },
@@ -73,6 +80,7 @@ export function createGoalTools(): AgentToolDefinition[] {
         verificationPlan: z.array(z.string().min(1)).optional()
       }),
       execute: async (raw, ctx, deps) => {
+        await assertOwnedKernelContext(ctx, deps);
         const params = GoalIdParams.extend({
           title: z.string().min(1).optional(),
           objective: z.string().min(1).optional(),
@@ -81,8 +89,7 @@ export function createGoalTools(): AgentToolDefinition[] {
           verificationPlan: z.array(z.string().min(1)).optional()
         }).parse(raw);
         const store = kernelStores(deps.kernel).goals;
-        const goal = await store.get(params.goalId);
-        if (!goal) throw toolError("GOAL_NOT_FOUND", `goal not found: ${params.goalId}`);
+        const { goal } = await requireOwnedGoal(params.goalId, ctx, deps);
         // KernelService has no field update; the store layer applies the patch with the same revision discipline.
         const next = GoalSchema.parse({
           ...goal,
@@ -105,7 +112,9 @@ export function createGoalTools(): AgentToolDefinition[] {
       permission: "write",
       parameters: GoalIdParams.extend({ progress: z.number().min(0).max(1) }),
       execute: async (raw, ctx, deps) => {
+        await assertOwnedKernelContext(ctx, deps);
         const params = GoalIdParams.extend({ progress: z.number().min(0).max(1) }).parse(raw);
+        await requireOwnedGoal(params.goalId, ctx, deps);
         const goal = await deps.kernel.updateGoalProgress(params.goalId, params.progress);
         return succeed("goal.set_progress", ctx, { goal });
       }
@@ -117,7 +126,9 @@ export function createGoalTools(): AgentToolDefinition[] {
       permission: "write",
       parameters: GoalIdParams,
       execute: async (raw, ctx, deps) => {
+        await assertOwnedKernelContext(ctx, deps);
         const params = GoalIdParams.parse(raw);
+        await requireOwnedGoal(params.goalId, ctx, deps);
         const goal = await deps.kernel.updateGoalStatus(params.goalId, "completed");
         return succeed("goal.complete", ctx, { goal });
       }
@@ -129,7 +140,9 @@ export function createGoalTools(): AgentToolDefinition[] {
       permission: "write",
       parameters: GoalIdParams,
       execute: async (raw, ctx, deps) => {
+        await assertOwnedKernelContext(ctx, deps);
         const params = GoalIdParams.parse(raw);
+        await requireOwnedGoal(params.goalId, ctx, deps);
         const goal = await deps.kernel.updateGoalStatus(params.goalId, "blocked");
         return succeed("goal.block", ctx, { goal });
       }

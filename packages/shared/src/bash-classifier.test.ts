@@ -19,11 +19,19 @@ describe("bash command classifier: read-level whitelist", () => {
       "git diff HEAD~1 --stat",
       "git log --oneline -5",
       "git show main:file.ts",
+      "git branch --list",
+      "git branch --contains main",
+      "git tag --list 'release-*'",
+      "git tag --verify release-1",
+      "git reflog show HEAD",
+      "git reflog exists refs/heads/main",
       "git remote -v",
       "git stash list",
       "pwd && ls && wc -l reports/*.md",
       "sort -u names.txt | uniq -c",
+      "uniq -f1 input.txt",
       "jq '.spend' exports/metrics.json",
+      "yq -p=properties '.a' file.properties",
       "sed -n '1,10p' file.txt",
       "echo hello world",
       "env FOO=bar ls -la"
@@ -40,7 +48,7 @@ describe("bash command classifier: read-level whitelist", () => {
   });
 });
 
-describe("bash command classifier: write-level (approval reference required)", () => {
+describe("bash command classifier: write-level (explicit Full Access required)", () => {
   it("floors file redirects, mutations, installs and unknown programs at write", () => {
     for (const command of [
       "echo hello > notes.md",
@@ -95,6 +103,42 @@ describe("bash command classifier: write-level (approval reference required)", (
     expect(result.verdict).toBe("write");
     expect(result.commands[0]?.rule).toBe("absolute_redirect_unverified");
   });
+
+  it("detects repository mutations hidden behind git read subcommands", () => {
+    for (const command of [
+      "git branch stealth",
+      "git branch -m old-name new-name",
+      "git branch --set-upstream-to=origin/main main",
+      "git branch --unset",
+      "git -C . branch stealth",
+      "git tag release-test",
+      "git tag -a release-test -m release",
+      "git reflog write refs/heads/main 0123456789012345678901234567890123456789 test"
+    ]) {
+      const result = verdict(command);
+      expect(result.verdict, command).toBe("write");
+      expect(result.commands[0]?.rule, command).toBe("git_mutation");
+    }
+  });
+
+  it("detects file-writing flags on otherwise read-whitelisted programs", () => {
+    for (const command of [
+      "find . -type f -fprint leaked-list.txt",
+      "find . -type f -fprint0 leaked-list.bin",
+      "find . -type f -fprintf leaked-list.txt '%p\\n'",
+      "find . -type f -fls leaked-list.txt",
+      "yq -i '.a = 1' file.yml",
+      "yq -Pi '.a = 1' file.yml",
+      "yq --inplace '.a = 1' file.yml",
+      "uniq --output=result.txt input.txt",
+      "uniq --output result.txt input.txt",
+      "uniq -oresult.txt input.txt",
+      "uniq -coresult.txt input.txt"
+    ]) {
+      const result = verdict(command);
+      expect(result.verdict, command).toBe("write");
+    }
+  });
 });
 
 describe("bash command classifier: hard deny (no approval can authorize)", () => {
@@ -105,6 +149,32 @@ describe("bash command classifier: hard deny (no approval can authorize)", () =>
       expect(result.commands.find((item) => item.verdict === "deny")?.rule, command).toBe("destructive_filesystem");
     }
     expect(verdict("rm -r build/").verdict).toBe("write"); // recursive without force stays approval-gated
+  });
+
+  it("denies destructive git ref and reflog operations", () => {
+    for (const command of [
+      "git branch -d merged-branch",
+      "git branch -D main",
+      "git branch -rD origin/main",
+      "git branch --delete old-branch",
+      "git branch --del old-branch",
+      "git branch --force main HEAD~1",
+      "git branch --forc main HEAD~1",
+      "git branch -M old-name existing-name",
+      "git -C . branch -D main",
+      "git tag -d old-tag",
+      "git tag -af release -m replacement",
+      "git tag --delete old-tag",
+      "git tag --force release HEAD~1",
+      "git reflog expire --expire=now --all",
+      "git reflog exp --expire=now --all",
+      "git reflog delete 'main@{0}'",
+      "git reflog drop --all"
+    ]) {
+      const result = verdict(command);
+      expect(result.verdict, command).toBe("deny");
+      expect(result.commands[0]?.rule, command).toBe("destructive_repository");
+    }
   });
 
   it("denies every network egress and ingress channel (threat b)", () => {

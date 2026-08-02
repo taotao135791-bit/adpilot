@@ -103,13 +103,14 @@ describe("ToolPermissionGate", () => {
     const { gate, audit, context } = await makeGate();
     const denial = await gate.check("nuke_everything", { target: "account" }, context);
     expect(denial).toContain("nuke_everything");
-    expect(denial).toContain("approvalId");
+    expect(denial).toContain("unclassified");
+    expect(denial).toContain("hard-denied");
     const events = await audit.list("client-a");
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       action: "tool_gate",
       status: "denied",
-      details: { tool: "nuke_everything", classification: "write", authority: "approval_token", defaulted: true }
+      details: { tool: "nuke_everything", classification: "write", authority: "full_access_only", defaulted: true }
     });
     expect(await audit.verify("client-a")).toBe(true);
   });
@@ -137,27 +138,22 @@ describe("ToolPermissionGate", () => {
     });
   });
 
-  it("requires an executed in-task approval reference for ledger-writing skills", async () => {
+  it("does not treat an executed approval reference as authority for a writing skill", async () => {
     const { workspace, gate, audit, approvals, context } = await makeGate();
     const call = (input: unknown) => gate.check("execute_skill", { name: "create-single-variable-experiment", input }, context);
 
-    expect(await call({})).toContain("approvalId");
-    expect(await call({ approvalId: crypto.randomUUID() })).toContain("does not exist");
-
-    const pending = await createApproval(approvals, context.clientId, context.taskId);
-    expect(await call({ approvalId: pending.id })).toContain("pending_risk_review");
-
-    const otherTask = await createApproval(approvals, context.clientId, crypto.randomUUID());
-    await patchApproval(workspace, approvals, otherTask.id, { status: "executed" });
-    expect(await call({ approvalId: otherTask.id })).toContain("different client or task");
-
     const executed = await createApproval(approvals, context.clientId, context.taskId);
     await patchApproval(workspace, approvals, executed.id, { status: "executed" });
-    expect(await call({ approvalId: executed.id })).toBeNull();
+    for (const input of [{}, { approvalId: crypto.randomUUID() }, { approvalId: executed.id }]) {
+      const denial = await call(input);
+      expect(denial).toContain("action-bound approval token");
+      expect(denial).toContain("approvalId/reference is not authority");
+    }
 
     const events = await audit.list("client-a");
-    expect(events.filter((event) => event.status === "denied")).toHaveLength(4);
-    expect(events.filter((event) => event.status === "succeeded")).toHaveLength(1);
+    expect(events).toHaveLength(3);
+    expect(events.every((event) => event.status === "denied")).toBe(true);
+    expect(events.every((event) => event.details.authority === "full_access_only")).toBe(true);
     expect(await audit.verify("client-a")).toBe(true);
   });
 
@@ -189,24 +185,19 @@ describe("ToolPermissionGate", () => {
 });
 
 describe("ToolPermissionGate: main-agent write/edit/bash", () => {
-  it("requires an executed in-task approval reference for write and edit (same semantics as ledger skills)", async () => {
+  it("fails write and edit closed even when the model supplies an executed approvalId", async () => {
     const { workspace, gate, audit, approvals, context } = await makeGate();
     for (const tool of ["write", "edit"]) {
       const call = (args: unknown) => gate.check(tool, args, context);
-      expect(await call({ path: "reports/daily.md" }), tool).toContain("approvalId");
-      expect(await call({ path: "reports/daily.md", approvalId: crypto.randomUUID() }), tool).toContain("does not exist");
-
-      const pending = await createApproval(approvals, context.clientId, context.taskId);
-      expect(await call({ path: "reports/daily.md", approvalId: pending.id }), tool).toContain("pending_risk_review");
-
-      const otherTask = await createApproval(approvals, context.clientId, crypto.randomUUID());
-      await patchApproval(workspace, approvals, otherTask.id, { status: "executed" });
-      expect(await call({ path: "reports/daily.md", approvalId: otherTask.id }), tool).toContain("different client or task");
-
       const executed = await createApproval(approvals, context.clientId, context.taskId);
       await patchApproval(workspace, approvals, executed.id, { status: "executed" });
-      expect(await call({ path: "reports/daily.md", approvalId: executed.id }), tool).toBeNull();
+      expect(await call({ path: "reports/daily.md" }), tool).toContain("Full Access");
+      const forgedReference = await call({ path: "reports/daily.md", approvalId: executed.id });
+      expect(forgedReference, tool).toContain("approvalId/reference is not authority");
     }
+    const events = await audit.list("client-a");
+    expect(events).toHaveLength(4);
+    expect(events.every((event) => event.status === "denied")).toBe(true);
     expect(await audit.verify("client-a")).toBe(true);
   });
 
@@ -217,19 +208,20 @@ describe("ToolPermissionGate: main-agent write/edit/bash", () => {
     expect(await audit.list("client-a")).toHaveLength(0);
   });
 
-  it("requires an executed approval reference for write-level bash commands", async () => {
+  it("fails write-level bash closed even when an executed approvalId is supplied", async () => {
     const { workspace, gate, audit, approvals, context } = await makeGate();
     const call = (args: unknown) => gate.check("bash", args, context);
-    expect(await call({ command: "npm install" })).toContain("approvalId");
-    expect(await call({ command: "echo hi > notes.md" })).toContain("approvalId");
-    expect(await call({ command: "echo $(date)" })).toContain("approvalId"); // unresolved substitution floors at write
+    expect(await call({ command: "npm install" })).toContain("Full Access");
+    expect(await call({ command: "echo hi > notes.md" })).toContain("action-bound approval token");
+    expect(await call({ command: "echo $(date)" })).toContain("Full Access"); // unresolved substitution floors at write
 
     const executed = await createApproval(approvals, context.clientId, context.taskId);
     await patchApproval(workspace, approvals, executed.id, { status: "executed" });
-    expect(await call({ command: "npm install", approvalId: executed.id })).toBeNull();
+    expect(await call({ command: "npm install", approvalId: executed.id })).toContain("approvalId/reference is not authority");
     const events = await audit.list("client-a");
-    const writeAllow = events.find((event) => event.status === "succeeded");
-    expect(writeAllow).toMatchObject({ details: { tool: "bash", classification: "write" } });
+    expect(events).toHaveLength(4);
+    expect(events.every((event) => event.status === "denied")).toBe(true);
+    expect(events.every((event) => event.details.authority === "full_access_only")).toBe(true);
   });
 
   it("refuses hard-denied commands at the gate even when an executed approval is supplied", async () => {
