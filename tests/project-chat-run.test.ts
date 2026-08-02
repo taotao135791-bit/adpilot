@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  projectChatCleanupStopRequest,
   projectChatRunBusyElsewhere,
   projectChatStopRequest,
   projectChatStopUrl,
+  ProjectChatRunLifecycle,
   ProjectSessionBindGuard,
   sameProjectChatRun,
   sameProjectChatRunRequest,
@@ -29,6 +31,70 @@ describe("project chat run targeting", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ runId: target.runId })
     });
+  });
+
+  it("builds a strict keepalive cleanup Stop for the exact Project run", () => {
+    const target = {
+      clientId: "workspace-a",
+      projectId: crypto.randomUUID(),
+      sessionId: crypto.randomUUID(),
+      conversationId: "conversation-a",
+      runId: crypto.randomUUID()
+    };
+    expect(projectChatStopUrl(target)).toBe(`/api/clients/workspace-a/conversations/conversation-a/stop`);
+    expect(projectChatCleanupStopRequest(target)).toEqual({
+      method: "POST",
+      keepalive: true,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runId: target.runId })
+    });
+  });
+
+  it("claims only the exact exiting scope and rejects its stale completion", () => {
+    const lifecycle = new ProjectChatRunLifecycle();
+    const target = {
+      clientId: "workspace-a",
+      projectId: crypto.randomUUID(),
+      sessionId: crypto.randomUUID(),
+      conversationId: "conversation-a",
+      runId: crypto.randomUUID()
+    };
+
+    // React StrictMode's empty probe cleanup has no run to stop.
+    expect(lifecycle.claimForScopeExit(target)).toBeNull();
+    lifecycle.start(target);
+    for (const otherScope of [
+      { ...target, clientId: "workspace-b" },
+      { ...target, projectId: crypto.randomUUID() },
+      { ...target, sessionId: crypto.randomUUID() },
+      { ...target, conversationId: "conversation-b" }
+    ]) {
+      expect(lifecycle.claimForScopeExit(otherScope)).toBeNull();
+    }
+    expect(lifecycle.owns(target)).toBe(true);
+
+    expect(lifecycle.claimForScopeExit(target)).toEqual(target);
+    expect(lifecycle.owns(target)).toBe(false);
+    expect(lifecycle.complete(target)).toBe(false);
+  });
+
+  it("does not let an older completion clear or pollute a replacement run", () => {
+    const lifecycle = new ProjectChatRunLifecycle();
+    const first = {
+      clientId: "workspace-a",
+      projectId: crypto.randomUUID(),
+      sessionId: crypto.randomUUID(),
+      conversationId: "conversation-a",
+      runId: crypto.randomUUID()
+    };
+    const replacement = { ...first, runId: crypto.randomUUID() };
+    lifecycle.start(first);
+    lifecycle.start(replacement);
+
+    expect(lifecycle.complete(first)).toBe(false);
+    expect(lifecycle.current()).toEqual(replacement);
+    expect(lifecycle.complete(replacement)).toBe(true);
+    expect(lifecycle.current()).toBeNull();
   });
 
   it("carries the exact run scope in a project message request", () => {

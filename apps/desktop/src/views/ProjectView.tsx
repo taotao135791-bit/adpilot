@@ -70,13 +70,15 @@ import { TerminalPanel } from "../panels/TerminalPanel.js";
 import { GitPanel } from "../panels/GitPanel.js";
 import { PreviewPanel } from "../panels/PreviewPanel.js";
 import {
+  projectChatCleanupStopRequest,
   projectChatStopRequest,
   projectChatStopUrl,
+  ProjectChatRunLifecycle,
   ProjectSessionBindGuard,
   sameProjectChatRun,
-  sameProjectChatRunRequest,
+  sameProjectChatProjectRunRequest,
   shouldSubmitProjectChatKey,
-  type ProjectChatRunTarget
+  type ProjectChatProjectRunTarget
 } from "../projectChatRun.js";
 
 type LeftTab = "goals" | "files" | "artifacts";
@@ -89,9 +91,9 @@ type RightTab = "terminal" | "git" | "preview";
  * Session bound to the kernel project (resolved via POST
  * /api/kernel/projects/:id/session), its message feed served by the same
  * conversation.jsonl projection as the main chat, a collapsible kernel task
- * timeline on top, and a mission composer at the bottom that triages through
- * /mission (goal creation) before posting to /api/messages with the
- * project/goal/task binding. Right — collapsible dynamic panel
+ * timeline on top, and a mission composer at the bottom that posts one exact
+ * /api/messages run; server-side triage creates any required goal/task inside
+ * that same stoppable run. Right — collapsible dynamic panel
  * (terminal / git / artifact preview).
  */
 export function ProjectView({ locale, clientId, projectId, focusArtifactId, initialMission, onBack, onModelSaved, onOpenSettings }: {
@@ -125,8 +127,13 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
   const bindLockRef = useRef(false);
   const [bindingSession, setBindingSession] = useState(false);
   /** The immutable launch scope owns both the running indicator and Stop. */
-  const [activeRunTarget, setActiveRunTarget] = useState<ProjectChatRunTarget | null>(null);
-  const activeRunTargetRef = useRef<ProjectChatRunTarget | null>(null);
+  const [activeRunTarget, setActiveRunTarget] = useState<ProjectChatProjectRunTarget | null>(null);
+  const runLifecycleRef = useRef(new ProjectChatRunLifecycle());
+  const messageRequestRef = useRef<{
+    target: ProjectChatProjectRunTarget;
+    controller: AbortController;
+  } | null>(null);
+  const mountedRef = useRef(false);
   const [stopping, setStopping] = useState(false);
   const [timelineOpen, setTimelineOpen] = useState(false);
 
@@ -135,14 +142,51 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
     : null;
   const submitting = sameProjectChatRun(activeRunTarget, selectedRunTarget);
 
+  function ownsMountedRun(target: ProjectChatProjectRunTarget): boolean {
+    const currentSession = sessionRef.current;
+    return mountedRef.current
+      && runLifecycleRef.current.owns(target)
+      && currentSession?.id === target.sessionId
+      && currentSession?.clientId === target.clientId
+      && currentSession.runtimeConversationId === target.conversationId;
+  }
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const runScopeSessionId = session?.id;
+  const runScopeConversationId = session?.runtimeConversationId;
+  useEffect(() => {
+    // A replacement scope starts with no locally owned Project run. This runs
+    // after the previous scope's cleanup has atomically claimed its target.
+    setActiveRunTarget(runLifecycleRef.current.current());
+    setStopping(false);
+    if (!runScopeSessionId || !runScopeConversationId) return;
+    const scope = { clientId, projectId, sessionId: runScopeSessionId, conversationId: runScopeConversationId };
+    return () => {
+      const target = runLifecycleRef.current.claimForScopeExit(scope);
+      if (!target) return; // StrictMode's empty probe cleanup is a no-op.
+      void fetch(projectChatStopUrl(target), projectChatCleanupStopRequest(target)).catch(() => undefined);
+      const request = messageRequestRef.current;
+      if (request && sameProjectChatProjectRunRequest(request.target, target)) {
+        messageRequestRef.current = null;
+        request.controller.abort();
+      }
+    };
+  }, [clientId, projectId, runScopeConversationId, runScopeSessionId]);
+
   const load = useCallback(async () => {
     try {
       const response = await fetch(kernelProjectUrl(projectId, clientId));
       if (!response.ok) throw new Error(String(response.status));
-      setDetail(await response.json() as ProjectDetail);
+      const nextDetail = await response.json() as ProjectDetail;
+      if (!mountedRef.current) return;
+      setDetail(nextDetail);
       setError("");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (mountedRef.current) setError(cause instanceof Error ? cause.message : String(cause));
     }
   }, [clientId, projectId]);
 
@@ -179,11 +223,13 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
   }, [consoleCopy.loadError]);
 
   /** Refresh only the session that still owns this mounted Project view. */
-  const loadMessages = useCallback(async (target: ProductSession) => {
+  const loadMessages = useCallback(async (target: ProductSession, expectedRun: ProjectChatProjectRunTarget) => {
     const next = await readMessages(target);
     const current = sessionRef.current;
     if (
-      current?.id === target.id
+      mountedRef.current
+      && runLifecycleRef.current.owns(expectedRun)
+      && current?.id === target.id
       && current.clientId === target.clientId
       && current.runtimeConversationId === target.runtimeConversationId
     ) {
@@ -193,7 +239,7 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
 
   /** Resolve (or, with force, freshly create) the project's session and load its feed. */
   const bindSession = useCallback(async (force: boolean) => {
-    if (bindLockRef.current || activeRunTargetRef.current) return null;
+    if (bindLockRef.current || runLifecycleRef.current.current()) return null;
     bindLockRef.current = true;
     setBindingSession(true);
     const requestId = bindGuardRef.current.begin();
@@ -211,19 +257,19 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
       ) {
         throw new Error(consoleCopy.loadError);
       }
-      if (!bindGuardRef.current.canCommit(requestId)) return null;
+      if (!mountedRef.current || !bindGuardRef.current.canCommit(requestId)) return null;
       const nextMessages = await readMessages(body.session);
-      if (!bindGuardRef.current.canCommit(requestId)) return null;
+      if (!mountedRef.current || !bindGuardRef.current.canCommit(requestId)) return null;
       sessionRef.current = body.session;
       setSession(body.session);
       setMessages(nextMessages);
       setError("");
       return body.session;
     } catch (cause) {
-      if (bindGuardRef.current.canCommit(requestId)) setError(cause instanceof Error ? cause.message : String(cause));
+      if (mountedRef.current && bindGuardRef.current.canCommit(requestId)) setError(cause instanceof Error ? cause.message : String(cause));
       return null;
     } finally {
-      if (bindGuardRef.current.canCommit(requestId)) {
+      if (mountedRef.current && bindGuardRef.current.canCommit(requestId)) {
         bindLockRef.current = false;
         setBindingSession(false);
       }
@@ -265,10 +311,18 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
    */
   async function submitMission() {
     const message = mission.trim();
-    if (!message || bindLockRef.current || activeRunTargetRef.current || !session) return;
+    if (!message || bindLockRef.current || runLifecycleRef.current.current() || !session) return;
     const targetSession = session;
-    const target = { clientId, conversationId: targetSession.runtimeConversationId, runId: crypto.randomUUID() };
-    activeRunTargetRef.current = target;
+    const target: ProjectChatProjectRunTarget = {
+      clientId,
+      projectId,
+      sessionId: targetSession.id,
+      conversationId: targetSession.runtimeConversationId,
+      runId: crypto.randomUUID()
+    };
+    runLifecycleRef.current.start(target);
+    const messageController = new AbortController();
+    messageRequestRef.current = { target, controller: messageController };
     setActiveRunTarget(target);
     setStopping(false);
     setMission("");
@@ -276,6 +330,7 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
     try {
       const response = await fetch("/api/messages", {
         method: "POST",
+        signal: messageController.signal,
         headers: { "content-type": "application/json" },
         body: JSON.stringify(buildProjectMessageRequest({
           clientId,
@@ -289,15 +344,21 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
       });
       const body = await response.json().catch(() => undefined) as { goalId?: string; taskId?: string; error?: string } | undefined;
       if (!response.ok) throw new Error(body?.error ?? String(response.status));
+      if (!ownsMountedRun(target)) return;
       if (body?.goalId || body?.taskId) await load();
-      await loadMessages(targetSession);
-      setError("");
+      if (!ownsMountedRun(target)) return;
+      await loadMessages(targetSession, target);
+      if (ownsMountedRun(target)) setError("");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-      await loadMessages(targetSession).catch(() => undefined);
+      if (ownsMountedRun(target)) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+        await loadMessages(targetSession, target).catch(() => undefined);
+      }
     } finally {
-      if (sameProjectChatRunRequest(activeRunTargetRef.current, target)) {
-        activeRunTargetRef.current = null;
+      if (sameProjectChatProjectRunRequest(messageRequestRef.current?.target ?? null, target)) {
+        messageRequestRef.current = null;
+      }
+      if (runLifecycleRef.current.complete(target) && mountedRef.current) {
         setActiveRunTarget(null);
         setStopping(false);
       }
@@ -308,7 +369,7 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
     // Read the ref captured before the message request started. Never derive
     // this URL from the project/session currently on screen: either can
     // change while the run is awaiting the server.
-    const target = activeRunTargetRef.current;
+    const target = runLifecycleRef.current.current();
     if (!target || stopping) return;
     setStopping(true);
     setError("");
@@ -316,10 +377,12 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
       const response = await fetch(projectChatStopUrl(target), projectChatStopRequest(target));
       const body = await response.json().catch(() => undefined) as { stopped?: boolean; error?: string } | undefined;
       if (!response.ok) throw new Error(body?.error ?? consoleCopy.stopRunError);
-      if (body?.stopped !== true) setStopping(false);
+      if (ownsMountedRun(target) && body?.stopped !== true) setStopping(false);
     } catch (cause) {
-      setStopping(false);
-      setError(cause instanceof Error ? cause.message : consoleCopy.stopRunError);
+      if (ownsMountedRun(target)) {
+        setStopping(false);
+        setError(cause instanceof Error ? cause.message : consoleCopy.stopRunError);
+      }
     }
   }
 
