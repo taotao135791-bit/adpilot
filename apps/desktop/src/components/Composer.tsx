@@ -27,13 +27,15 @@ const MAX_TEXTAREA_HEIGHT = 176;
  * call their endpoints and render the state; enforcement always lives in
  * the runtime, never in these controls.
  */
-export function Composer({ copy, locale, goal, onGoalChange, chatConfigured, submitting, stopping = false, onSubmit, onStop, onConfigureModel, planMode = false, planModeDisabled = false, onTogglePlanMode, clients, clientId, onSelectClient, autonomy = "guarded", autonomyDisabled = false, onToggleAutonomy, onModelSaved, onOpenModelSettings }: {
+export function Composer({ copy, locale, goal, onGoalChange, chatConfigured, submitting, busyElsewhere = false, stopping = false, onSubmit, onStop, onConfigureModel, planMode = false, planModeDisabled = false, onTogglePlanMode, clients, clientId, onSelectClient, autonomy = "guarded", autonomyDisabled = false, onToggleAutonomy, onModelSaved, onOpenModelSettings }: {
   copy: ConsoleCopy;
   locale: AppLocale;
   goal: string;
   onGoalChange: (value: string) => void;
   chatConfigured: boolean;
   submitting: boolean;
+  /** A global App run exists, but another workspace/conversation owns it. */
+  busyElsewhere?: boolean;
   stopping?: boolean;
   onSubmit: () => void;
   /** Stops the exact client + conversation currently owned by the App run lock. */
@@ -86,7 +88,14 @@ export function Composer({ copy, locale, goal, onGoalChange, chatConfigured, sub
 
   function handleKeyDown(event: React.KeyboardEvent) {
     if (commandMenuOpen && event.key === "Escape") { setCommandMenuOpen(false); return; }
-    const action = composerKeyAction(event, visibleCompletions.length);
+    const action = composerKeyAction({
+      key: event.key,
+      shiftKey: event.shiftKey,
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey,
+      isComposing: event.nativeEvent.isComposing,
+      keyCode: event.nativeEvent.keyCode
+    }, visibleCompletions.length);
     if (action === "submit") {
       event.preventDefault();
       handleSend();
@@ -117,13 +126,15 @@ export function Composer({ copy, locale, goal, onGoalChange, chatConfigured, sub
    * runs (the App submit path answers local commands without a model).
    */
   function handleSend() {
-    if (submitting) return;
+    if (submitting || busyElsewhere) return;
     if (!chatConfigured && empty) { onConfigureModel(); return; }
     onSubmit();
   }
 
   const canStop = submitting && onStop !== undefined;
-  const sendLabel = canStop
+  const sendLabel = busyElsewhere
+    ? copy.runBusyElsewhere
+    : canStop
     ? stopping ? copy.stoppingRun : copy.stopRun
     : !chatConfigured ? copy.configureModel : submitting ? copy.investigatingShort : copy.send;
 
@@ -163,6 +174,7 @@ export function Composer({ copy, locale, goal, onGoalChange, chatConfigured, sub
           onChange={(event) => onGoalChange(event.target.value)}
           placeholder={planMode ? copy.planModePlaceholder : copy.goalPlaceholder}
           aria-label={copy.goalLabel}
+          disabled={busyElsewhere}
           onKeyDown={handleKeyDown}
         />
         <div className="composer-chips">
@@ -224,7 +236,7 @@ export function Composer({ copy, locale, goal, onGoalChange, chatConfigured, sub
               variant="primary"
               className="launch-button"
               icon={canStop ? <IconStop size={13} /> : <IconSend size={13} />}
-              disabled={canStop ? stopping : chatConfigured && (empty || submitting)}
+              disabled={canStop ? stopping : busyElsewhere || (chatConfigured && (empty || submitting))}
               onClick={canStop ? onStop : handleSend}
             >
               {sendLabel}
@@ -232,7 +244,7 @@ export function Composer({ copy, locale, goal, onGoalChange, chatConfigured, sub
           </div>
         </div>
       </div>
-      <p className="composer-hint">{copy.launchHint}</p>
+      <p className="composer-hint" aria-live="polite">{busyElsewhere ? copy.runBusyElsewhereHint : copy.launchHint}</p>
     </div>
   );
 }

@@ -19,9 +19,17 @@ export interface ComposerKeyEvent {
   shiftKey: boolean;
   metaKey: boolean;
   ctrlKey: boolean;
+  /** True between compositionstart and compositionend for CJK IMEs. */
+  isComposing?: boolean;
+  /** Chromium's legacy IME sentinel. Some composition-ending Enter events
+   * report `isComposing=false` but still carry keyCode 229. */
+  keyCode?: number;
 }
 
 export function composerKeyAction(event: ComposerKeyEvent, completionCount: number): ComposerKeyAction {
+  // Enter confirms the current IME candidate. Treating it as submit (or as a
+  // slash-completion accept) sends half-composed Chinese/Japanese text.
+  if (event.isComposing || event.keyCode === 229) return "ignore";
   if (completionCount > 0) {
     if (event.key === "Tab") return "accept-completion";
     if (event.key === "Enter" && !event.shiftKey) return "accept-completion";

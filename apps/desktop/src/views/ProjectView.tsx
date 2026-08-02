@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   artifactStatusLabel,
   artifactStatusTone,
@@ -19,14 +19,12 @@ import {
 } from "../labels.js";
 import {
   adsDecisionsUrl,
-  buildMissionRequest,
   buildProjectMessageRequest,
   buildProjectSessionRequest,
   fsFileUrl,
   fsTreeUrl,
   groupKernelTasks,
   interpolate,
-  kernelProjectMissionUrl,
   kernelProjectSessionUrl,
   kernelProjectUrl,
   kernelTaskCompleteUrl,
@@ -65,11 +63,21 @@ import {
   IconRefresh,
   IconSend,
   IconSheet,
-  IconSlides
+  IconSlides,
+  IconStop
 } from "../icons.js";
 import { TerminalPanel } from "../panels/TerminalPanel.js";
 import { GitPanel } from "../panels/GitPanel.js";
 import { PreviewPanel } from "../panels/PreviewPanel.js";
+import {
+  projectChatStopRequest,
+  projectChatStopUrl,
+  ProjectSessionBindGuard,
+  sameProjectChatRun,
+  sameProjectChatRunRequest,
+  shouldSubmitProjectChatKey,
+  type ProjectChatRunTarget
+} from "../projectChatRun.js";
 
 type LeftTab = "goals" | "files" | "artifacts";
 type RightTab = "terminal" | "git" | "preview";
@@ -111,9 +119,21 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
   const [mission, setMission] = useState(initialMission ?? "");
   /** The durable session this project's chat is bound to. */
   const [session, setSession] = useState<ProductSession | null>(null);
+  const sessionRef = useRef<ProductSession | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
-  const [submitting, setSubmitting] = useState(false);
+  const bindGuardRef = useRef(new ProjectSessionBindGuard());
+  const bindLockRef = useRef(false);
+  const [bindingSession, setBindingSession] = useState(false);
+  /** The immutable launch scope owns both the running indicator and Stop. */
+  const [activeRunTarget, setActiveRunTarget] = useState<ProjectChatRunTarget | null>(null);
+  const activeRunTargetRef = useRef<ProjectChatRunTarget | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [timelineOpen, setTimelineOpen] = useState(false);
+
+  const selectedRunTarget = session
+    ? { clientId, conversationId: session.runtimeConversationId }
+    : null;
+  const submitting = sameProjectChatRun(activeRunTarget, selectedRunTarget);
 
   const load = useCallback(async () => {
     try {
@@ -135,16 +155,48 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
     }
   }, [focusArtifactId]);
 
-  /** Messages of the bound session, from the same /api/state projection the main chat reads. */
-  const loadMessages = useCallback(async (target: ProductSession) => {
-    const response = await fetch(`/api/state?clientId=${encodeURIComponent(clientId)}&conversationId=${encodeURIComponent(target.runtimeConversationId)}`);
+  /** Read a session transcript without committing it. Session binding fetches
+   * session + messages first, then publishes both atomically. */
+  const readMessages = useCallback(async (target: ProductSession) => {
+    const response = await fetch(`/api/state?clientId=${encodeURIComponent(target.clientId)}&conversationId=${encodeURIComponent(target.runtimeConversationId)}`);
     if (!response.ok) throw new Error(String(response.status));
-    const data = await response.json() as { messages?: ConversationMessage[] };
-    setMessages(data.messages ?? []);
-  }, [clientId]);
+    const data = await response.json() as {
+      selectedClientId?: string;
+      selectedConversationId?: string;
+      messages?: ConversationMessage[];
+    };
+    if (
+      (data.selectedClientId !== undefined && data.selectedClientId !== target.clientId)
+      || (data.selectedConversationId !== undefined && data.selectedConversationId !== target.runtimeConversationId)
+    ) {
+      throw new Error(consoleCopy.loadError);
+    }
+    const next = data.messages ?? [];
+    if (next.some((message) => message.clientId !== target.clientId || message.conversationId !== target.runtimeConversationId)) {
+      throw new Error(consoleCopy.loadError);
+    }
+    return next;
+  }, [consoleCopy.loadError]);
+
+  /** Refresh only the session that still owns this mounted Project view. */
+  const loadMessages = useCallback(async (target: ProductSession) => {
+    const next = await readMessages(target);
+    const current = sessionRef.current;
+    if (
+      current?.id === target.id
+      && current.clientId === target.clientId
+      && current.runtimeConversationId === target.runtimeConversationId
+    ) {
+      setMessages(next);
+    }
+  }, [readMessages]);
 
   /** Resolve (or, with force, freshly create) the project's session and load its feed. */
   const bindSession = useCallback(async (force: boolean) => {
+    if (bindLockRef.current || activeRunTargetRef.current) return null;
+    bindLockRef.current = true;
+    setBindingSession(true);
+    const requestId = bindGuardRef.current.begin();
     try {
       const response = await fetch(kernelProjectSessionUrl(projectId), {
         method: "POST",
@@ -153,17 +205,38 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
       });
       const body = await response.json().catch(() => undefined) as { session?: ProductSession; error?: string } | undefined;
       if (!response.ok || !body?.session) throw new Error(body?.error ?? String(response.status));
+      if (
+        body.session.clientId !== clientId
+        || (body.session.projectId !== undefined && body.session.projectId !== projectId)
+      ) {
+        throw new Error(consoleCopy.loadError);
+      }
+      if (!bindGuardRef.current.canCommit(requestId)) return null;
+      const nextMessages = await readMessages(body.session);
+      if (!bindGuardRef.current.canCommit(requestId)) return null;
+      sessionRef.current = body.session;
       setSession(body.session);
-      await loadMessages(body.session);
+      setMessages(nextMessages);
       setError("");
       return body.session;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (bindGuardRef.current.canCommit(requestId)) setError(cause instanceof Error ? cause.message : String(cause));
       return null;
+    } finally {
+      if (bindGuardRef.current.canCommit(requestId)) {
+        bindLockRef.current = false;
+        setBindingSession(false);
+      }
     }
-  }, [clientId, projectId, loadMessages]);
+  }, [clientId, consoleCopy.loadError, projectId, readMessages]);
 
   useEffect(() => { void bindSession(false); }, [bindSession]);
+  useEffect(() => () => {
+    // Invalidate any binding response queued after this Project instance was
+    // replaced (client/project switch or development Strict Mode remount).
+    bindGuardRef.current.begin();
+    bindLockRef.current = false;
+  }, []);
 
   const goalById = useMemo(() => new Map((detail?.goals ?? []).map((goal) => [goal.id, goal])), [detail?.goals]);
   const taskGroups = useMemo(() => groupKernelTasks(detail?.tasks ?? []), [detail?.tasks]);
@@ -185,49 +258,68 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
   }
 
   /**
-   * Mission submit: triage complexity first (complex missions materialize a
-   * kernel goal + planning task), then post the message with the full
-   * project/goal/task binding. The reply is awaited synchronously; a thinking
-   * indicator covers the wait. Goal creation refetches the project detail so
-   * the Goals tab and the timeline reflect it.
+   * Mission submit is one exact run. Server-side complexity triage now occurs
+   * inside /api/messages after that runId has been reserved, so Stop cannot be
+   * lost in a separate pre-processing request. The response carries any Goal
+   * and Task materialized for a complex mission.
    */
   async function submitMission() {
     const message = mission.trim();
-    if (!message || submitting || !session) return;
-    setSubmitting(true);
+    if (!message || bindLockRef.current || activeRunTargetRef.current || !session) return;
+    const targetSession = session;
+    const target = { clientId, conversationId: targetSession.runtimeConversationId, runId: crypto.randomUUID() };
+    activeRunTargetRef.current = target;
+    setActiveRunTarget(target);
+    setStopping(false);
     setMission("");
-    setMessages((current) => [...current, localProjectUserMessage(clientId, session.runtimeConversationId, message)]);
+    setMessages((current) => [...current, localProjectUserMessage(target.clientId, target.conversationId, message)]);
     try {
-      const missionResponse = await fetch(kernelProjectMissionUrl(projectId), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(buildMissionRequest(clientId, message))
-      });
-      const missionBody = await missionResponse.json().catch(() => undefined) as { goalId?: string; taskId?: string; error?: string } | undefined;
-      if (!missionResponse.ok) throw new Error(missionBody?.error ?? String(missionResponse.status));
       const response = await fetch("/api/messages", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(buildProjectMessageRequest({
           clientId,
-          sessionId: session.id,
+          conversationId: target.conversationId,
+          runId: target.runId,
+          sessionId: targetSession.id,
           projectId,
-          goalId: missionBody?.goalId,
-          taskId: missionBody?.taskId,
           message,
           locale
         }))
       });
-      const body = await response.json().catch(() => undefined) as { error?: string } | undefined;
+      const body = await response.json().catch(() => undefined) as { goalId?: string; taskId?: string; error?: string } | undefined;
       if (!response.ok) throw new Error(body?.error ?? String(response.status));
-      if (missionBody?.goalId) await load();
-      await loadMessages(session);
+      if (body?.goalId || body?.taskId) await load();
+      await loadMessages(targetSession);
       setError("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
-      await loadMessages(session).catch(() => undefined);
+      await loadMessages(targetSession).catch(() => undefined);
     } finally {
-      setSubmitting(false);
+      if (sameProjectChatRunRequest(activeRunTargetRef.current, target)) {
+        activeRunTargetRef.current = null;
+        setActiveRunTarget(null);
+        setStopping(false);
+      }
+    }
+  }
+
+  async function stopProjectRun() {
+    // Read the ref captured before the message request started. Never derive
+    // this URL from the project/session currently on screen: either can
+    // change while the run is awaiting the server.
+    const target = activeRunTargetRef.current;
+    if (!target || stopping) return;
+    setStopping(true);
+    setError("");
+    try {
+      const response = await fetch(projectChatStopUrl(target), projectChatStopRequest(target));
+      const body = await response.json().catch(() => undefined) as { stopped?: boolean; error?: string } | undefined;
+      if (!response.ok) throw new Error(body?.error ?? consoleCopy.stopRunError);
+      if (body?.stopped !== true) setStopping(false);
+    } catch (cause) {
+      setStopping(false);
+      setError(cause instanceof Error ? cause.message : consoleCopy.stopRunError);
     }
   }
 
@@ -296,7 +388,7 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
             {session && (
               <Badge tone={sessionChatTone(session.status)} variant="soft">{sessionStatusLabel(session.status, locale)}</Badge>
             )}
-            <Button size="sm" variant="outline" icon={<IconPlus size={12} />} disabled={submitting} onClick={() => void bindSession(true)}>
+            <Button size="sm" variant="outline" icon={<IconPlus size={12} />} disabled={bindingSession || activeRunTarget !== null} aria-busy={bindingSession} onClick={() => void bindSession(true)}>
               {copy.projectChatNewSession}
             </Button>
           </div>
@@ -365,13 +457,24 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
                 value={mission}
                 placeholder={copy.chatCtaPlaceholder}
                 aria-label={copy.chatCtaPlaceholder}
-                disabled={submitting || !session}
+                disabled={bindingSession || activeRunTarget !== null || !session}
                 onChange={(event) => setMission(event.target.value)}
-                onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void submitMission(); } }}
+                onKeyDown={(event) => {
+                  if (shouldSubmitProjectChatKey({ key: event.key, isComposing: event.nativeEvent.isComposing, keyCode: event.nativeEvent.keyCode })) {
+                    event.preventDefault();
+                    void submitMission();
+                  }
+                }}
               />
-              <Button size="sm" variant="primary" icon={<IconSend size={13} />} disabled={!mission.trim() || submitting || !session} onClick={() => void submitMission()}>
-                {copy.homeQuickSubmit}
-              </Button>
+              {submitting ? (
+                <Button size="sm" variant="primary" icon={<IconStop size={13} />} disabled={stopping} onClick={() => void stopProjectRun()}>
+                  {stopping ? consoleCopy.stoppingRun : consoleCopy.stopRun}
+                </Button>
+              ) : (
+                <Button size="sm" variant="primary" icon={<IconSend size={13} />} disabled={!mission.trim() || bindingSession || activeRunTarget !== null || !session} onClick={() => void submitMission()}>
+                  {copy.homeQuickSubmit}
+                </Button>
+              )}
             </div>
             <p className="workbench-quiet">{copy.projectChatHint}</p>
           </div>

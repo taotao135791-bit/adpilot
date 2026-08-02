@@ -38,14 +38,29 @@ import { SkillsView } from "./views/SkillsView.js";
 import type { ComputerControlAction } from "./components/ComputerUseCard.js";
 import { Badge, Button, Tooltip } from "./ui.js";
 import { IconDismiss, IconError, IconMenu, IconSettings } from "./icons.js";
+import {
+  eventBelongsToSelectedClient,
+  sameStateLoadScope,
+  sourceOwnsSelectedClient,
+  StateLoadGuard,
+  type StateLoadScope
+} from "./stateLoadGuard.js";
+import {
+  projectChatRunBusyElsewhere,
+  projectChatStopRequest,
+  projectChatStopUrl,
+  sameProjectChatRun,
+  type ProjectChatRunTarget
+} from "./projectChatRun.js";
 
 /**
  * Codex-style skeleton: a collapsible sidebar (brand, new conversation,
  * session history, workspace + settings) next to a main conversation
  * column. The sidebar is driven by real product Sessions — the selected
- * session's runtimeConversationId keys the message projection — so several
- * sessions can run concurrently and switching between them never cancels
- * in-flight work. The main column splits into a scrolling region (banners,
+ * session's runtimeConversationId keys the message projection. Switching
+ * sessions never cancels in-flight work; while the current App request owns
+ * the single run lock, other sessions report that run explicitly. The main
+ * column splits into a scrolling region (banners,
  * task header, feed, empty state) and a fixed composer dock, so the composer
  * never moves while the feed scrolls. Approvals, the live computer-use
  * session, and on-demand insight cards still render inline in the feed.
@@ -70,7 +85,7 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [stopping, setStopping] = useState(false);
-  const [activeRunTarget, setActiveRunTarget] = useState<{ clientId: string; conversationId: string } | null>(null);
+  const [activeRunTarget, setActiveRunTarget] = useState<ProjectChatRunTarget | null>(null);
   const [error, setError] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
@@ -98,40 +113,85 @@ export function App() {
   /** Synchronous lock prevents Enter and click from launching overlapping runs before React re-renders. */
   const submitLock = useRef(false);
   /** Stop always targets the run that was launched, even if the user switches sessions while it is active. */
-  const activeRunTargetRef = useRef<{ clientId: string; conversationId: string } | null>(null);
+  const activeRunTargetRef = useRef<ProjectChatRunTarget | null>(null);
+  /** The exact connection-error string currently shown, so a successful SSE
+      reconnect clears only its own error and never an unrelated task error. */
+  const connectionErrorMessageRef = useRef<string | null>(null);
+  /** Async state reads may resolve out of order. The guard binds every
+      response to the workspace + conversation that launched it. */
+  const stateLoadGuardRef = useRef(new StateLoadGuard({ clientId: "", conversationId: "primary" }));
+
+  function selectStateScope(nextClientId: string, nextConversationId: string) {
+    const previous = stateLoadGuardRef.current.selection();
+    stateLoadGuardRef.current.select({ clientId: nextClientId, conversationId: nextConversationId });
+    setClientId(nextClientId);
+    setConversationId(nextConversationId);
+    // `loading` is the one-time application boot gate. Later scope switches
+    // keep the shell/composer mounted so an active run never loses Stop.
+    // Clear scope-owned projections synchronously. Waiting for the new fetch
+    // while retaining the previous payload can expose workspace A's
+    // `primary` messages in workspace B (the conversation ids may match).
+    setState((current) => ({
+      ...emptyState,
+      clients: current.clients,
+      models: current.models,
+      selectedClientId: nextClientId,
+      selectedConversationId: nextConversationId,
+      sessions: previous.clientId === nextClientId ? (current.sessions ?? []) : []
+    }));
+  }
+
+  function scopeStillSelected(scope: StateLoadScope): boolean {
+    return sameStateLoadScope(stateLoadGuardRef.current.selection(), scope);
+  }
 
   const loadState = useCallback(async (requestedClientId?: string, requestedConversationId?: string) => {
+    const ticket = stateLoadGuardRef.current.begin(requestedClientId, requestedConversationId);
+    let resolvedClientId = ticket.clientId;
+    let resolvedConversationId = ticket.conversationId;
     try {
-      const selected = requestedClientId ?? clientId;
-      const conversation = requestedConversationId ?? conversationId;
       const params = new URLSearchParams();
-      if (selected) params.set("clientId", selected);
-      if (conversation) params.set("conversationId", conversation);
+      if (ticket.clientId) params.set("clientId", ticket.clientId);
+      if (ticket.conversationId) params.set("conversationId", ticket.conversationId);
       const query = params.toString();
       const response = await fetch(`/api/state${query ? `?${query}` : ""}`);
       if (!response.ok) throw new Error(getCopy(locale).loadError);
       const data = await response.json() as State;
-      setState(data);
+      resolvedClientId = data.selectedClientId ?? ticket.clientId;
+      resolvedConversationId = data.selectedConversationId ?? ticket.conversationId;
+      if (!stateLoadGuardRef.current.canCommit(ticket, resolvedClientId, resolvedConversationId)) return;
       const serverSessions = data.sessions ?? [];
       setSessions(serverSessions);
-      if (!clientId && data.selectedClientId) setClientId(data.selectedClientId);
+      if (!stateLoadGuardRef.current.selection().clientId && resolvedClientId) {
+        stateLoadGuardRef.current.select({ clientId: resolvedClientId, conversationId: ticket.conversationId });
+        setClientId(resolvedClientId);
+      }
       if (!sessionBootstrap.current) {
         sessionBootstrap.current = true;
         const explicit = data.selectedSessionId ? serverSessions.find((session) => session.id === data.selectedSessionId) : undefined;
         const target = explicit ?? fallbackSession(serverSessions, "");
         if (target) {
           setSelectedSessionId(target.id);
-          if (target.runtimeConversationId !== conversation) {
-            setConversationId(target.runtimeConversationId);
-            void loadState(selected, target.runtimeConversationId);
+          if (target.runtimeConversationId !== ticket.conversationId) {
+            selectStateScope(resolvedClientId, target.runtimeConversationId);
+            void loadState(resolvedClientId, target.runtimeConversationId);
             return;
           }
         }
       }
+      // Commit only after bootstrap has resolved the real conversation. This
+      // prevents primary/old-session messages flashing in the new view.
+      if (!stateLoadGuardRef.current.canCommit(ticket, resolvedClientId, resolvedConversationId)) return;
+      setState(data);
       setError("");
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-    finally { setLoading(false); }
-  }, [clientId, conversationId, locale]);
+    } catch (cause) {
+      if (stateLoadGuardRef.current.canCommit(ticket, resolvedClientId, resolvedConversationId)) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    } finally {
+      if (stateLoadGuardRef.current.canCommit(ticket, resolvedClientId, resolvedConversationId)) setLoading(false);
+    }
+  }, [locale]);
 
   const loadSettings = useCallback(async () => {
     try {
@@ -173,8 +233,12 @@ export function App() {
 
   useEffect(() => {
     if (!clientId) return;
-    const source = new EventSource(`/events?clientId=${encodeURIComponent(clientId)}`);
+    const sourceClientId = clientId;
+    const source = new EventSource(`/events?clientId=${encodeURIComponent(sourceClientId)}`);
+    let active = true;
     let refreshTimer: number | undefined;
+    const sourceOwnsScreen = () => active
+      && sourceOwnsSelectedClient(sourceClientId, stateLoadGuardRef.current.selection());
     const scheduleRefresh = () => {
       window.clearTimeout(refreshTimer);
       refreshTimer = window.setTimeout(() => void loadStateRef.current(), 250);
@@ -182,9 +246,23 @@ export function App() {
     source.onmessage = (message) => {
       let event: ProductEvent;
       try { event = JSON.parse(message.data as string) as ProductEvent; } catch { return; }
+      if (!sourceOwnsScreen()) return;
+      // The server's synthetic handshake is scoped by the URL/connection and
+      // intentionally has no clientId. It is the authoritative reconnect
+      // signal, but may clear only the connection error that source created.
+      if (event.type === "connected") {
+        const connectionError = connectionErrorMessageRef.current;
+        connectionErrorMessageRef.current = null;
+        if (connectionError) setError((current) => current === connectionError ? "" : current);
+        return;
+      }
+      // React can switch workspaces before the previous EventSource cleanup
+      // drains an already queued message. Never merge that old client's event
+      // into the newly selected workspace.
+      if (!eventBelongsToSelectedClient(event.clientId, stateLoadGuardRef.current.selection(), sourceClientId)) return;
       if (event.type === "session") {
         const snapshot = event.session;
-        if (snapshot) setSessions((current) => applySessionSnapshot(current, snapshot));
+        if (snapshot?.clientId === sourceClientId) setSessions((current) => applySessionSnapshot(current, snapshot));
       } else if (event.type === "plugin") {
         setPluginTick((tick) => tick + 1);
       } else if (event.type === "alert" || event.type === "computer") {
@@ -193,8 +271,17 @@ export function App() {
         scheduleRefresh();
       }
     };
-    source.onerror = () => setError(copyRef.current.connectionError);
-    return () => { window.clearTimeout(refreshTimer); source.close(); };
+    source.onerror = () => {
+      if (!sourceOwnsScreen()) return;
+      const connectionError = copyRef.current.connectionError;
+      connectionErrorMessageRef.current = connectionError;
+      setError(connectionError);
+    };
+    return () => {
+      active = false;
+      window.clearTimeout(refreshTimer);
+      source.close();
+    };
   }, [clientId]);
 
   /* Sidebar search: debounce keystrokes, then query the server-side search.
@@ -228,6 +315,16 @@ export function App() {
       && state.selectedSessionId === selectedSessionId
       && state.computerUse?.currentBrowser?.sessionStatus === "connected"
     );
+  const submittingCurrentConversation = submitting && sameProjectChatRun(activeRunTarget, {
+    clientId: clientId || "personal",
+    conversationId
+  });
+  const runBusyElsewhere = submitting && projectChatRunBusyElsewhere(activeRunTarget, {
+    clientId: clientId || "personal",
+    conversationId
+  });
+  const canStopCurrentRun = submittingCurrentConversation
+    && sameProjectChatRun(activeRunTargetRef.current, activeRunTarget);
   const timeline = useMemo(
     () => mergeConversationTimeline<ConversationMessage, Approval>(state.messages, state.events, conversationId, {
       approvals: state.approvals,
@@ -294,14 +391,16 @@ export function App() {
 
   /** Resyncs the sidebar list from the server — the rollback path after a
      failed optimistic mutation, including 409 revision conflicts. */
-  async function refreshSessions() {
-    if (!clientId) return;
+  async function refreshSessions(ownerScope: StateLoadScope) {
+    if (!ownerScope.clientId) return;
     try {
-      const response = await fetch(buildSessionListUrl(clientId));
+      const response = await fetch(buildSessionListUrl(ownerScope.clientId));
       if (!response.ok) throw new Error(String(response.status));
       const body = await response.json() as { sessions?: ProductSession[] };
-      setSessions(body.sessions ?? []);
-    } catch { setError(copy.sessionActionError); }
+      if (scopeStillSelected(ownerScope)) setSessions(body.sessions ?? []);
+    } catch {
+      if (scopeStillSelected(ownerScope)) setError(copy.sessionActionError);
+    }
   }
 
   /**
@@ -311,24 +410,28 @@ export function App() {
    * A 409 REVISION_CONFLICT means another writer moved first — resync the
    * list and say so instead of retrying blindly.
    */
-  async function sessionMutation(url: string, init: RequestInit): Promise<ProductSession | undefined> {
+  async function sessionMutation(ownerScope: StateLoadScope, url: string, init: RequestInit): Promise<ProductSession | undefined> {
     try {
       const response = await fetch(url, init);
       const body = await response.json().catch(() => undefined) as (ProductSession & { error?: string; code?: string }) | undefined;
-      if (response.ok && body) return body;
-      await refreshSessions();
-      setError(isRevisionConflict(body) ? copy.sessionConflict : (body?.error ?? copy.sessionActionError));
+      if (response.ok && body?.clientId === ownerScope.clientId) return body;
+      if (!scopeStillSelected(ownerScope)) return undefined;
+      await refreshSessions(ownerScope);
+      if (scopeStillSelected(ownerScope)) {
+        setError(isRevisionConflict(body) ? copy.sessionConflict : (body?.error ?? copy.sessionActionError));
+      }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (scopeStillSelected(ownerScope)) setError(cause instanceof Error ? cause.message : String(cause));
     }
     return undefined;
   }
 
   function selectSession(session: ProductSession) {
+    if (session.clientId !== clientId) return;
     if (session.id === selectedSessionId && mainView === "chat") return;
     setMainView("chat");
     setSelectedSessionId(session.id);
-    setConversationId(session.runtimeConversationId);
+    selectStateScope(clientId, session.runtimeConversationId);
     setInsights([]);
     void loadState(clientId, session.runtimeConversationId);
   }
@@ -396,73 +499,84 @@ export function App() {
 
   async function newSession() {
     if (!clientId) return;
-    const session = await sessionMutation(`/api/clients/${encodeURIComponent(clientId)}/sessions`, {
+    const ownerScope = stateLoadGuardRef.current.selection();
+    if (ownerScope.clientId !== clientId) return;
+    const session = await sessionMutation(ownerScope, `/api/clients/${encodeURIComponent(ownerScope.clientId)}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ title: copy.untitledSession })
     });
-    if (!session) return;
+    if (!session || !scopeStillSelected(ownerScope)) return;
     setSessions((current) => applySessionSnapshot(current, session));
     setSessionSearch("");
     setSelectedSessionId(session.id);
-    setConversationId(session.runtimeConversationId);
+    selectStateScope(ownerScope.clientId, session.runtimeConversationId);
     setInsights([]);
     setGoal("");
     setError("");
     setMainView("chat");
-    await loadState(clientId, session.runtimeConversationId);
+    await loadState(ownerScope.clientId, session.runtimeConversationId);
   }
 
   async function deleteSession(session: ProductSession) {
     if (!clientId) return;
+    const ownerScope = stateLoadGuardRef.current.selection();
+    if (session.clientId !== ownerScope.clientId) return;
     try {
-      const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/sessions/${encodeURIComponent(session.id)}?revision=${session.revision}`, { method: "DELETE" });
+      const response = await fetch(`/api/clients/${encodeURIComponent(ownerScope.clientId)}/sessions/${encodeURIComponent(session.id)}?revision=${session.revision}`, { method: "DELETE" });
       if (!response.ok) throw new Error(String(response.status));
+      if (!scopeStillSelected(ownerScope)) return;
       setSessions((current) => current.filter((candidate) => candidate.id !== session.id));
       if (selectedSessionId === session.id) {
         const next = sessions.find((candidate) => candidate.id !== session.id && !candidate.archivedAt && !candidate.deletedAt);
         if (next) selectSession(next);
         else {
           setSelectedSessionId(null);
-          setConversationId("primary");
-          await loadState(clientId, "primary");
+          selectStateScope(ownerScope.clientId, "primary");
+          await loadState(ownerScope.clientId, "primary");
         }
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (scopeStillSelected(ownerScope)) setError(cause instanceof Error ? cause.message : String(cause));
     }
   }
 
   async function togglePin(session: ProductSession) {
+    const ownerScope = stateLoadGuardRef.current.selection();
+    if (session.clientId !== ownerScope.clientId) return;
     const pinned = session.pinnedAt === undefined;
     const optimistic: ProductSession = { ...session };
     if (pinned) optimistic.pinnedAt = new Date().toISOString(); else delete optimistic.pinnedAt;
     setSessions((current) => applySessionSnapshot(current, optimistic));
-    const updated = await sessionMutation(`/api/clients/${encodeURIComponent(clientId)}/sessions/${encodeURIComponent(session.id)}`, {
+    const updated = await sessionMutation(ownerScope, `/api/clients/${encodeURIComponent(ownerScope.clientId)}/sessions/${encodeURIComponent(session.id)}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ revision: session.revision, pinned })
     });
-    if (updated) setSessions((current) => applySessionSnapshot(current, updated));
+    if (updated && scopeStillSelected(ownerScope)) setSessions((current) => applySessionSnapshot(current, updated));
   }
 
   async function renameSession(session: ProductSession, title: string) {
+    const ownerScope = stateLoadGuardRef.current.selection();
+    if (session.clientId !== ownerScope.clientId) return;
     setSessions((current) => applySessionSnapshot(current, { ...session, title }));
-    const updated = await sessionMutation(`/api/clients/${encodeURIComponent(clientId)}/sessions/${encodeURIComponent(session.id)}`, {
+    const updated = await sessionMutation(ownerScope, `/api/clients/${encodeURIComponent(ownerScope.clientId)}/sessions/${encodeURIComponent(session.id)}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ revision: session.revision, title })
     });
-    if (updated) setSessions((current) => applySessionSnapshot(current, updated));
+    if (updated && scopeStillSelected(ownerScope)) setSessions((current) => applySessionSnapshot(current, updated));
   }
 
   async function archiveSession(session: ProductSession) {
-    const updated = await sessionMutation(`/api/clients/${encodeURIComponent(clientId)}/sessions/${encodeURIComponent(session.id)}/archive`, {
+    const ownerScope = stateLoadGuardRef.current.selection();
+    if (session.clientId !== ownerScope.clientId) return;
+    const updated = await sessionMutation(ownerScope, `/api/clients/${encodeURIComponent(ownerScope.clientId)}/sessions/${encodeURIComponent(session.id)}/archive`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ revision: session.revision })
     });
-    if (!updated) return;
+    if (!updated || !scopeStillSelected(ownerScope)) return;
     const next = applySessionSnapshot(sessions, updated);
     setSessions(next);
     if (session.id === selectedSessionId) {
@@ -470,36 +584,53 @@ export function App() {
       if (fallback) selectSession(fallback);
       else {
         setSelectedSessionId(null);
-        setConversationId("primary");
-        void loadState(clientId, "primary");
+        selectStateScope(ownerScope.clientId, "primary");
+        void loadState(ownerScope.clientId, "primary");
       }
     }
   }
 
   async function restoreSession(session: ProductSession) {
-    const updated = await sessionMutation(`/api/clients/${encodeURIComponent(clientId)}/sessions/${encodeURIComponent(session.id)}/unarchive`, {
+    const ownerScope = stateLoadGuardRef.current.selection();
+    if (session.clientId !== ownerScope.clientId) return;
+    const updated = await sessionMutation(ownerScope, `/api/clients/${encodeURIComponent(ownerScope.clientId)}/sessions/${encodeURIComponent(session.id)}/unarchive`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ revision: session.revision })
     });
-    if (updated) setSessions((current) => applySessionSnapshot(current, updated));
+    if (updated && scopeStillSelected(ownerScope)) setSessions((current) => applySessionSnapshot(current, updated));
   }
 
   function selectClient(next: string) {
     if (next === "__new_workspace__") { setWorkspaceModalOpen(true); return; }
-    setClientId(next);
     setSelectedSessionId(null);
-    setConversationId("primary");
+    selectStateScope(next, "primary");
+    setSessions([]);
+    setKernelProjects([]);
     setSessionSearch("");
     setSessionSearchResults(null);
     setInsights([]);
+    // Drafts are workspace-private. Never carry a chat/code mission from one
+    // advertiser or repository context into another workspace.
+    setGoal("");
+    setCodeHandoff(null);
+    setPendingCodeMission(null);
+    setFocusArtifactId(null);
+    if (mainView === "project") {
+      setActiveProjectId(null);
+      setMainView("projects");
+    }
     sessionBootstrap.current = false;
     void loadState(next, "primary");
   }
 
   async function submitGoal(override?: string) {
     const message = (override ?? goal).trim();
-    if (!message || submitLock.current) return;
+    if (!message) return;
+    if (submitLock.current) {
+      setError(copy.runBusyElsewhereHint);
+      return;
+    }
     const insightKind = localInsightCommand(message);
     if (insightKind) {
       setGoal("");
@@ -511,33 +642,62 @@ export function App() {
     submitLock.current = true;
     setSubmitting(true); setError("");
     setGoal("");
-    let targetConversationId = conversationId;
+    const runId = crypto.randomUUID();
+    const launchScope = stateLoadGuardRef.current.selection();
+    const launchClientId = launchScope.clientId || clientId || "personal";
+    // Publish the launch scope immediately so a workspace switch during
+    // Session creation reports "running elsewhere" instead of looking idle.
+    // The Stop ref remains null until the real server conversation is known.
+    setActiveRunTarget({ clientId: launchClientId, conversationId: launchScope.conversationId, runId });
+    let targetConversationId = launchScope.conversationId;
+    let session = selectedSession?.clientId === launchClientId ? selectedSession : undefined;
     try {
       // Resolve the target session: the selected one, or a freshly created one
       // so the very first message of a workspace already lives in a Session.
-      let session = selectedSession;
-      if (!session && clientId) {
-        const created = await sessionMutation(`/api/clients/${encodeURIComponent(clientId)}/sessions`, {
+      if (!session && launchScope.clientId) {
+        const created = await sessionMutation(launchScope, `/api/clients/${encodeURIComponent(launchScope.clientId)}/sessions`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: "{}"
         });
         if (created) {
           session = created;
-          setSessions((current) => applySessionSnapshot(current, created));
-          setSelectedSessionId(created.id);
-          setConversationId(created.runtimeConversationId);
+          const currentScope = stateLoadGuardRef.current.selection();
+          if (currentScope.clientId === launchScope.clientId && currentScope.conversationId === launchScope.conversationId) {
+            setSessions((current) => applySessionSnapshot(current, created));
+            setSelectedSessionId(created.id);
+            selectStateScope(created.clientId, created.runtimeConversationId);
+          }
         }
       }
-      targetConversationId = session ? session.runtimeConversationId : conversationId;
-      const target = { clientId: clientId || "personal", conversationId: targetConversationId };
+      targetConversationId = session ? session.runtimeConversationId : launchScope.conversationId;
+      const target = { clientId: session?.clientId ?? launchClientId, conversationId: targetConversationId, runId };
       activeRunTargetRef.current = target;
       setActiveRunTarget(target);
-      setState((current) => ({ ...current, messages: [...current.messages, { id: `local-${Date.now()}`, clientId: target.clientId, conversationId: targetConversationId, role: "user", content: message, status: "complete", at: new Date().toISOString() }] }));
-      const response = await fetch("/api/messages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...(clientId ? { clientId } : {}), ...(session ? { sessionId: session.id } : { conversationId: targetConversationId }), message, locale }) });
+      if (sameProjectChatRun(stateLoadGuardRef.current.selection(), target)) {
+        setState((current) => ({ ...current, messages: [...current.messages, { id: `local-${Date.now()}`, clientId: target.clientId, conversationId: targetConversationId, role: "user", content: message, status: "complete", at: new Date().toISOString() }] }));
+      }
+      const response = await fetch("/api/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          clientId: target.clientId,
+          conversationId: targetConversationId,
+          runId,
+          ...(session ? { sessionId: session.id } : {}),
+          message,
+          locale
+        })
+      });
       const body = await response.json(); if (!response.ok) throw new Error(copy.taskError);
-      await loadState(clientId || body.message?.clientId, targetConversationId);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); await loadState(clientId, targetConversationId); }
+      await loadState(target.clientId || body.message?.clientId, targetConversationId);
+    } catch (cause) {
+      const target = { clientId: session?.clientId ?? launchClientId, conversationId: targetConversationId, runId };
+      if (sameProjectChatRun(stateLoadGuardRef.current.selection(), target)) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+      await loadState(target.clientId, targetConversationId);
+    }
     finally {
       submitLock.current = false;
       activeRunTargetRef.current = null;
@@ -553,10 +713,7 @@ export function App() {
     setStopping(true);
     setError("");
     try {
-      const response = await fetch(
-        `/api/clients/${encodeURIComponent(target.clientId)}/conversations/${encodeURIComponent(target.conversationId)}/stop`,
-        { method: "POST" }
-      );
+      const response = await fetch(projectChatStopUrl(target), projectChatStopRequest(target));
       const body = await response.json().catch(() => undefined) as { stopped?: boolean; error?: string } | undefined;
       if (!response.ok) throw new Error(body?.error ?? copy.stopRunError);
       // Keep the control in its "Stopping" state until the original message
@@ -569,28 +726,33 @@ export function App() {
   }
 
   async function forkMessage(messageId: string) {
+    const ownerScope = stateLoadGuardRef.current.selection();
+    const ownerSession = selectedSession;
     try {
-      if (selectedSession) {
+      if (ownerSession) {
+        if (ownerSession.clientId !== ownerScope.clientId) return;
         // Branch produces a brand-new product Session at the given message;
         // the original keeps running untouched.
-        const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/sessions/${encodeURIComponent(selectedSession.id)}/branch`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ atMessageId: messageId }) });
+        const response = await fetch(`/api/clients/${encodeURIComponent(ownerScope.clientId)}/sessions/${encodeURIComponent(ownerSession.id)}/branch`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ atMessageId: messageId }) });
         const body = await response.json().catch(() => undefined) as (ProductSession & { error?: string }) | undefined;
-        if (!response.ok || !body?.id) throw new Error(body?.error ?? copy.forkError);
+        if (!response.ok || !body?.id || body.clientId !== ownerScope.clientId) throw new Error(body?.error ?? copy.forkError);
+        if (!scopeStillSelected(ownerScope)) return;
         setSessions((current) => applySessionSnapshot(current, body));
         setSelectedSessionId(body.id);
-        setConversationId(body.runtimeConversationId);
+        selectStateScope(ownerScope.clientId, body.runtimeConversationId);
         setInsights([]);
-        await loadState(clientId, body.runtimeConversationId);
+        await loadState(ownerScope.clientId, body.runtimeConversationId);
       } else {
         // Legacy conversations without a Session keep the old fork endpoint.
-        const response = await fetch(`/api/clients/${encodeURIComponent(clientId)}/conversations/${encodeURIComponent(conversationId)}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ atMessageId: messageId }) });
+        const response = await fetch(`/api/clients/${encodeURIComponent(ownerScope.clientId)}/conversations/${encodeURIComponent(ownerScope.conversationId)}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ atMessageId: messageId }) });
         const body = await response.json() as { conversationId?: string; error?: string };
         if (!response.ok || !body.conversationId) throw new Error(body.error ?? copy.forkError);
-        setConversationId(body.conversationId);
-        await loadState(clientId, body.conversationId);
+        if (!scopeStillSelected(ownerScope)) return;
+        selectStateScope(ownerScope.clientId, body.conversationId);
+        await loadState(ownerScope.clientId, body.conversationId);
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (scopeStillSelected(ownerScope)) setError(cause instanceof Error ? cause.message : String(cause));
     }
   }
 
@@ -622,14 +784,16 @@ export function App() {
   }
 
   async function computerControl(action: ComputerControlAction) {
+    const ownerScope = stateLoadGuardRef.current.selection();
+    const ownerSessionId = selectedSessionId;
     try {
       const currentBrowser = state.computerUse?.currentBrowser;
       const response = await fetch(`/api/computer/${action}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          clientId,
-          ...(selectedSessionId ? { productSessionId: selectedSessionId } : {}),
+          clientId: ownerScope.clientId,
+          ...(ownerSessionId ? { productSessionId: ownerSessionId } : {}),
           ...(currentBrowser?.sessionId ? { browserSessionId: currentBrowser.sessionId } : {}),
           ...(state.computerUse?.computerSessionId ? { computerSessionId: state.computerUse.computerSessionId } : {}),
           ...(state.computerUse?.computerRevision !== undefined ? { computerRevision: state.computerUse.computerRevision } : {})
@@ -653,6 +817,7 @@ export function App() {
               : copy.executionError
         );
       }
+      if (!scopeStillSelected(ownerScope)) return;
       const nextControlState = body?.controlState;
       if (nextControlState) {
         setState((current) => ({
@@ -667,10 +832,11 @@ export function App() {
           }
         }));
       }
-      await loadState(clientId, conversationId);
+      await loadState(ownerScope.clientId, ownerScope.conversationId);
     } catch (cause) {
+      if (!scopeStillSelected(ownerScope)) return;
       setError(cause instanceof Error ? cause.message : String(cause));
-      await loadState(clientId, conversationId);
+      await loadState(ownerScope.clientId, ownerScope.conversationId);
     }
   }
 
@@ -803,7 +969,7 @@ export function App() {
       <main className="main-column">
         {mainView === "project" && activeProjectId ? (
           <ProjectView
-            key={activeProjectId}
+            key={`${clientId}:${activeProjectId}`}
             locale={locale}
             clientId={clientId}
             projectId={activeProjectId}
@@ -888,7 +1054,7 @@ export function App() {
             </div>
           ) : null}
 
-          {(timeline.length > 0 || submitting) && (
+          {(timeline.length > 0 || submittingCurrentConversation) && (
             <ConversationFeed
               copy={copy}
               locale={locale}
@@ -910,7 +1076,7 @@ export function App() {
                 ].join(":")
               } : {})}
               guiConfigured={state.models.guiConfigured}
-              submitting={submitting}
+              submitting={submittingCurrentConversation}
               onFork={(messageId) => void forkMessage(messageId)}
               onRiskReview={(approval) => void riskReview(approval)}
               onApprove={(approval) => void approve(approval)}
@@ -927,10 +1093,11 @@ export function App() {
             goal={goal}
             onGoalChange={setGoal}
             chatConfigured={state.models.chatConfigured}
-            submitting={submitting}
+            submitting={submittingCurrentConversation}
+            busyElsewhere={runBusyElsewhere}
             stopping={stopping}
             onSubmit={() => void submitGoal()}
-            {...(isNativeDesktop && activeRunTarget ? { onStop: () => void stopActiveRun() } : {})}
+            {...(isNativeDesktop && canStopCurrentRun ? { onStop: () => void stopActiveRun() } : {})}
             onConfigureModel={() => openSettings("models")}
             planMode={state.planMode?.enabled === true}
             planModeDisabled={!clientId}

@@ -90,6 +90,7 @@ export type ComputerVisualEvent = {
 /** Wire shape of server-sent product events (see packages/application ProductEvent). */
 export type ProductEvent = {
   type: string;
+  clientId?: string;
   status?: string;
   message?: string;
   approvalId?: string;

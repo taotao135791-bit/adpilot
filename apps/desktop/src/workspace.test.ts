@@ -525,29 +525,35 @@ describe("project session binding helpers", () => {
   it("builds the project message request, omitting absent goal/task ids", () => {
     expect(buildProjectMessageRequest({
       clientId: "personal",
+      conversationId: "conv-1",
+      runId: "run-1",
       sessionId: "s-1",
       projectId: "p-1",
       message: "你好",
       locale: "zh-CN"
-    })).toEqual({ clientId: "personal", sessionId: "s-1", projectId: "p-1", message: "你好", locale: "zh-CN" });
+    })).toEqual({ clientId: "personal", conversationId: "conv-1", runId: "run-1", sessionId: "s-1", projectId: "p-1", message: "你好", locale: "zh-CN" });
     expect(buildProjectMessageRequest({
       clientId: "personal",
+      conversationId: "conv-1",
+      runId: "run-2",
       sessionId: "s-1",
       projectId: "p-1",
       goalId: "g-1",
       taskId: "t-1",
       message: "审计账户",
       locale: "en"
-    })).toEqual({ clientId: "personal", sessionId: "s-1", projectId: "p-1", goalId: "g-1", taskId: "t-1", message: "审计账户", locale: "en" });
+    })).toEqual({ clientId: "personal", conversationId: "conv-1", runId: "run-2", sessionId: "s-1", projectId: "p-1", goalId: "g-1", taskId: "t-1", message: "审计账户", locale: "en" });
     // A goal without a task (or vice versa) is passed through independently.
     expect(buildProjectMessageRequest({
       clientId: "personal",
+      conversationId: "conv-1",
+      runId: "run-3",
       sessionId: "s-1",
       projectId: "p-1",
       goalId: "g-1",
       message: "m",
       locale: "en"
-    })).toEqual({ clientId: "personal", sessionId: "s-1", projectId: "p-1", goalId: "g-1", message: "m", locale: "en" });
+    })).toEqual({ clientId: "personal", conversationId: "conv-1", runId: "run-3", sessionId: "s-1", projectId: "p-1", goalId: "g-1", message: "m", locale: "en" });
   });
 
   it("builds an optimistic local user message on the local-* convention", () => {

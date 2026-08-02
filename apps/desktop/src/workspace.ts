@@ -781,6 +781,8 @@ export function buildMissionRequest(workspaceId: string, message: string): Proje
 
 export type ProjectMessageRequest = {
   clientId: string;
+  conversationId: string;
+  runId: string;
   sessionId: string;
   projectId: string;
   goalId?: string;
@@ -790,12 +792,15 @@ export type ProjectMessageRequest = {
 };
 
 /**
- * Body for POST /api/messages on the project path. goal/task ids come from the
- * mission triage and are omitted entirely when the mission stayed small talk —
- * the server treats absent ids as "plain conversation turn".
+ * Body for POST /api/messages on the project path. The exact conversation +
+ * run identity lets Stop target only this request. Existing goal/task ids may
+ * be supplied; when both are absent the server performs complexity triage
+ * inside the reserved run and returns any materialized ids.
  */
 export function buildProjectMessageRequest(input: {
   clientId: string;
+  conversationId: string;
+  runId: string;
   sessionId: string;
   projectId: string;
   goalId?: string | undefined;
@@ -805,6 +810,8 @@ export function buildProjectMessageRequest(input: {
 }): ProjectMessageRequest {
   return {
     clientId: input.clientId,
+    conversationId: input.conversationId,
+    runId: input.runId,
     sessionId: input.sessionId,
     projectId: input.projectId,
     ...(input.goalId ? { goalId: input.goalId } : {}),
