@@ -5,7 +5,7 @@ const root = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   test: {
-    include: ["packages/**/*.test.ts", "tests/**/*.test.ts", "evals/**/*.test.ts"],
+    include: ["apps/**/*.test.ts", "packages/**/*.test.ts", "tests/**/*.test.ts", "evals/**/*.test.ts"],
     testTimeout: 30_000,
     // The suite contains real-process and real-server integration tests that
     // starve each other (and the host) when vitest fans out to every core.
