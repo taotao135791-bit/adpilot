@@ -81,6 +81,7 @@ translate these intents into YAML.
 | Microsoft Ads, Bing, Copilot ads | `ads-microsoft` |
 | Apple Ads / ASA / iOS app ads | `ads-apple` |
 | Amazon Ads, Sponsored Products, ACOS/TACOS | `ads-amazon` |
+| Pinterest Ads, Promoted Pins, Pinterest catalog | `ads-pinterest` |
 | attribution, GA4, MMP, AdAttributionKit | `ads-attribution` |
 | server-side tracking, sGTM, CAPI, dedup | `ads-server-side-tracking` |
 | creative audit, fatigue, copy/design review | `ads-creative` |

@@ -122,6 +122,7 @@ export interface PluginCandidateDto {
   id: string;
   name: string;
   publisher: string;
+  category: "work" | "advertising";
   description: { en: string; zh: string };
   sourceUrl: string;
   transport: "local" | "remote" | "local-or-remote";
@@ -168,6 +169,7 @@ const PLUGIN_CANDIDATES: readonly PluginCandidateDto[] = [
     id: "github-official-mcp",
     name: "GitHub MCP Server",
     publisher: "GitHub",
+    category: "work",
     description: {
       en: "Repository, issue, pull-request, Actions, and code-security context from GitHub's official MCP server.",
       zh: "通过 GitHub 官方 MCP Server 读取仓库、Issue、Pull Request、Actions 与代码安全上下文。"
@@ -188,6 +190,7 @@ const PLUGIN_CANDIDATES: readonly PluginCandidateDto[] = [
     id: "google-drive-official-mcp",
     name: "Google Drive MCP",
     publisher: "Google",
+    category: "work",
     description: {
       en: "Search, metadata, and file-content access through Google's hosted Drive MCP endpoint.",
       zh: "通过 Google 托管的 Drive MCP 端点搜索文件、读取元数据与文件内容。"
@@ -208,6 +211,7 @@ const PLUGIN_CANDIDATES: readonly PluginCandidateDto[] = [
     id: "figma-official-mcp",
     name: "Figma MCP Server",
     publisher: "Figma",
+    category: "work",
     description: {
       en: "Structured design context, variables, components, and Code Connect data from Figma's official MCP server.",
       zh: "通过 Figma 官方 MCP Server 获取结构化设计上下文、变量、组件与 Code Connect 数据。"
@@ -228,6 +232,7 @@ const PLUGIN_CANDIDATES: readonly PluginCandidateDto[] = [
     id: "google-ads-api-connector",
     name: "Google Ads API Connector",
     publisher: "Google",
+    category: "advertising",
     description: {
       en: "Account structure, performance reporting, recommendations, and change history through the official Google Ads API.",
       zh: "通过 Google Ads 官方 API 读取账户结构、效果报表、优化建议与变更历史。"
@@ -245,9 +250,31 @@ const PLUGIN_CANDIDATES: readonly PluginCandidateDto[] = [
     installable: false
   },
   {
+    id: "meta-marketing-api-connector",
+    name: "Meta Marketing API Connector",
+    publisher: "Meta",
+    category: "advertising",
+    description: {
+      en: "Read-only ad-account structure, performance reporting, creative insights, and change context through Meta's official Marketing API SDK.",
+      zh: "通过 Meta 官方 Marketing API SDK 只读获取广告账户结构、效果报表、创意洞察与变更上下文。"
+    },
+    sourceUrl: "https://github.com/facebook/facebook-nodejs-business-sdk",
+    transport: "remote",
+    maturity: "stable",
+    recommendedMode: "read-only",
+    capabilities: ["account structure", "performance reporting", "creative insights", "change context"],
+    notes: {
+      en: "Candidate only. Access requires a registered Meta app and access token. Begin with the minimum read-only reporting permission and one explicitly bound ad account; ad, campaign, creative, and audience mutations require a separately reviewed integration and exact approval.",
+      zh: "仅为候选。接入需要已注册的 Meta 应用与 access token。首次接入仅申请最小只读报表权限并明确绑定单一广告账户；广告、广告系列、创意和受众写入必须由独立审核的集成承载并获得精确审批。"
+    },
+    metadataReviewedAt: "2026-08-02",
+    installable: false
+  },
+  {
     id: "tiktok-business-api-connector",
     name: "TikTok API for Business Connector",
     publisher: "TikTok",
+    category: "advertising",
     description: {
       en: "Campaign structure, creative performance, reporting, and measurement context through TikTok API for Business.",
       zh: "通过 TikTok API for Business 读取广告结构、创意表现、效果报表与测量上下文。"
@@ -262,6 +289,111 @@ const PLUGIN_CANDIDATES: readonly PluginCandidateDto[] = [
       zh: "仅为候选。首次接入应只开放报表端点并绑定单一 advertiser ID；广告、受众、创意和商品目录写入需另行审核后再开放。"
     },
     metadataReviewedAt: "2026-07-31",
+    installable: false
+  },
+  {
+    id: "microsoft-advertising-api-connector",
+    name: "Microsoft Advertising API Connector",
+    publisher: "Microsoft",
+    category: "advertising",
+    description: {
+      en: "Read-only account structure, campaign performance, ad and keyword reporting, and shopping-catalog context through the official Microsoft Advertising API.",
+      zh: "通过 Microsoft Advertising 官方 API 只读获取账户结构、广告系列表现、广告与关键词报表及购物目录上下文。"
+    },
+    sourceUrl: "https://learn.microsoft.com/en-us/advertising/guides/?view=bingads-13",
+    transport: "remote",
+    maturity: "stable",
+    recommendedMode: "read-only",
+    capabilities: ["account structure", "campaign reporting", "ad and keyword reporting", "shopping catalog context"],
+    notes: {
+      en: "Candidate only. Access requires OAuth user consent and a Microsoft Advertising developer token; allowlist reporting/read operations. Microsoft says new features become REST-only on October 1, 2026 and SOAP is deprecated on January 31, 2027, so any future connector must use the REST migration path.",
+      zh: "仅为候选。接入需要 OAuth 用户授权和 Microsoft Advertising developer token，并应仅放行报表与读取操作。微软说明新功能自 2026 年 10 月 1 日起仅支持 REST、SOAP 将于 2027 年 1 月 31 日停用，因此未来连接器必须采用 REST 迁移路径。"
+    },
+    metadataReviewedAt: "2026-08-02",
+    installable: false
+  },
+  {
+    id: "linkedin-marketing-api-connector",
+    name: "LinkedIn Marketing API Connector",
+    publisher: "LinkedIn",
+    category: "advertising",
+    description: {
+      en: "Read-only advertising account, campaign, creative, targeting, and performance-reporting context through the official LinkedIn Marketing API.",
+      zh: "通过 LinkedIn Marketing 官方 API 只读获取广告账户、广告系列、创意、定向与效果报表上下文。"
+    },
+    sourceUrl: "https://learn.microsoft.com/en-us/linkedin/marketing/?view=li-lms-2026-01",
+    transport: "remote",
+    maturity: "stable",
+    recommendedMode: "read-only",
+    capabilities: ["account hierarchy", "campaign reporting", "creative context", "targeting and performance reporting"],
+    notes: {
+      en: "Candidate only. OAuth access is not sufficient by itself: LinkedIn Advertising API access requires the applicable product approval through the Developer Portal. Limit any reviewed connector to approved reporting operations; campaign, creative, audience, and lead mutations remain out of scope.",
+      zh: "仅为候选。仅有 OAuth 并不足够：LinkedIn Advertising API 还要求通过 Developer Portal 获得相应产品权限审批。经审核的连接器也只能开放获批的报表操作；广告系列、创意、受众与线索写入均不在范围内。"
+    },
+    metadataReviewedAt: "2026-08-02",
+    installable: false
+  },
+  {
+    id: "amazon-ads-api-connector",
+    name: "Amazon Ads API Connector",
+    publisher: "Amazon",
+    category: "advertising",
+    description: {
+      en: "Read-only sponsored-ads, Amazon DSP, and Amazon Marketing Cloud reporting context through the official Amazon Ads API.",
+      zh: "通过 Amazon Ads 官方 API 只读获取赞助广告、Amazon DSP 与 Amazon Marketing Cloud 报表上下文。"
+    },
+    sourceUrl: "https://advertising.amazon.com/resources/whats-new/amc-api-available-on-amazon-ads-api/",
+    transport: "remote",
+    maturity: "stable",
+    recommendedMode: "read-only",
+    capabilities: ["sponsored ads reporting", "Amazon DSP reporting", "Amazon Marketing Cloud reporting", "measurement context"],
+    notes: {
+      en: "Candidate only. Amazon Ads API access requires an application and approval plus OAuth authorization. Start with approved reporting endpoints only; campaign, audience, signal, and catalog mutations require a separately reviewed integration and exact approval.",
+      zh: "仅为候选。Amazon Ads API 接入需要提交申请并获批，同时完成 OAuth 授权。首次接入仅应开放获批的报表端点；广告系列、受众、信号与目录写入必须由独立审核的集成承载并获得精确审批。"
+    },
+    metadataReviewedAt: "2026-08-02",
+    installable: false
+  },
+  {
+    id: "apple-ads-campaign-management-api",
+    name: "Apple Ads Campaign Management API",
+    publisher: "Apple",
+    category: "advertising",
+    description: {
+      en: "Read-only campaign, ad-group, keyword, and performance-reporting context through the official Apple Ads Campaign Management API.",
+      zh: "通过 Apple Ads 官方 Campaign Management API 只读获取广告系列、广告组、关键词与效果报表上下文。"
+    },
+    sourceUrl: "https://ads.apple.com/app-store/help/campaigns/0022-use-the-campaign-management-api",
+    transport: "remote",
+    maturity: "stable",
+    recommendedMode: "read-only",
+    capabilities: ["campaign reporting", "ad-group reporting", "keyword reporting", "account structure"],
+    notes: {
+      en: "Candidate only. Use OAuth 2 with an API Account Read Only role. Third-party providers must register their OAuth application with Apple; bid, budget, keyword, and campaign changes remain outside this candidate.",
+      zh: "仅为候选。应使用 OAuth 2 和 API Account Read Only 角色。第三方服务商还必须向 Apple 注册 OAuth 应用；出价、预算、关键词及广告系列变更均不属于此候选范围。"
+    },
+    metadataReviewedAt: "2026-08-02",
+    installable: false
+  },
+  {
+    id: "pinterest-ads-api-connector",
+    name: "Pinterest API for Ads Connector",
+    publisher: "Pinterest",
+    category: "advertising",
+    description: {
+      en: "Read-only account, campaign, creative, conversion-tracking, catalog, and reporting context through the official Pinterest API for Ads.",
+      zh: "通过 Pinterest 官方 Ads API 只读获取账户、广告系列、创意、转化跟踪、商品目录与报表上下文。"
+    },
+    sourceUrl: "https://developers.pinterest.com/usecase/ads/",
+    transport: "remote",
+    maturity: "stable",
+    recommendedMode: "read-only",
+    capabilities: ["campaign hierarchy", "ads reporting", "conversion tracking context", "catalog diagnostics", "creative context"],
+    notes: {
+      en: "Candidate only. Access requires an approved Pinterest developer app, a business account with the required business/ad-account access, and OAuth authorization. Request only ads:read and, when catalog evidence is needed, catalogs:read; no write scopes or mutations are included.",
+      zh: "仅为候选。接入需要获批的 Pinterest 开发者应用、具备所需业务及广告账户权限的企业账户，以及 OAuth 授权。仅申请 ads:read；确需目录证据时再申请 catalogs:read，不包含任何写入 scope 或变更操作。"
+    },
+    metadataReviewedAt: "2026-08-02",
     installable: false
   }
 ];

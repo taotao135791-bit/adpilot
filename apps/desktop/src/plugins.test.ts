@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyPluginActionError,
   formatLogTime,
+  groupPluginCandidates,
   groupPlugins,
   isAdvertisingMutation,
   isCatalogUnavailable,
@@ -16,6 +17,7 @@ import {
   riskTone,
   sortPermissionsByRisk,
   truncateFingerprint,
+  type PluginCandidate,
   type PluginCatalogItem,
   type PluginPermissionDto,
   type PluginUpdate
@@ -46,6 +48,25 @@ function item(overrides: Partial<PluginCatalogItem>): PluginCatalogItem {
     review: { status: "approved" },
     installed: null,
     update: null,
+    ...overrides
+  };
+}
+
+function candidate(overrides: Partial<PluginCandidate>): PluginCandidate {
+  return {
+    id: "acme.candidate",
+    name: "Candidate",
+    publisher: "Acme",
+    category: "work",
+    description: { en: "", zh: "" },
+    sourceUrl: "https://example.com",
+    transport: "remote",
+    maturity: "stable",
+    recommendedMode: "read-only",
+    capabilities: [],
+    notes: { en: "", zh: "" },
+    metadataReviewedAt: "2026-08-02",
+    installable: false,
     ...overrides
   };
 }
@@ -86,6 +107,19 @@ describe("groupPlugins", () => {
 
   it("handles an empty catalog", () => {
     expect(groupPlugins([])).toEqual({ installed: [], curated: [] });
+  });
+});
+
+describe("groupPluginCandidates", () => {
+  it("separates work from advertising candidates and sorts both groups", () => {
+    const groups = groupPluginCandidates([
+      candidate({ id: "ads.z", name: "Zeta Ads", category: "advertising" }),
+      candidate({ id: "work.z", name: "Zeta Work" }),
+      candidate({ id: "ads.a", name: "Alpha Ads", category: "advertising" }),
+      candidate({ id: "work.a", name: "Alpha Work" })
+    ]);
+    expect(groups.work.map((entry) => entry.id)).toEqual(["work.a", "work.z"]);
+    expect(groups.advertising.map((entry) => entry.id)).toEqual(["ads.a", "ads.z"]);
   });
 });
 

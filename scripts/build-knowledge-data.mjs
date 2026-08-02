@@ -47,6 +47,7 @@ const CURATED_TRIGGERS = {
   "ads-plan": ["投放计划", "投放策略"],
   "ads-levers": ["KPI受限"],
   "ads-math": ["盈亏平衡", "广告计算"],
+  "ads-pinterest": ["Pinterest Ads", "Promoted Pins", "Pinterest 广告", "Pinterest 投放", "推广 Pin", "Pinterest 目录"],
   "change-with-evidence": ["implement", "refactor", "修改代码", "实现功能", "修复代码"],
   "review-code-change": ["code review", "review diff", "review pull request", "代码审查", "审查代码"],
   "triage-runtime-failure": ["diagnose failure", "runtime failure", "tool failure", "排查故障", "运行失败", "工具失败"],

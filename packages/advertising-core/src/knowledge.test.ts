@@ -20,14 +20,14 @@ const knowledgeRoot = `${repoRoot}packages/advertising-core/knowledge`;
 describe("embedded knowledge loader", () => {
   it("embeds every knowledge skill exactly once with metadata and triggers", () => {
     const skills = listKnowledgeSkills();
-    expect(skills).toHaveLength(33);
+    expect(skills).toHaveLength(34);
     expect(new Set(skills.map((skill) => skill.name)).size).toBe(skills.length);
     for (const skill of skills) {
       expect(skill.name).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
       expect(skill.description.length).toBeGreaterThan(0);
       expect(skill.description.length).toBeLessThanOrEqual(1024);
     }
-    for (const expected of ["ads", "ads-ops", "ads-report", "ads-audit", "ads-google-app", "ads-math"]) {
+    for (const expected of ["ads", "ads-ops", "ads-report", "ads-audit", "ads-google-app", "ads-math", "ads-pinterest"]) {
       expect(skills.map((skill) => skill.name)).toContain(expected);
     }
     expect(skills.find((skill) => skill.name === "ads-ops")?.triggers).toEqual(expect.arrayContaining(["patrol", "巡检"]));
@@ -37,6 +37,9 @@ describe("embedded knowledge loader", () => {
     expect(skills.find((skill) => skill.name === "ads-dna")?.triggers).toEqual(expect.arrayContaining(["brand DNA", "品牌画像"]));
     expect(skills.find((skill) => skill.name === "ads-generate")?.triggers).toEqual(expect.arrayContaining(["generate ads", "生成广告图片"]));
     expect(skills.find((skill) => skill.name === "ads-photoshoot")?.triggers).toEqual(expect.arrayContaining(["product photo", "产品摄影"]));
+    expect(skills.find((skill) => skill.name === "ads-pinterest")?.triggers).toEqual(
+      expect.arrayContaining(["Pinterest Ads", "Promoted Pins", "Pinterest 广告", "Pinterest 投放"])
+    );
   });
 
   it("returns full skill text on demand and null for unknown names", () => {
@@ -45,6 +48,15 @@ describe("embedded knowledge loader", () => {
     expect(skill?.body).toContain("# Ads Ops: Daily Agency Operations");
     expect(skill?.triggers).toContain("patrol");
     expect(getKnowledgeSkill("does-not-exist")).toBeNull();
+  });
+
+  it("keeps the Pinterest audit read-only and evidence-bound", () => {
+    const skill = getKnowledgeSkill("ads-pinterest");
+    expect(skill?.body).toContain("# Pinterest Ads Read-Only Audit");
+    expect(skill?.body).toContain("`ads:read`");
+    expect(skill?.body).toContain("`catalogs:read`");
+    expect(skill?.body).toContain("require a separate approval");
+    expect(skill?.body).not.toMatch(/\d+(?:\.\d+)?%/);
   });
 
   it("resolves embedded references by key or bare file name from the single deduplicated set", () => {
@@ -105,6 +117,8 @@ describe("embedded knowledge loader", () => {
     expect(matchKnowledgeSkills("先提取品牌画像，再做广告文案").map((skill) => skill.name)).toEqual(expect.arrayContaining(["ads-dna", "ads-create"]));
     expect(matchKnowledgeSkills("给这个产品做一组产品棚拍").map((skill) => skill.name)).toContain("ads-photoshoot");
     expect(matchKnowledgeSkills("根据 brief 生成广告图片").map((skill) => skill.name)).toContain("ads-generate");
+    expect(matchKnowledgeSkills("audit my Pinterest Ads account").map((skill) => skill.name)).toContain("ads-pinterest");
+    expect(matchKnowledgeSkills("帮我审计 Pinterest 广告目录").map((skill) => skill.name)).toContain("ads-pinterest");
     expect(matchKnowledgeSkills("今天天气怎么样")).toEqual([]);
     // Latin triggers require token boundaries: "auditing" must not match "audit".
     expect(matchKnowledgeSkills("auditing")).toEqual([]);

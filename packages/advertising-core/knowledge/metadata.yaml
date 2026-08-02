@@ -6,6 +6,7 @@ required_topics:
   - google_uac
   - meta
   - tiktok
+  - pinterest
   - policy
   - platform_specs
   - attribution
@@ -49,6 +50,18 @@ entries:
     verified_on: null
     review_after_days: 60
     maintainer_note: Attach the exact authoritative source during verification.
+
+  - id: pinterest-ads-guidance
+    topic: pinterest
+    paths:
+      - skills/ads-pinterest/SKILL.md
+    source_type: official_platform_documentation
+    source_reference: Pinterest Developer Platform official Ads, authentication, tracking, catalog, and reporting documentation
+    rule_type: platform_guidance
+    confidence: high
+    verified_on: "2026-08-02"
+    review_after_days: 60
+    maintainer_note: Keep audits read-only, verify current access rules, and require exact separate approval for every mutation.
 
   - id: advertising-policy-guidance
     topic: policy

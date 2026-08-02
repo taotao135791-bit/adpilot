@@ -115,13 +115,22 @@ describe("plugin REST endpoints", () => {
     const { status, body } = await inject(app, "GET", "/api/plugins");
     expect(status).toBe(200);
     expect(body.runtime).toMatchObject({ available: true, developerMode: false, isolation: "child_process+vm" });
-    expect(body.candidates).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "github-official-mcp", installable: false, recommendedMode: "read-only" }),
-      expect.objectContaining({ id: "google-drive-official-mcp", installable: false, maturity: "developer-preview" }),
-      expect.objectContaining({ id: "figma-official-mcp", installable: false, maturity: "beta" }),
-      expect.objectContaining({ id: "google-ads-api-connector", installable: false, maturity: "stable" }),
-      expect.objectContaining({ id: "tiktok-business-api-connector", installable: false, maturity: "stable" })
-    ]));
+    expect(body.candidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "github-official-mcp", category: "work", installable: false, recommendedMode: "read-only" }),
+        expect.objectContaining({ id: "google-drive-official-mcp", category: "work", maturity: "developer-preview" }),
+        expect.objectContaining({ id: "figma-official-mcp", category: "work", maturity: "beta" }),
+        expect.objectContaining({ id: "google-ads-api-connector", category: "advertising", maturity: "stable" }),
+        expect.objectContaining({ id: "meta-marketing-api-connector", category: "advertising", maturity: "stable" }),
+        expect.objectContaining({ id: "tiktok-business-api-connector", category: "advertising", maturity: "stable" }),
+        expect.objectContaining({ id: "microsoft-advertising-api-connector", category: "advertising", maturity: "stable" }),
+        expect.objectContaining({ id: "linkedin-marketing-api-connector", category: "advertising", maturity: "stable" }),
+        expect.objectContaining({ id: "amazon-ads-api-connector", category: "advertising", maturity: "stable" }),
+        expect.objectContaining({ id: "apple-ads-campaign-management-api", category: "advertising", maturity: "stable" }),
+        expect.objectContaining({ id: "pinterest-ads-api-connector", category: "advertising", maturity: "stable" })
+      ])
+    );
+    expect(body.candidates).toHaveLength(11);
     const plugins = body.plugins as Array<Record<string, unknown>>;
     const csv = plugins.find((plugin) => plugin.id === "com.adpilot.csv-daily-report");
     expect(csv).toMatchObject({

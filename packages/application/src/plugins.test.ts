@@ -173,9 +173,45 @@ describe("plugin service composition root", () => {
       "google-drive-official-mcp",
       "figma-official-mcp",
       "google-ads-api-connector",
-      "tiktok-business-api-connector"
+      "meta-marketing-api-connector",
+      "tiktok-business-api-connector",
+      "microsoft-advertising-api-connector",
+      "linkedin-marketing-api-connector",
+      "amazon-ads-api-connector",
+      "apple-ads-campaign-management-api",
+      "pinterest-ads-api-connector"
     ]);
     expect(candidates.every((candidate) => candidate.installable === false && candidate.recommendedMode === "read-only")).toBe(true);
+    expect(candidates.slice(0, 3).every((candidate) => candidate.category === "work")).toBe(true);
+    expect(candidates.slice(3).every((candidate) => candidate.category === "advertising")).toBe(true);
+    const reviewedAdvertisingCandidates = candidates.filter((candidate) => candidate.metadataReviewedAt === "2026-08-02");
+    expect(reviewedAdvertisingCandidates).toHaveLength(6);
+    expect(
+      reviewedAdvertisingCandidates.every(
+        (candidate) =>
+          candidate.maturity === "stable" &&
+          candidate.metadataReviewedAt === "2026-08-02" &&
+          candidate.notes.en.startsWith("Candidate only.") &&
+          candidate.notes.zh.startsWith("仅为候选。")
+      )
+    ).toBe(true);
+    expect(reviewedAdvertisingCandidates.map((candidate) => candidate.sourceUrl)).toEqual([
+      "https://github.com/facebook/facebook-nodejs-business-sdk",
+      "https://learn.microsoft.com/en-us/advertising/guides/?view=bingads-13",
+      "https://learn.microsoft.com/en-us/linkedin/marketing/?view=li-lms-2026-01",
+      "https://advertising.amazon.com/resources/whats-new/amc-api-available-on-amazon-ads-api/",
+      "https://ads.apple.com/app-store/help/campaigns/0022-use-the-campaign-management-api",
+      "https://developers.pinterest.com/usecase/ads/"
+    ]);
+    const reviewedById = new Map(reviewedAdvertisingCandidates.map((candidate) => [candidate.id, candidate]));
+    expect(reviewedById.get("meta-marketing-api-connector")?.notes.en).toMatch(/registered Meta app.*access token.*read-only/i);
+    expect(reviewedById.get("microsoft-advertising-api-connector")?.notes.en).toMatch(/OAuth.*developer token.*REST/i);
+    expect(reviewedById.get("linkedin-marketing-api-connector")?.notes.en).toMatch(/approval.*Developer Portal/i);
+    expect(reviewedById.get("amazon-ads-api-connector")?.notes.en).toMatch(/application and approval.*OAuth/i);
+    expect(reviewedById.get("apple-ads-campaign-management-api")?.notes.en).toMatch(/OAuth.*Read Only.*register/i);
+    expect(reviewedById.get("pinterest-ads-api-connector")?.notes.en).toMatch(
+      /approved.*business account.*ads:read.*catalogs:read/i
+    );
     const csv = plugins.find((plugin) => plugin.id === "com.adpilot.csv-daily-report");
     expect(csv).toMatchObject({
       latestVersion: "1.0.0",

@@ -75,6 +75,7 @@ export type PluginCandidate = {
   id: string;
   name: string;
   publisher: string;
+  category: "work" | "advertising";
   description: { en: string; zh: string };
   sourceUrl: string;
   transport: "local" | "remote" | "local-or-remote";
@@ -137,6 +138,11 @@ export type PluginGroups = {
   curated: PluginCatalogItem[];
 };
 
+export type PluginCandidateGroups = {
+  work: PluginCandidate[];
+  advertising: PluginCandidate[];
+};
+
 const byName = (left: PluginCatalogItem, right: PluginCatalogItem) =>
   left.name.localeCompare(right.name) || left.id.localeCompare(right.id);
 
@@ -155,6 +161,20 @@ export function groupPlugins(items: readonly PluginCatalogItem[]): PluginGroups 
   installed.sort((left, right) => Number(Boolean(right.update)) - Number(Boolean(left.update)) || byName(left, right));
   curated.sort(byName);
   return { installed, curated };
+}
+
+/** Keep an expanded candidate catalog scannable without implying installability. */
+export function groupPluginCandidates(items: readonly PluginCandidate[]): PluginCandidateGroups {
+  const work: PluginCandidate[] = [];
+  const advertising: PluginCandidate[] = [];
+  for (const item of items) {
+    (item.category === "advertising" ? advertising : work).push(item);
+  }
+  const byCandidateName = (left: PluginCandidate, right: PluginCandidate) =>
+    left.name.localeCompare(right.name) || left.id.localeCompare(right.id);
+  work.sort(byCandidateName);
+  advertising.sort(byCandidateName);
+  return { work, advertising };
 }
 
 /* ------------------------------------------------------------------ */

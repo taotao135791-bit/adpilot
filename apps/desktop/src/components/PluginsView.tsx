@@ -11,6 +11,7 @@ import {
 import {
   classifyPluginActionError,
   formatLogTime,
+  groupPluginCandidates,
   groupPlugins,
   isAdvertisingMutation,
   isCatalogUnavailable,
@@ -128,6 +129,7 @@ export function PluginsView({ locale, clientId, pluginTick }: {
 
   const runtime = catalog?.runtime;
   const groups = groupPlugins(catalog?.plugins ?? []);
+  const candidateGroups = groupPluginCandidates(catalog?.candidates ?? []);
 
   return (
     <div className="plugins-view">
@@ -209,7 +211,20 @@ export function PluginsView({ locale, clientId, pluginTick }: {
             <section className="plugin-group">
               <span className="section-kicker">{copy.candidateGroup}</span>
               <p className="plugin-quiet">{copy.candidateGroupBody}</p>
-              <div className="plugin-grid">{catalog!.candidates.map((candidate) => (
+            </section>
+          )}
+          {candidateGroups.work.length > 0 && (
+            <section className="plugin-group">
+              <span className="section-kicker">{copy.candidateWorkGroup}</span>
+              <div className="plugin-grid">{candidateGroups.work.map((candidate) => (
+                <PluginCandidateCard key={candidate.id} copy={copy} locale={locale} candidate={candidate} />
+              ))}</div>
+            </section>
+          )}
+          {candidateGroups.advertising.length > 0 && (
+            <section className="plugin-group">
+              <span className="section-kicker">{copy.candidateAdvertisingGroup}</span>
+              <div className="plugin-grid">{candidateGroups.advertising.map((candidate) => (
                 <PluginCandidateCard key={candidate.id} copy={copy} locale={locale} candidate={candidate} />
               ))}</div>
             </section>
