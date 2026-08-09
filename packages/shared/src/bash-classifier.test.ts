@@ -53,7 +53,6 @@ describe("bash command classifier: write-level (explicit Full Access required)",
     for (const command of [
       "echo hello > notes.md",
       "cat a.md >> b.md",
-      "git checkout main",
       "git switch -c feature",
       "git stash pop",
       "git config user.email a@b.c",
@@ -62,14 +61,12 @@ describe("bash command classifier: write-level (explicit Full Access required)",
       "npm test",
       "sed -i '' 's/a/b/' file.txt",
       "sort -o sorted.txt unsorted.txt",
-      "rm obsolete.txt",
       "touch new-file.txt",
       "mkdir out && cp a.md out/",
       "node -e 'console.log(1)'",
       "python3 -c 'print(1)'",
       "node scripts/build.mjs",
       "tee combined.txt",
-      "find . -name '*.tmp' -delete",
       "totally-unknown-command --flag"
     ]) {
       const result = verdict(command);
@@ -142,13 +139,25 @@ describe("bash command classifier: write-level (explicit Full Access required)",
 });
 
 describe("bash command classifier: hard deny (no approval can authorize)", () => {
-  it("denies rm -rf and irreversible filesystem destruction", () => {
-    for (const command of ["rm -rf /", "rm -rf .", "rm -fr build/", "rm -r -f node_modules", "find . -exec rm -rf {} \\;", "shred secret.txt"]) {
+  it("denies removal commands and irreversible filesystem destruction", () => {
+    for (const command of [
+      "rm obsolete.txt",
+      "rm -r build/",
+      "rm -rf /",
+      "rm -rf .",
+      "rm -fr build/",
+      "rm -r -f node_modules",
+      "rmdir empty",
+      "unlink note.md",
+      "truncate -s 0 data.csv",
+      "find . -delete",
+      "find . -exec rm -rf {} \\;",
+      "shred secret.txt"
+    ]) {
       const result = verdict(command, ROOT);
       expect(result.verdict, command).toBe("deny");
       expect(result.commands.find((item) => item.verdict === "deny")?.rule, command).toBe("destructive_filesystem");
     }
-    expect(verdict("rm -r build/").verdict).toBe("write"); // recursive without force stays approval-gated
   });
 
   it("denies destructive git ref and reflog operations", () => {
@@ -169,7 +178,19 @@ describe("bash command classifier: hard deny (no approval can authorize)", () =>
       "git reflog expire --expire=now --all",
       "git reflog exp --expire=now --all",
       "git reflog delete 'main@{0}'",
-      "git reflog drop --all"
+      "git reflog drop --all",
+      "git reset --hard",
+      "git clean -fdx",
+      "git checkout main",
+      "git checkout -- .",
+      "git restore .",
+      "git stash drop",
+      "git stash clear",
+      "git switch --discard-changes main",
+      "git switch -f main",
+      "git worktree remove --force ../branch",
+      "git commit --amend --no-edit",
+      "git gc --prune=now"
     ]) {
       const result = verdict(command);
       expect(result.verdict, command).toBe("deny");

@@ -10,9 +10,9 @@
  *   utils/tools-manager.ts) was replaced with an in-process filesystem walk;
  *   see walk.ts for the fixed ignore set (.git, node_modules) that replaces
  *   rg's .gitignore handling. Binary files (NUL byte in the first 8KB) and
- *   files larger than GREP_MAX_FILE_BYTES are skipped. Note: matching runs
- *   the model-supplied regex with the JS engine, so pathological patterns are
- *   not RE2-immune the way rg is — keep patterns simple.
+ *   files larger than GREP_MAX_FILE_BYTES are skipped. Matching still uses the
+ *   JavaScript regex engine, so model-supplied patterns pass a conservative
+ *   complexity check and are only evaluated against bounded-length lines.
  * - pi-tui renderCall/renderResult, promptSnippet and the pluggable
  *   GrepOperations indirection (upstream's remote-SSH hook) were removed.
  */
@@ -29,8 +29,17 @@ const DEFAULT_LIMIT = 100;
 /** Files larger than this are skipped during a search (bounded read cost). */
 export const GREP_MAX_FILE_BYTES = 20 * 1024 * 1024;
 
+/** Bounds regex compilation cost and the amount of attacker-controlled syntax. */
+export const GREP_MAX_PATTERN_LENGTH = 512;
+
+/** Never run the synchronous JavaScript regex engine against an unbounded line. */
+export const GREP_MAX_MATCH_LINE_LENGTH = 8 * 1024;
+
 const grepParameters = Type.Object({
-  pattern: Type.String({ description: "Search pattern (regex or literal string)" }),
+  pattern: Type.String({
+    description: "Search pattern (regex or literal string)",
+    maxLength: GREP_MAX_PATTERN_LENGTH
+  }),
   path: Type.Optional(Type.String({ description: "Directory or file to search (relative to the workspace root, or absolute inside a readable root; default: workspace root)" })),
   glob: Type.Optional(Type.String({ description: "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'" })),
   ignoreCase: Type.Optional(Type.Boolean({ description: "Case-insensitive search (default: false)" })),
@@ -53,12 +62,86 @@ export interface GrepToolDetails {
   truncation?: TruncationResult;
   matchLimitReached?: number;
   linesTruncated?: boolean;
+  linesSkippedForSafety?: number;
 }
 
 interface GrepMatch {
   relativePath: string;
   lineNumber: number;
   lines: string[];
+}
+
+interface RegexGroupState {
+  containsRepetition: boolean;
+  containsAlternation: boolean;
+}
+
+/** Returns the length of a regex quantifier beginning at index, or zero. */
+function quantifierLengthAt(pattern: string, index: number): number {
+  const token = pattern[index];
+  if (token === "*" || token === "+" || token === "?") return 1;
+  if (token !== "{") return 0;
+  const match = /^\{\d+(?:,\d*)?\}/.exec(pattern.slice(index));
+  return match?.[0].length ?? 0;
+}
+
+/**
+ * Conservative star-height guard for the built-in backtracking regex engine.
+ * A repeated group that itself contains repetition can exhibit catastrophic
+ * backtracking, while a repeated alternation can be ambiguous (for example
+ * `(a|aa)+`). Reject both forms and ask the caller to simplify the search.
+ * Escapes and character classes are skipped so their punctuation stays data.
+ */
+function unsafeRegexReason(pattern: string): string | undefined {
+  const groups: RegexGroupState[] = [{ containsRepetition: false, containsAlternation: false }];
+  let inCharacterClass = false;
+
+  for (let index = 0; index < pattern.length; index += 1) {
+    const token = pattern[index]!;
+    if (token === "\\") {
+      index += 1;
+      continue;
+    }
+    if (inCharacterClass) {
+      if (token === "]") inCharacterClass = false;
+      continue;
+    }
+    if (token === "[") {
+      inCharacterClass = true;
+      continue;
+    }
+    if (token === "(") {
+      groups.push({ containsRepetition: false, containsAlternation: false });
+      // `?` immediately after `(` introduces a non-capturing group,
+      // lookaround, or named capture; it is not a repetition quantifier.
+      if (pattern[index + 1] === "?") index += 1;
+      continue;
+    }
+    if (token === "|") {
+      groups.at(-1)!.containsAlternation = true;
+      continue;
+    }
+    if (token === ")" && groups.length > 1) {
+      const closed = groups.pop()!;
+      const repeated = quantifierLengthAt(pattern, index + 1) > 0;
+      if (repeated && closed.containsRepetition) {
+        return "nested repetition is not allowed";
+      }
+      if (repeated && closed.containsAlternation) {
+        return "repeated alternation is not allowed";
+      }
+      const parent = groups.at(-1)!;
+      parent.containsRepetition ||= closed.containsRepetition || repeated;
+      parent.containsAlternation ||= closed.containsAlternation;
+      continue;
+    }
+    const quantifierLength = quantifierLengthAt(pattern, index);
+    if (quantifierLength > 0) {
+      groups.at(-1)!.containsRepetition = true;
+      index += quantifierLength - 1;
+    }
+  }
+  return undefined;
 }
 
 export function createGrepTool(guard: ReadPathGuard): AgentTool {
@@ -71,6 +154,15 @@ export function createGrepTool(guard: ReadPathGuard): AgentTool {
     execute: async (_toolCallId, raw, signal) => {
       const { pattern, path: searchDir, glob, ignoreCase, literal, context, limit } = grepInput.parse(raw);
       if (signal?.aborted) throw new Error("Operation aborted");
+      if (pattern.length > GREP_MAX_PATTERN_LENGTH) {
+        throw new Error(`Search pattern exceeds the ${GREP_MAX_PATTERN_LENGTH} character safety limit`);
+      }
+      if (!literal) {
+        const unsafeReason = unsafeRegexReason(pattern);
+        if (unsafeReason) {
+          throw new Error(`Unsafe regular expression: ${unsafeReason}; use a simpler pattern or literal=true`);
+        }
+      }
       const searchPath = await guard.resolve(searchDir ?? ".");
       const contextValue = context && context > 0 ? context : 0;
       const effectiveLimit = Math.max(1, limit ?? DEFAULT_LIMIT);
@@ -115,6 +207,7 @@ export function createGrepTool(guard: ReadPathGuard): AgentTool {
 
       const matches: GrepMatch[] = [];
       let matchLimitReached = false;
+      let linesSkippedForSafety = 0;
       for (const file of candidateFiles) {
         if (signal?.aborted) throw new Error("Operation aborted");
         if (matches.length >= effectiveLimit) {
@@ -127,7 +220,12 @@ export function createGrepTool(guard: ReadPathGuard): AgentTool {
         if (!buffer || buffer.subarray(0, 8192).includes(0)) continue;
         const lines = buffer.toString("utf-8").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
         for (let index = 0; index < lines.length; index += 1) {
-          if (!regex.test(lines[index]!)) continue;
+          const line = lines[index]!;
+          if (line.length > GREP_MAX_MATCH_LINE_LENGTH) {
+            linesSkippedForSafety += 1;
+            continue;
+          }
+          if (!regex.test(line)) continue;
           matches.push({ relativePath: file.relativePath, lineNumber: index + 1, lines });
           if (matches.length >= effectiveLimit) {
             matchLimitReached = true;
@@ -137,7 +235,13 @@ export function createGrepTool(guard: ReadPathGuard): AgentTool {
       }
 
       if (matches.length === 0) {
-        return { content: [{ type: "text", text: "No matches found" }], details: undefined };
+        const safetyNotice = linesSkippedForSafety > 0
+          ? `\n\n[Skipped ${linesSkippedForSafety} line(s) longer than ${GREP_MAX_MATCH_LINE_LENGTH} characters for regex safety]`
+          : "";
+        return {
+          content: [{ type: "text", text: `No matches found${safetyNotice}` }],
+          details: linesSkippedForSafety > 0 ? { linesSkippedForSafety } : undefined
+        };
       }
 
       let linesTruncated = false;
@@ -173,6 +277,10 @@ export function createGrepTool(guard: ReadPathGuard): AgentTool {
       if (linesTruncated) {
         notices.push(`Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`);
         details.linesTruncated = true;
+      }
+      if (linesSkippedForSafety > 0) {
+        notices.push(`Skipped ${linesSkippedForSafety} line(s) longer than ${GREP_MAX_MATCH_LINE_LENGTH} characters for regex safety`);
+        details.linesSkippedForSafety = linesSkippedForSafety;
       }
       if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
       return { content: [{ type: "text", text: output }], details: Object.keys(details).length > 0 ? details : undefined };

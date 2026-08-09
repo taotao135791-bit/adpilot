@@ -8,6 +8,7 @@ import { ExperimentStore } from "@adpilot/experiments";
 import { WorkspaceStore } from "@adpilot/workspace";
 import { AdPilotTools } from "../index.js";
 import { GENERAL_READ_TOOL_NAMES, createGeneralReadTools, createReadPathGuard, workspaceReadPolicy } from "./index.js";
+import { GREP_MAX_MATCH_LINE_LENGTH, GREP_MAX_PATTERN_LENGTH } from "./grep.js";
 
 const SECRET = "0123456789abcdef0123456789abcdef";
 
@@ -139,6 +140,38 @@ describe("grep tool", () => {
     await expect(execute(grep, { pattern: "([" })).rejects.toThrow("Invalid regular expression");
     const literalSpecial = await execute(grep, { pattern: "([", literal: true });
     expect(textOf(literalSpecial)).toBe("No matches found");
+  });
+
+  it("rejects regex structures with nested or ambiguous repetition but preserves literal matching", async () => {
+    const { byName } = await makeTools();
+    const grep = byName.get("grep")!;
+    for (const pattern of ["(a+)+$", "(?:ab*)+$", "((ab){1,3})+$"]) {
+      await expect(execute(grep, { pattern })).rejects.toThrow(/Unsafe regular expression: nested repetition/);
+    }
+    await expect(execute(grep, { pattern: "(?:a|aa)+$" })).rejects.toThrow(/Unsafe regular expression: repeated alternation/);
+    const literal = await execute(grep, { pattern: "(a+)+$", literal: true, ignoreCase: true });
+    expect(textOf(literal)).toBe("No matches found");
+  });
+
+  it("rejects overlong patterns before searching files", async () => {
+    const { byName } = await makeTools();
+    const grep = byName.get("grep")!;
+    await expect(execute(grep, { pattern: "a".repeat(GREP_MAX_PATTERN_LENGTH + 1) }))
+      .rejects.toThrow(`Search pattern exceeds the ${GREP_MAX_PATTERN_LENGTH} character safety limit`);
+  });
+
+  it("never evaluates regexes against overlong lines and continues with bounded lines", async () => {
+    const { root, byName } = await makeTools();
+    const grep = byName.get("grep")!;
+    await writeFile(
+      join(root, "reports", "long-line.txt"),
+      `${"a".repeat(GREP_MAX_MATCH_LINE_LENGTH + 1)} NEEDLE\nshort NEEDLE\n`
+    );
+    const result = await execute(grep, { pattern: "NEEDLE", path: "reports/long-line.txt" });
+    expect(textOf(result)).not.toContain("long-line.txt:1:");
+    expect(textOf(result)).toContain("long-line.txt:2: short NEEDLE");
+    expect(textOf(result)).toContain("Skipped 1 line(s)");
+    expect(result.details).toMatchObject({ linesSkippedForSafety: 1 });
   });
 
   it("enforces the match limit with an actionable notice", async () => {

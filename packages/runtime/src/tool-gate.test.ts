@@ -230,11 +230,14 @@ describe("ToolPermissionGate: main-agent write/edit/bash", () => {
     // refusal; an executed approval cannot make the model reach the tool body.
     const executed = await createApproval(approvals, context.clientId, context.taskId);
     await patchApproval(workspace, approvals, executed.id, { status: "executed" });
-    expect(await gate.check("bash", { command: "curl https://ads.google.com" }, context)).toContain("hard-denied");
-    expect(await gate.check("bash", { command: "curl https://ads.google.com", approvalId: executed.id }, context)).toContain("hard-denied");
+    for (const command of ["curl https://ads.google.com", "rm report.md", "git reset --hard"]) {
+      expect(await gate.check("bash", { command }, context), command).toContain("hard-denied");
+      expect(await gate.check("bash", { command, approvalId: executed.id }, context), command).toContain("hard-denied");
+    }
     const events = await audit.list("client-a");
-    expect(events[0]).toMatchObject({ status: "denied", details: { tool: "bash", classification: "destructive" } });
-    expect(events[1]).toMatchObject({ status: "denied", details: { tool: "bash", classification: "destructive" } });
+    expect(events).toHaveLength(6);
+    expect(events.every((event) => event.status === "denied")).toBe(true);
+    expect(events.every((event) => event.details.tool === "bash" && event.details.classification === "destructive")).toBe(true);
   });
 });
 

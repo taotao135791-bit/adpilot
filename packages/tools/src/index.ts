@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { z } from "zod";
@@ -56,7 +55,7 @@ import {
 import { createGeneralAgentTools, createGeneralReadTools, workspaceReadPolicy, type BashToolAuditEntry } from "./general/index.js";
 
 export { createGeneralReadTools, createGeneralAgentTools, workspaceReadPolicy, workspaceWritePolicy, GENERAL_READ_TOOL_NAMES, GENERAL_AGENT_TOOL_NAMES, PATH_ESCAPE_MESSAGE, PROTECTED_PATH_MESSAGE, BASH_DENY_MESSAGE, SANDBOX_UNAVAILABLE_MESSAGE, createBashTool, executeSandboxedBash, createProtectedPathMatcher, buildSeatbeltProfile, createPrivateSandboxDirectory, removePrivateSandboxDirectory, resolveSandboxExec } from "./general/index.js";
-export type { GeneralReadToolsOptions, GeneralAgentToolsOptions, ReadAccessPolicy, ReadPathGuard, ProtectedPathMatcher, BashToolAuditEntry, BashToolOptions, SandboxedBashResult, SandboxAvailability, SeatbeltProfileOptions } from "./general/index.js";
+export type { GeneralReadToolsOptions, GeneralAgentToolsOptions, ReadAccessPolicy, ReadPathGuard, ProtectedPathMatcher, BashAuditClassification, BashToolAuditEntry, BashToolOptions, SandboxedBashResult, SandboxAvailability, SeatbeltProfileOptions } from "./general/index.js";
 
 const ExecutionValue = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
 
@@ -225,8 +224,8 @@ export class AdPilotTools {
             details: {
               // Commands may contain filenames, customer names or secrets.
               // Keep correlation without persisting model/user text.
-              commandFingerprint: createHash("sha256").update(entry.commandPreview).digest("hex"),
-              commandLength: entry.commandPreview.length,
+              commandFingerprint: entry.commandFingerprint,
+              commandLength: entry.commandLength,
               verdict: entry.classification.verdict,
               parseable: entry.classification.parseable,
               reason: entry.classification.reason,
@@ -235,7 +234,7 @@ export class AdPilotTools {
                 verdict: item.verdict,
                 rule: item.rule
               })),
-              sandboxPath: entry.sandboxPath,
+              sandboxed: entry.sandboxed,
               executed: entry.executed
             }
           });

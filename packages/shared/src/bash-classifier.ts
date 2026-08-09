@@ -206,6 +206,9 @@ const GIT_READ_SUBCOMMANDS = new Set([
 /** Git subcommands that talk to a remote: exfiltration and inbound-code channels. */
 const GIT_DENY_SUBCOMMANDS = new Set(["push", "fetch", "pull", "clone", "ls-remote", "archive", "bundle", "submodule"]);
 
+/** Git commands whose ordinary execution can discard worktree or recovery state. */
+const GIT_DESTRUCTIVE_SUBCOMMANDS = new Set(["reset", "clean", "checkout", "restore", "prune", "gc"]);
+
 const PACKAGE_MANAGER_DENY_SUBCOMMANDS = new Set([
   "publish", "login", "logout", "adduser", "ping", "view", "info", "show", "search", "audit",
   "outdated", "owner", "dist-tag", "token", "whoami", "access", "team", "org", "star", "unstar"
@@ -266,6 +269,7 @@ const DENY_PROGRAMS: Readonly<Record<string, DenyRule>> = {
   security: CREDENTIAL_ACCESS, printenv: CREDENTIAL_ACCESS, env: CREDENTIAL_ACCESS,
   crontab: PERSISTENCE, at: PERSISTENCE, batch: PERSISTENCE,
   mkfs: DESTRUCTIVE_FS, diskutil: DESTRUCTIVE_FS, shred: DESTRUCTIVE_FS, srm: DESTRUCTIVE_FS,
+  rm: DESTRUCTIVE_FS, rmdir: DESTRUCTIVE_FS, unlink: DESTRUCTIVE_FS, truncate: DESTRUCTIVE_FS,
   fdisk: DESTRUCTIVE_FS, hdiutil: DESTRUCTIVE_FS
 };
 
@@ -673,21 +677,12 @@ function classifySegment(segment: ParsedSegment, context: SegmentContext): Simpl
       return finish(verdict("write", "find_exec", "find with -exec runs an arbitrary delegated command"), program);
     }
     if (args.some((arg) => arg.value === "-delete")) {
-      return finish(verdict("write", "find_delete", "find -delete removes files"), program);
+      return finish(verdict("deny", DESTRUCTIVE_FS.rule, "find -delete irreversibly removes matching files"), program);
     }
     if (args.some((arg) => arg.value === "-fprint" || arg.value === "-fprint0" || arg.value === "-fprintf" || arg.value === "-fls")) {
       return finish(verdict("write", "find_output", "find file-output actions write results to a file"), program);
     }
     return finish(verdict("read", "read_whitelist", "find without execution, deletion, or file-output actions only lists paths"), program);
-  }
-
-  // rm: recursive+force is a hard deny; plain rm stays Full-Access-only.
-  if (program === "rm") {
-    const flags = args.filter((arg) => arg.value.startsWith("-")).map((arg) => arg.value).join("");
-    if (/r/i.test(flags) && /f/i.test(flags)) {
-      return finish(verdict("deny", DESTRUCTIVE_FS.rule, "rm with recursive force flags is irreversible filesystem destruction"), program);
-    }
-    return finish(verdict("write", "file_mutation", "rm removes files and therefore requires explicit Full Access"), program);
   }
 
   // dd writing to a device or file outside confinement.
@@ -710,14 +705,32 @@ function classifySegment(segment: ParsedSegment, context: SegmentContext): Simpl
     if (GIT_DENY_SUBCOMMANDS.has(name)) {
       return finish(verdict("deny", NETWORK_EGRESS.rule, `git ${name} talks to remotes: ${NETWORK_EGRESS.reason}`), program);
     }
+    if (GIT_DESTRUCTIVE_SUBCOMMANDS.has(name)) {
+      return finish(verdict("deny", DESTRUCTIVE_REPOSITORY.rule, `git ${name} can discard worktree, index, or repository recovery state`), program);
+    }
     if (name === "branch") return finish(classifyGitBranch(gitArgs), program);
     if (name === "tag") return finish(classifyGitTag(gitArgs), program);
     if (name === "reflog") return finish(classifyGitReflog(gitArgs), program);
     if (name === "stash") {
       const second = gitArgs.find((arg) => !arg.value.startsWith("-"))?.value;
+      if (second === "drop" || second === "clear") {
+        return finish(verdict("deny", DESTRUCTIVE_REPOSITORY.rule, `git stash ${second} discards repository recovery state`), program);
+      }
       return finish(second === "list" || second === "show"
         ? verdict("read", "read_whitelist", "git stash list/show only observes")
         : verdict("write", "git_mutation", "git stash mutates repository state"), program);
+    }
+    if (name === "switch" && (hasAnyOption(gitArgs, ["--discard-changes", "--force"]) || hasShortOption(gitArgs, ["f"]))) {
+      return finish(verdict("deny", DESTRUCTIVE_REPOSITORY.rule, "forced git switch can discard worktree changes"), program);
+    }
+    if (name === "worktree") {
+      const second = gitArgs.find((arg) => !arg.value.startsWith("-"))?.value;
+      if (second === "remove" || second === "prune") {
+        return finish(verdict("deny", DESTRUCTIVE_REPOSITORY.rule, `git worktree ${second} can discard a worktree or its recovery metadata`), program);
+      }
+    }
+    if (name === "commit" && hasAnyOption(gitArgs, ["--amend"])) {
+      return finish(verdict("deny", DESTRUCTIVE_REPOSITORY.rule, "git commit --amend rewrites the current repository ref"), program);
     }
     if (name === "remote") {
       const second = gitArgs.find((arg) => !arg.value.startsWith("-"))?.value;

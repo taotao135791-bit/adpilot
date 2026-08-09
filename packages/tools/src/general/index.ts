@@ -28,7 +28,7 @@ export type { ReadAccessPolicy, ReadPathGuard } from "./path-guard.js";
 export { PROTECTED_PATH_MESSAGE, createProtectedPathMatcher } from "./protected-paths.js";
 export type { ProtectedPathMatcher } from "./protected-paths.js";
 export { BASH_DENY_MESSAGE, createBashTool, executeSandboxedBash } from "./bash.js";
-export type { BashToolAuditEntry, BashToolOptions, SandboxedBashResult } from "./bash.js";
+export type { BashAuditClassification, BashToolAuditEntry, BashToolOptions, SandboxedBashResult } from "./bash.js";
 export {
   buildSeatbeltProfile,
   createPrivateSandboxDirectory,

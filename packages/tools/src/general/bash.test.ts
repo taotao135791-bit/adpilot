@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -56,7 +57,7 @@ function finish(child: ReturnType<typeof makeChild>, opts: { stdout?: string; st
   child.emit("close", opts.code ?? 0);
 }
 
-async function makeTool(overrides: { sandboxExecPath?: string | null; spawnImpl?: typeof spawn } = {}) {
+async function makeTool(overrides: { sandboxExecPath?: string | null; spawnImpl?: typeof spawn; maxOutputBytes?: number } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "adpilot-bash-tool-")));
   const audit: BashToolAuditEntry[] = [];
   const tool = createBashTool({
@@ -100,6 +101,23 @@ describe("bash tool: deterministic deny (no approval can authorize)", () => {
 });
 
 describe("bash tool: fail-closed sandbox availability", () => {
+  it("audits the complete command by fingerprint and length without exposing arguments", async () => {
+    const canary = `PRIVATE_CUSTOMER_${"x".repeat(240)}`;
+    const command = `printf '%s' '${canary}' > report.txt`;
+    const { audit, run } = await makeTool({ sandboxExecPath: "/nonexistent/sandbox-exec" });
+
+    await expect(run({ command })).rejects.toThrow(SANDBOX_UNAVAILABLE_MESSAGE);
+
+    expect(audit[0]).toMatchObject({
+      commandLength: command.length,
+      commandFingerprint: createHash("sha256").update(command).digest("hex"),
+      sandboxed: false,
+      executed: false
+    });
+    expect(JSON.stringify(audit[0])).not.toContain(canary);
+    expect(audit[0]?.classification.commands[0]).not.toHaveProperty("command");
+  });
+
   it("refuses to execute anything when sandbox-exec is missing (never silently degrades)", async () => {
     const { impl, calls } = fakeSpawn((_call, child) => finish(child, { stdout: "unsandboxed" }));
     const { audit, run } = await makeTool({ spawnImpl: impl, sandboxExecPath: "/nonexistent/sandbox-exec" });
@@ -107,7 +125,7 @@ describe("bash tool: fail-closed sandbox availability", () => {
     await expect(run({ command: "echo hi > notes.md" })).rejects.toThrow(SANDBOX_UNAVAILABLE_MESSAGE);
     expect(calls).toHaveLength(0);
     expect(audit.map((entry) => entry.executed)).toEqual([false, false]);
-    expect(audit[0]?.sandboxPath).toBeNull();
+    expect(audit[0]?.sandboxed).toBe(false);
   });
 
   it("still reports hard denials (not the sandbox error) when the sandbox is missing", async () => {
@@ -146,7 +164,7 @@ describe.runIf(process.platform === "darwin")("bash tool: sandbox-exec execution
       expect(result.content.map((item) => item.text ?? "").join("\n")).toBe("daily.md\n");
       expect(result.details).toMatchObject({ exitCode: 0, classification: { verdict: "read", parseable: true } });
       expect(audit).toHaveLength(1);
-      expect(audit[0]).toMatchObject({ executed: true, sandboxPath: "/usr/bin/sandbox-exec" });
+      expect(audit[0]).toMatchObject({ executed: true, sandboxed: true });
       expect(existsSync(isolatedHome)).toBe(false);
     } finally {
       delete process.env.OPENAI_API_KEY;
@@ -179,6 +197,35 @@ describe.runIf(process.platform === "darwin")("bash tool: sandbox-exec execution
     expect(text).toContain("Showing lines");
     expect(text).toContain("line 3999");
     expect(text).not.toContain("line 0\n");
+  });
+
+  it("kills the process group and fails when combined stdout and stderr exceed the configured hard limit", async () => {
+    const killSignals: Array<string | undefined> = [];
+    const { impl } = fakeSpawn((_call, child) => {
+      child.kill = (signal) => {
+        killSignals.push(signal);
+        queueMicrotask(() => child.emit("close", null));
+        return true;
+      };
+      child.stdout.emit("data", Buffer.from("123456"));
+      child.stderr.emit("data", Buffer.from("abcdef"));
+      // Further output after the first overflow must neither grow the retained
+      // buffer nor trigger another process-group termination.
+      child.stdout.emit("data", Buffer.alloc(1024, 0x78));
+    });
+    const { run } = await makeTool({ spawnImpl: impl, maxOutputBytes: 10 });
+    await expect(run({ command: "printf output" })).rejects.toThrow(
+      "Command output exceeded the 10B hard limit and was terminated"
+    );
+    expect(killSignals).toEqual(["SIGKILL"]);
+  });
+
+  it("accepts output exactly at the configured hard limit", async () => {
+    const { impl } = fakeSpawn((_call, child) => finish(child, { stdout: "123456", stderr: "abcd" }));
+    const { run } = await makeTool({ spawnImpl: impl, maxOutputBytes: 10 });
+    const result = await run({ command: "printf output" });
+    expect(result.content.map((item) => item.text ?? "").join("\n")).toBe("123456abcd");
+    expect(result.details.truncated).toBe(false);
   });
 
   it("validates timeout bounds and kills the process group on expiry", async () => {
