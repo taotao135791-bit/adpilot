@@ -14,6 +14,7 @@ import {
   getBrowserSession,
   getScreenshotAudits,
   resumeBrowserSession,
+  selectDesktopProjectRoot,
   startBrowserSession,
   type BrowserSession
 } from "./computerUseClient.js";
@@ -137,6 +138,24 @@ describe("desktop Computer Use API client", () => {
       "/api/desktop-native/permissions?clientId=client%2F%E4%B8%8A%E6%B5%B7",
       `/api/desktop-native/live-frame?clientId=client%2F%E4%B8%8A%E6%B5%B7&productSessionId=${productSessionId}&browserSessionId=${"b".repeat(32)}`
     ]);
+  });
+
+  it("requests the narrow native project-root chooser and preserves cancellation", async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ cancelled: false, path: "/tmp/example-project" }))
+      .mockResolvedValueOnce(jsonResponse({ cancelled: true }));
+    vi.stubGlobal("fetch", request);
+
+    await expect(selectDesktopProjectRoot()).resolves.toEqual({
+      cancelled: false,
+      path: "/tmp/example-project"
+    });
+    await expect(selectDesktopProjectRoot()).resolves.toEqual({ cancelled: true });
+    expect(request.mock.calls.map((call) => call[0])).toEqual([
+      "/api/desktop-native/project-root/select",
+      "/api/desktop-native/project-root/select"
+    ]);
+    expect(request.mock.calls.every((call) => (call[1] as RequestInit).method === "POST")).toBe(true);
   });
 });
 

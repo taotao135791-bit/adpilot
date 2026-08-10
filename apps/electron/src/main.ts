@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, session, shell } from "electron";
+import { app, BrowserWindow, dialog, session, shell, type OpenDialogOptions } from "electron";
 import { createAdPilotSystem } from "@adpilot/application";
 import { createServer } from "@adpilot/server";
 import { ElectronDesktopNativeBridge } from "./desktop-native-bridge.js";
@@ -44,6 +44,15 @@ async function openDesktop(): Promise<void> {
         processName: app.getName(),
         bundleId: "com.adpilot.desktop",
         openExternal: (url) => shell.openExternal(url),
+        selectProjectRoot: async () => {
+          const options: OpenDialogOptions = {
+            properties: ["openDirectory"]
+          };
+          const result = mainWindow
+            ? await dialog.showOpenDialog(mainWindow, options)
+            : await dialog.showOpenDialog(options);
+          return result.canceled ? undefined : result.filePaths[0];
+        },
         // WorkspaceCredentialStore is not yet backed by Electron safeStorage;
         // never report Keychain as granted merely because the API exists.
         keychainInUse: () => false,

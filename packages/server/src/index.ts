@@ -65,6 +65,7 @@ import {
   DesktopPermissionCenter,
   DesktopPermissionId,
   DesktopPermissionTestResult,
+  DesktopProjectRootSelection,
   type DesktopNativeBridge,
   type DesktopNativeContext
 } from "./desktop-native.js";
@@ -286,6 +287,18 @@ export async function createServer(system: AdPilotSystem, options: {
     const context = await desktopNativeContext(system, body.clientId, body.productSessionId, body.browserSessionId);
     const result = DesktopPermissionTestResult.parse(await native.testPermission(body.permission, context));
     reply.header("cache-control", "no-store");
+    return result;
+  });
+  app.post("/api/desktop-native/project-root/select", async (request, reply) => {
+    // This capability accepts no caller-supplied path or file operation.
+    z.undefined().parse(request.body);
+    const native = requireDesktopNative(options.desktopNative);
+    const result = DesktopProjectRootSelection.parse(await native.selectProjectRoot());
+    reply.headers({
+      "cache-control": "no-store, max-age=0",
+      pragma: "no-cache",
+      "x-content-type-options": "nosniff"
+    });
     return result;
   });
   app.get("/api/desktop-native/live-frame", async (request, reply) => {

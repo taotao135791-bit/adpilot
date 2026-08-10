@@ -13,8 +13,13 @@ import {
   sortProjectsRecent,
   type KernelProject
 } from "../workspace.js";
+import { selectDesktopProjectRoot } from "../computerUseClient.js";
+import {
+  offersNativeProjectRootPicker,
+  projectRootsAfterSelection
+} from "../projectRootSelection.js";
 import { Badge, Button } from "../ui.js";
-import { IconArchive, IconPlus } from "../icons.js";
+import { IconArchive, IconFolder, IconPlus } from "../icons.js";
 
 const PROJECT_TYPES = ["general", "advertising", "development", "research", "creative"] as const;
 
@@ -27,6 +32,7 @@ const PROJECT_TYPES = ["general", "advertising", "development", "research", "cre
 export function ProjectsView({
   locale,
   clientId,
+  nativeDesktop,
   dialogNonce,
   initialCodeMission,
   onOpenProject,
@@ -35,6 +41,8 @@ export function ProjectsView({
 }: {
   locale: AppLocale;
   clientId: string;
+  /** True only for the instance-authenticated Electron renderer. */
+  nativeDesktop: boolean;
   /** Bumped by other views (Home) to open the create dialog here. */
   dialogNonce: number;
   /** When present, prefill a development project and require its code root. */
@@ -49,21 +57,25 @@ export function ProjectsView({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [draft, setDraft] = useState({ name: "", type: "general", roots: "" });
   const [saving, setSaving] = useState(false);
+  const [selectingRoot, setSelectingRoot] = useState(false);
+  const [rootPickerError, setRootPickerError] = useState("");
   const [archiveTarget, setArchiveTarget] = useState<KernelProject | null>(null);
   const [archiving, setArchiving] = useState(false);
   const createDialogRef = useRef<HTMLDivElement>(null);
   const archiveDialogRef = useRef<HTMLDivElement>(null);
   const dialogOpenerRef = useRef<HTMLElement | undefined>(undefined);
+  const rootPickerInFlightRef = useRef(false);
   const dialogLockedRef = useRef(false);
-  dialogLockedRef.current = saving || archiving;
+  dialogLockedRef.current = saving || archiving || selectingRoot;
 
   function openCreateDialog() {
     dialogOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    setRootPickerError("");
     setDialogOpen(true);
   }
 
   function closeCreateDialog() {
-    if (saving) return;
+    if (saving || selectingRoot) return;
     setDialogOpen(false);
     onCreateCancelled?.();
   }
@@ -97,6 +109,7 @@ export function ProjectsView({
         roots: ""
       });
     }
+    setRootPickerError("");
     setDialogOpen(true);
   }, [dialogNonce, initialCodeMission]);
 
@@ -161,6 +174,27 @@ export function ProjectsView({
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function chooseProjectRoot() {
+    if (!offersNativeProjectRootPicker(nativeDesktop, draft.type) || rootPickerInFlightRef.current) return;
+    rootPickerInFlightRef.current = true;
+    setSelectingRoot(true);
+    setRootPickerError("");
+    try {
+      const selection = await selectDesktopProjectRoot();
+      if (!selection.cancelled) {
+        setDraft((current) => ({
+          ...current,
+          roots: projectRootsAfterSelection(current.roots, selection)
+        }));
+      }
+    } catch {
+      setRootPickerError(copy.projectRootPickerFailed);
+    } finally {
+      rootPickerInFlightRef.current = false;
+      setSelectingRoot(false);
     }
   }
 
@@ -259,17 +293,35 @@ export function ProjectsView({
               <span>{copy.projectRootsLabel}</span>
               <textarea rows={3} value={draft.roots} placeholder="/Users/you/project" onChange={(event) => setDraft({ ...draft, roots: event.target.value })} />
             </label>
+            {offersNativeProjectRootPicker(nativeDesktop, draft.type) && (
+              <Button
+                size="sm"
+                variant="outline"
+                icon={<IconFolder size={13} />}
+                disabled={selectingRoot || saving}
+                onClick={() => void chooseProjectRoot()}
+              >
+                {selectingRoot ? copy.projectChoosingRoot : copy.projectChooseRoot}
+              </Button>
+            )}
+            {rootPickerError && (
+              <div className="error-banner" role="alert">
+                <span>{rootPickerError}</span>
+              </div>
+            )}
             <p className="workbench-quiet">
               {draft.type === "development"
-                ? (locale === "zh-CN" ? "必填；代码、终端和 Git 只允许访问这些目录。" : "Required; code, terminal, and Git stay confined to these directories.")
+                ? (nativeDesktop
+                    ? copy.projectRootsNativeHint
+                    : (locale === "zh-CN" ? "必填；代码、终端和 Git 只允许访问这些目录。" : "Required; code, terminal, and Git stay confined to these directories."))
                 : copy.projectRootsHint}
             </p>
             <div className="plugin-confirm-actions">
-              <Button size="sm" variant="subtle" onClick={closeCreateDialog}>{copy.cancel}</Button>
+              <Button size="sm" variant="subtle" disabled={selectingRoot} onClick={closeCreateDialog}>{copy.cancel}</Button>
               <Button
                 size="sm"
                 variant="primary"
-                disabled={saving || !draft.name.trim() || (draft.type === "development" && parseRootPathsInput(draft.roots).length === 0)}
+                disabled={saving || selectingRoot || !draft.name.trim() || (draft.type === "development" && parseRootPathsInput(draft.roots).length === 0)}
                 onClick={() => void createProject()}
               >
                 {copy.projectCreate}

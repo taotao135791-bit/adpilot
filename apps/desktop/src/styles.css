@@ -2050,6 +2050,24 @@ select {
   border-radius: var(--r-lg);
 }
 .skill-card > p { font-size: var(--text-xs); color: var(--ink-2); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.skills-toolbar { display: flex; gap: 8px; }
+.skills-toolbar input,
+.skills-toolbar select {
+  height: 34px;
+  padding: 0 10px;
+  font-size: var(--text-sm);
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.skills-toolbar input { flex: 1; min-width: 180px; }
+.skills-toolbar select { flex: none; max-width: 180px; }
+.skills-toolbar input:focus-visible,
+.skills-toolbar select:focus-visible { outline: 2px solid var(--ring); outline-offset: 0; border-color: var(--accent-line); }
+.skills-grid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.skills-grid .project-card-head { align-items: flex-start; flex-direction: column; }
+.skills-grid .project-card-head strong { width: 100%; white-space: normal; overflow-wrap: anywhere; }
 
 /* Dialog fields: the workspace-field pattern also covers select/textarea. */
 .workspace-field select,
@@ -3097,8 +3115,8 @@ body.sidebar-dragging { cursor: col-resize; user-select: none; }
 .primary-sessions-search {
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
+  width: 28px;
+  height: 28px;
   border-radius: var(--r-sm);
   color: var(--ink-3);
   transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
@@ -3193,7 +3211,7 @@ body.sidebar-dragging { cursor: col-resize; user-select: none; }
   border-radius: 50%;
   background: var(--ink-3);
 }
-.model-picker-dot[data-vision] { background: var(--success); }
+.model-picker-dot[data-configured] { background: var(--success); }
 .model-picker-menu {
   position: absolute;
   z-index: var(--z-suggestions);

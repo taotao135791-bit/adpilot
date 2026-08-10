@@ -7,6 +7,7 @@ import type { BrowserSession } from "@adpilot/computer-use";
 import {
   DesktopPermissionId,
   type DesktopNativeBridge,
+  type DesktopProjectRootSelection,
   type DesktopPermissionStatus
 } from "./desktop-native.js";
 import { createServer } from "./index.js";
@@ -114,6 +115,56 @@ describe("desktop native REST boundary", () => {
     expect(stopped.json()).toEqual({ stopped: true, status: "stopped" });
     expect(stopConversation).toHaveBeenNthCalledWith(1, "client-a", "conversation-42", firstRunId);
     expect(stopConversation).toHaveBeenNthCalledWith(2, "client-a", "conversation-42", secondRunId);
+    await server.close();
+  });
+
+  it("opens only the instance-bound project-directory chooser and leaves no audit payload", async () => {
+    const { server, system, bridge } = await boot();
+    const selectProjectRoot = vi.mocked(bridge.selectProjectRoot);
+    const beforeAudit = await system.audit.list("personal");
+
+    const missing = await server.inject({
+      method: "POST",
+      url: "/api/desktop-native/project-root/select"
+    });
+    expect(missing.statusCode).toBe(403);
+    const crossSite = await server.inject({
+      method: "POST",
+      url: "/api/desktop-native/project-root/select",
+      headers: { cookie, "sec-fetch-site": "cross-site" }
+    });
+    expect(crossSite.statusCode).toBe(403);
+    expect(selectProjectRoot).not.toHaveBeenCalled();
+
+    const callerSuppliedPath = await server.inject({
+      method: "POST",
+      url: "/api/desktop-native/project-root/select",
+      headers: { cookie, "sec-fetch-site": "same-origin" },
+      payload: { path: "/tmp/caller-controlled" }
+    });
+    expect(callerSuppliedPath.statusCode).toBe(400);
+    expect(selectProjectRoot).not.toHaveBeenCalled();
+
+    selectProjectRoot.mockResolvedValueOnce({ cancelled: false, path: "/tmp/example-project" });
+    const selected = await server.inject({
+      method: "POST",
+      url: "/api/desktop-native/project-root/select",
+      headers: { cookie, "sec-fetch-site": "same-origin" }
+    });
+    expect(selected.statusCode).toBe(200);
+    expect(selected.headers["cache-control"]).toContain("no-store");
+    expect(selected.json()).toEqual({ cancelled: false, path: "/tmp/example-project" });
+
+    selectProjectRoot.mockResolvedValueOnce({ cancelled: true });
+    const cancelled = await server.inject({
+      method: "POST",
+      url: "/api/desktop-native/project-root/select",
+      headers: { cookie, "sec-fetch-site": "same-origin" }
+    });
+    expect(cancelled.statusCode).toBe(200);
+    expect(cancelled.json()).toEqual({ cancelled: true });
+    expect(selectProjectRoot).toHaveBeenCalledTimes(2);
+    expect(await system.audit.list("personal")).toEqual(beforeAudit);
     await server.close();
   });
 
@@ -264,6 +315,7 @@ function fakeBridge() {
       checkedAt: "2026-07-28T00:00:00.000Z",
       message: "passed"
     })),
+    selectProjectRoot: vi.fn(async (): Promise<DesktopProjectRootSelection> => ({ cancelled: true })),
     captureLiveFrame: vi.fn(async (_context: Parameters<DesktopNativeBridge["captureLiveFrame"]>[0]) => liveFrame())
   } satisfies DesktopNativeBridge;
 }

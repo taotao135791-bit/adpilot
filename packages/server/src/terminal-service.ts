@@ -4,7 +4,7 @@
  * node-pty is deliberately not a dependency: sessions run `/bin/zsh -i` over
  * plain stdio pipes (no TTY), which is enough for streaming output, stdin
  * writes and signal-driven interruption. Project-bound sessions are launched
- * under macOS Seatbelt, with a readonly `chpwd` guard that immediately returns
+ * under macOS Seatbelt, with a startup-installed `chpwd` guard that returns
  * an interactive shell to its canonical project root if a command tries to
  * leave it. Every child is spawned `detached`, so interrupt/kill address the
  * whole process group (`kill(-pid, …)`) instead of the shell alone.
@@ -208,9 +208,9 @@ export class TerminalService {
       exitCode: null,
       exitWaiters: []
     };
-    // zsh invokes chpwd after every directory change. Marking this function
-    // readonly prevents later input from replacing the guard in the parent
-    // shell. Child processes remain inside the same Seatbelt profile.
+    // zsh invokes chpwd after every directory change. Seatbelt is the
+    // immutable filesystem boundary; this shell guard keeps the interactive
+    // working directory pinned to the project root without startup noise.
     session.stdin.write(cwdGuard(root));
     const stdoutDecoder = new StringDecoder("utf8");
     const stderrDecoder = new StringDecoder("utf8");
@@ -592,7 +592,6 @@ function cwdGuard(root: string): string {
     '    *) print -u2 "AdPilot: blocked terminal cwd escape"; builtin cd -q -- "$ADPILOT_PROJECT_ROOT" ;;',
     "  esac",
     "}",
-    "functions -r chpwd",
     ""
   ].join("\n");
 }

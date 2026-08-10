@@ -41,7 +41,7 @@ const STORAGE_KEY = "adpilot-primary-sidebar-width";
  * app toggles. The parent hides the whole column below the resize
  * threshold instead of shrinking it into an icon strip.
  */
-export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients, clientId, projects, sessions, selectedSessionId, search, pinnedSessions, archivedSessions, archivedOpen, renamingId, renameDraft, pluginsLabel, settingsLabel, themeLabel, onNavigate, onCreateProject, onNewSession, onSelectClient, onSelectSession, onDeleteSession, onTogglePin, onStartRename, onRenameDraft, onCommitRename, onCancelRename, onArchive, onRestore, onToggleArchivedOpen, onSearchChange, onShowPlugins, onOpenSettings, onToggleTheme, onHideSidebar }: {
+export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients, clientId, projects, sessions, selectedSessionId, search, pinnedSessions, archivedSessions, archivedOpen, renamingId, renameDraft, pluginsLabel, settingsLabel, themeLabel, onNavigate, onCreateProject, onNewSession, onSelectClient, onSelectSession, onDeleteSession, onTogglePin, onStartRename, onRenameDraft, onCommitRename, onCancelRename, onArchive, onRestore, onToggleArchivedOpen, onSearchChange, onOpenSettings, onToggleTheme, onHideSidebar }: {
   copy: WorkspaceCopy;
   consoleCopy: ConsoleCopy;
   locale: AppLocale;
@@ -61,7 +61,7 @@ export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients
   pluginsLabel: string;
   settingsLabel: string;
   themeLabel: string;
-  onNavigate: (view: "home" | "chat" | "projects" | "automations" | "skills") => void;
+  onNavigate: (view: "home" | "chat" | "projects" | "automations" | "skills" | "plugins") => void;
   onCreateProject: () => void;
   onNewSession: () => void;
   onSelectClient: (clientId: string) => void;
@@ -76,7 +76,6 @@ export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients
   onRestore: (session: ProductSession) => void;
   onToggleArchivedOpen: () => void;
   onSearchChange: (value: string) => void;
-  onShowPlugins: () => void;
   onOpenSettings: () => void;
   onToggleTheme: () => void;
   onHideSidebar: () => void;
@@ -120,11 +119,12 @@ export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const groups = groupSessionsByProject(sessions, projects);
 
-  const navItems: Array<{ key: "home" | "projects" | "automations" | "skills"; label: string; icon: React.ReactNode }> = [
+  const navItems: Array<{ key: "home" | "projects" | "automations" | "skills" | "plugins"; label: string; icon: React.ReactNode }> = [
     { key: "home", label: copy.navHome, icon: <IconStarFilled size={15} /> },
     { key: "projects", label: copy.navProjects, icon: <IconDocLines size={15} /> },
     { key: "automations", label: copy.navAutomations, icon: <IconBolt size={15} /> },
-    { key: "skills", label: copy.navSkills, icon: <IconAsterisk size={15} /> }
+    { key: "skills", label: copy.navSkills, icon: <IconAsterisk size={15} /> },
+    { key: "plugins", label: pluginsLabel, icon: <IconPuzzle size={15} /> }
   ];
   const isActive = (key: string) => key === "projects" ? view === "projects" || view === "project" : view === key;
 
@@ -240,6 +240,7 @@ export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients
             key={item.key}
             type="button"
             className="primary-item"
+            aria-label={item.label}
             aria-pressed={isActive(item.key)}
             data-active={isActive(item.key) || undefined}
             onClick={() => onNavigate(item.key)}
@@ -353,11 +354,6 @@ export function PrimarySidebar({ copy, consoleCopy, locale, view, theme, clients
         <Tooltip content={themeLabel} side="top">
           <button type="button" className="primary-foot-item" aria-label={themeLabel} aria-pressed={theme === "dark"} onClick={onToggleTheme}>
             <IconMoon size={15} />
-          </button>
-        </Tooltip>
-        <Tooltip content={pluginsLabel} side="top">
-          <button type="button" className="primary-foot-item" aria-label={pluginsLabel} aria-pressed={view === "plugins"} data-active={view === "plugins" || undefined} onClick={onShowPlugins}>
-            <IconPuzzle size={15} />
           </button>
         </Tooltip>
         <Tooltip content={settingsLabel} side="top">

@@ -15,7 +15,8 @@ export function HomeView({ locale, workspaceName, projects, onSubmitGoal, onSubm
   locale: AppLocale;
   workspaceName: string;
   projects: KernelProject[];
-  onSubmitGoal: (message: string) => void;
+  /** Returns false when the run was not admitted (for example, setup is required). */
+  onSubmitGoal: (message: string) => boolean;
   onSubmitCode: (message: string) => void;
   onSubmitProjectGoal: (projectId: string, message: string) => void;
   onModelSaved: (data: SettingsData) => void;
@@ -34,8 +35,10 @@ export function HomeView({ locale, workspaceName, projects, onSubmitGoal, onSubm
     if (!text || submitting) return;
     setSubmitting(true);
     try {
+      let accepted = true;
       if (scopeProjectId) onSubmitProjectGoal(scopeProjectId, text);
-      else onSubmitGoal(text);
+      else accepted = onSubmitGoal(text);
+      if (!accepted) return;
       setGoal("");
       setPickerOpen(false);
     } finally {
@@ -108,7 +111,7 @@ export function HomeView({ locale, workspaceName, projects, onSubmitGoal, onSubm
           <div className="home-composer-row">
             <ModelPicker locale={locale} settingsLabel={copy.settings} onSaved={onModelSaved} onOpenSettings={onOpenSettings} />
             <div className="home-mode" role="group" aria-label="mode">
-              <button type="button" className="home-mode-item" data-active="true" onClick={() => void submit()}>Ask</button>
+              <button type="button" className="home-mode-item" data-active="true" onClick={() => void submit()}>{copy.homeAskMode}</button>
               <button
                 type="button"
                 className="home-mode-item"

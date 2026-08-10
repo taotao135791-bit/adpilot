@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 
 export const DesktopBrowserPageIdentity = z.discriminatedUnion("status", [
@@ -158,6 +159,22 @@ export const DesktopLiveFrame = z.object({
 });
 export type DesktopLiveFrame = z.infer<typeof DesktopLiveFrame>;
 
+const DesktopProjectRootPath = z.string()
+  .min(1)
+  .max(32_768)
+  .refine((value) => isAbsolute(value), "selected project root must be an absolute path")
+  .refine((value) => !/[\0\r\n]/.test(value), "selected project root contains unsupported control characters");
+
+/**
+ * Narrow result of a user-owned native open-directory dialog. The bridge
+ * returns only the selected directory path; it never reads or enumerates it.
+ */
+export const DesktopProjectRootSelection = z.discriminatedUnion("cancelled", [
+  z.object({ cancelled: z.literal(true) }).strict(),
+  z.object({ cancelled: z.literal(false), path: DesktopProjectRootPath }).strict()
+]);
+export type DesktopProjectRootSelection = z.infer<typeof DesktopProjectRootSelection>;
+
 export interface DesktopNativeBridge {
   permissionCenter(context: DesktopNativeContext): Promise<DesktopPermissionCenter>;
   requestPermissions(
@@ -172,6 +189,7 @@ export interface DesktopNativeBridge {
   captureLiveFrame(context: DesktopNativeContext & {
     browserSession: NonNullable<DesktopNativeContext["browserSession"]>;
   }): Promise<DesktopLiveFrame>;
+  selectProjectRoot(): Promise<DesktopProjectRootSelection>;
 }
 
 /**

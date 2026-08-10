@@ -30,6 +30,32 @@ afterEach(async () => {
 });
 
 describe("terminal REST routes", () => {
+  it("installs the interactive cwd guard without zsh startup diagnostics", async () => {
+    const { server, system } = await boot();
+    const scope = await createProjectScope(system);
+    const session = (await createSession(server, scope)).body;
+
+    await server.inject({
+      method: "POST",
+      url: scoped(`/api/terminals/${session.id}/input`, scope),
+      payload: { data: "echo guard-ready\n" }
+    });
+    expect(
+      await waitForChunks(
+        server,
+        session.id,
+        scope,
+        (chunks) => chunks.some((chunk) => chunk.data.includes("guard-ready"))
+      )
+    ).toBe(true);
+
+    const output = (await server.inject({
+      method: "GET",
+      url: scoped(`/api/terminals/${session.id}/output`, scope)
+    })).json() as { chunks: Chunk[] };
+    expect(output.chunks.map((chunk) => chunk.data).join("\n")).not.toContain("bad option: -r");
+  });
+
   it("runs safe project-root commands, streams interactive IO, interrupts and kills", async () => {
     const { server, system } = await boot();
     const scope = await createProjectScope(system);

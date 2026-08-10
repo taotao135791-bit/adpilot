@@ -111,6 +111,10 @@ export type DesktopPermissionTestResult = {
   };
 };
 
+export type DesktopProjectRootSelection =
+  | { cancelled: true }
+  | { cancelled: false; path: string };
+
 export type DesktopLiveFrame = {
   frameId: string;
   browserSessionId: string;
@@ -305,6 +309,25 @@ export async function testDesktopPermission(
     }),
     ...(signal ? { signal } : {})
   }) as DesktopPermissionTestResult;
+}
+
+/**
+ * Opens the native app's single-purpose OS directory chooser. Browser builds
+ * do not call this endpoint and keep the manual absolute-path field instead.
+ */
+export async function selectDesktopProjectRoot(signal?: AbortSignal): Promise<DesktopProjectRootSelection> {
+  const payload = await requestJson("/api/desktop-native/project-root/select", {
+    method: "POST",
+    ...(signal ? { signal } : {})
+  });
+  if (!isRecord(payload) || typeof payload.cancelled !== "boolean") {
+    throw new DesktopApiError(502, "Native project-directory chooser returned an invalid response");
+  }
+  if (payload.cancelled) return { cancelled: true };
+  if (typeof payload.path !== "string" || payload.path.length === 0) {
+    throw new DesktopApiError(502, "Native project-directory chooser returned an invalid response");
+  }
+  return { cancelled: false, path: payload.path };
 }
 
 export async function getDesktopLiveFrame(

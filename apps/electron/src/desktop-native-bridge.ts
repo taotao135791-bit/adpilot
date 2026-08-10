@@ -15,6 +15,7 @@ import {
 } from "@adpilot/computer-use";
 import {
   DesktopNativeBindingError,
+  DesktopProjectRootSelection,
   DesktopNativeUnavailableError,
   DesktopPermissionCenter,
   DesktopPermissionTestResult,
@@ -23,7 +24,8 @@ import {
   type DesktopNativeContext,
   type DesktopPermissionId,
   type DesktopPermissionItem,
-  type DesktopPermissionStatus
+  type DesktopPermissionStatus,
+  type DesktopProjectRootSelection as DesktopProjectRootSelectionValue
 } from "@adpilot/server";
 
 export type SharedNativeComputerService = Pick<NativeComputerHost, "request" | "pid" | "closed">;
@@ -34,6 +36,8 @@ export interface ElectronDesktopNativeBridgeOptions {
   processName: string;
   bundleId: string;
   openExternal: (url: string) => Promise<unknown>;
+  /** Opens one OS-owned directory chooser. It must not inspect the selection. */
+  selectProjectRoot?: () => Promise<string | undefined>;
   keychainInUse: () => boolean;
   backgroundServiceEnabled: () => boolean;
   platform?: "darwin" | "win32" | "linux";
@@ -100,6 +104,16 @@ export class ElectronDesktopNativeBridge implements DesktopNativeBridge {
 
   constructor(private readonly options: ElectronDesktopNativeBridgeOptions) {
     this.#platform = options.platform ?? normalizedPlatform();
+  }
+
+  async selectProjectRoot(): Promise<DesktopProjectRootSelectionValue> {
+    if (!this.options.selectProjectRoot) {
+      throw new DesktopNativeUnavailableError("the native project-directory chooser is unavailable");
+    }
+    const path = await this.options.selectProjectRoot();
+    return DesktopProjectRootSelection.parse(path === undefined
+      ? { cancelled: true }
+      : { cancelled: false, path });
   }
 
   async permissionCenter(context: DesktopNativeContext) {

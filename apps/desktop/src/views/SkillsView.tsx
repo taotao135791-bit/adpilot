@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { workspaceCopy, type AppLocale } from "../labels.js";
 import { interpolate, type SkillSummary, type SkillWarning } from "../workspace.js";
 import { Badge, Button } from "../ui.js";
@@ -16,6 +16,8 @@ export function SkillsView({ locale }: { locale: AppLocale }) {
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
   const [warnings, setWarnings] = useState<SkillWarning[]>([]);
   const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const [source, setSource] = useState<"all" | "built-in" | "user" | "workspace">("all");
 
   const load = useCallback(async () => {
     try {
@@ -31,6 +33,16 @@ export function SkillsView({ locale }: { locale: AppLocale }) {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  const visibleSkills = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase(locale);
+    return (skills ?? []).filter((skill) => {
+      if (source !== "all" && skill.source !== source) return false;
+      if (!needle) return true;
+      return [skill.name, skill.description, skill.publisher ?? "", ...skill.triggers]
+        .some((value) => value.toLocaleLowerCase(locale).includes(needle));
+    });
+  }, [locale, query, skills, source]);
 
   return (
     <div className="workbench skills-view">
@@ -58,6 +70,24 @@ export function SkillsView({ locale }: { locale: AppLocale }) {
         </div>
       )}
 
+      {skills !== null && skills.length > 0 && (
+        <div className="skills-toolbar" role="search">
+          <input
+            type="search"
+            value={query}
+            placeholder={copy.skillsSearchPlaceholder}
+            aria-label={copy.skillsSearchPlaceholder}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <select value={source} aria-label={copy.skillsSourceFilter} onChange={(event) => setSource(event.target.value as typeof source)}>
+            <option value="all">{copy.skillsSourceAll}</option>
+            <option value="built-in">{copy.skillSourceBuiltIn}</option>
+            <option value="user">{copy.skillSourceUser}</option>
+            <option value="workspace">{copy.skillSourceWorkspace}</option>
+          </select>
+        </div>
+      )}
+
       {skills === null ? (
         <p className="workbench-quiet">{copy.loading}…</p>
       ) : skills.length === 0 ? (
@@ -66,12 +96,18 @@ export function SkillsView({ locale }: { locale: AppLocale }) {
           <strong>{copy.skillsEmpty}</strong>
           <p>{copy.skillsEmptyBody}</p>
         </div>
+      ) : visibleSkills.length === 0 ? (
+        <div className="empty-block">
+          <IconBook size={22} />
+          <strong>{copy.skillsNoMatches}</strong>
+          <p>{copy.skillsNoMatchesBody}</p>
+        </div>
       ) : (
-        <div className="card-grid">
-          {skills.map((skill) => (
+        <div className="card-grid skills-grid">
+          {visibleSkills.map((skill) => (
             <div key={skill.name} className="skill-card">
               <div className="project-card-head">
-                <strong className="mono">{skill.name}</strong>
+                <strong className="mono" title={skill.name}>{skill.name}</strong>
                 <div className="project-card-meta">
                   <Badge tone="neutral" variant="outline">
                     {interpolate(copy.skillSource, {
@@ -90,9 +126,12 @@ export function SkillsView({ locale }: { locale: AppLocale }) {
               {skill.triggers.length > 0 && (
                 <div className="project-card-meta">
                   <span className="home-list-meta">{copy.skillTriggers}</span>
-                  {skill.triggers.slice(0, 6).map((trigger) => (
+                  {skill.triggers.slice(0, 3).map((trigger) => (
                     <Badge key={trigger} tone="accent" variant="soft">{trigger}</Badge>
                   ))}
+                  {skill.triggers.length > 3 && (
+                    <Badge tone="neutral" variant="outline">+{skill.triggers.length - 3}</Badge>
+                  )}
                 </div>
               )}
             </div>

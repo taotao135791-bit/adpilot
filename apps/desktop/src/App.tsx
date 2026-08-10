@@ -52,6 +52,7 @@ import {
   sameProjectChatRun,
   type ProjectChatRunTarget
 } from "./projectChatRun.js";
+import { chatGoalAdmission } from "./chatAdmission.js";
 
 /**
  * Codex-style skeleton: a collapsible sidebar (brand, new conversation,
@@ -437,7 +438,7 @@ export function App() {
   }
 
   /** Universal Workspace navigation: the rail switches top-level views. */
-  function navigateRail(view: "home" | "chat" | "projects" | "automations" | "skills") {
+  function navigateRail(view: "home" | "chat" | "projects" | "automations" | "skills" | "plugins") {
     setMainView(view);
   }
 
@@ -448,9 +449,24 @@ export function App() {
   }
 
   /** Quick inputs (Home hero, project CTA) hand the message to the real chat submission path. */
-  function submitAndChat(message: string) {
+  function submitAndChat(message: string): boolean {
+    const normalized = message.trim();
+    const admission = chatGoalAdmission(normalized, {
+      busy: submitLock.current,
+      chatConfigured: state.models.chatConfigured
+    });
+    if (admission === "empty") return false;
+    if (admission === "busy") {
+      setError(copy.runBusyElsewhereHint);
+      return false;
+    }
+    if (admission === "model_required") {
+      openSettings("models");
+      return false;
+    }
     setMainView("chat");
-    void submitGoal(message);
+    void submitGoal(normalized);
+    return true;
   }
 
   /** Code work must bind a real project root before any coding tool exists. */
@@ -948,7 +964,6 @@ export function App() {
           onRestore={(session) => void restoreSession(session)}
           onToggleArchivedOpen={() => setArchivedOpen((open) => !open)}
           onSearchChange={setSessionSearch}
-          onShowPlugins={() => setMainView("plugins")}
           onOpenSettings={() => openSettings("general")}
           onToggleTheme={toggleTheme}
           onHideSidebar={toggleSidebarHidden}
@@ -975,6 +990,7 @@ export function App() {
             projectId={activeProjectId}
             focusArtifactId={focusArtifactId}
             initialMission={codeHandoff?.projectId === activeProjectId ? codeHandoff.mission : undefined}
+            chatConfigured={state.models.chatConfigured}
             onBack={() => setMainView("projects")}
             onModelSaved={applySettings}
             onOpenSettings={() => openSettings("models")}
@@ -998,6 +1014,7 @@ export function App() {
               <ProjectsView
                 locale={locale}
                 clientId={clientId}
+                nativeDesktop={isNativeDesktop}
                 dialogNonce={projectsDialogNonce}
                 {...(pendingCodeMission ? { initialCodeMission: pendingCodeMission } : {})}
                 onOpenProject={(projectId) => openProject(projectId)}

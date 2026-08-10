@@ -75,6 +75,27 @@ describe("Electron native permission presentation", () => {
   });
 });
 
+describe("Electron native project-root selection", () => {
+  it("returns only the directory path explicitly chosen by the OS dialog", async () => {
+    const selectProjectRoot = vi.fn(async () => "/tmp/example-project");
+    const bridge = permissionBridge({ selectProjectRoot });
+
+    await expect(bridge.selectProjectRoot()).resolves.toEqual({
+      cancelled: false,
+      path: "/tmp/example-project"
+    });
+    expect(selectProjectRoot).toHaveBeenCalledOnce();
+  });
+
+  it("models cancellation without a path and rejects unsafe path framing", async () => {
+    const bridge = permissionBridge({ selectProjectRoot: async () => undefined });
+    await expect(bridge.selectProjectRoot()).resolves.toEqual({ cancelled: true });
+
+    const malformed = permissionBridge({ selectProjectRoot: async () => "/tmp/project\nother" });
+    await expect(malformed.selectProjectRoot()).rejects.toThrow("unsupported control characters");
+  });
+});
+
 function permissionBridge(overrides: Partial<ConstructorParameters<typeof ElectronDesktopNativeBridge>[0]> = {}) {
   return new ElectronDesktopNativeBridge({
     dataDirectory: tmpdir(),

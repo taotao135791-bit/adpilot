@@ -80,9 +80,51 @@ import {
   shouldSubmitProjectChatKey,
   type ProjectChatProjectRunTarget
 } from "../projectChatRun.js";
+import { chatGoalAdmission } from "../chatAdmission.js";
 
 type LeftTab = "goals" | "files" | "artifacts";
 type RightTab = "terminal" | "git" | "preview";
+
+export const PROJECT_NARROW_MEDIA_QUERY = "(max-width: 1280px)";
+
+export interface ProjectRightPanelState {
+  readonly open: boolean;
+  readonly tab: RightTab;
+  /** TerminalPanel is never mounted until the user selects its tab. */
+  readonly terminalActivated: boolean;
+}
+
+export function initialProjectRightPanelState(narrow: boolean): ProjectRightPanelState {
+  return { open: !narrow, tab: "preview", terminalActivated: false };
+}
+
+export function toggleProjectRightPanel(state: ProjectRightPanelState): ProjectRightPanelState {
+  return state.open
+    ? initialProjectRightPanelState(true)
+    : initialProjectRightPanelState(false);
+}
+
+export function selectProjectRightTab(
+  state: ProjectRightPanelState,
+  tab: RightTab
+): ProjectRightPanelState {
+  return {
+    ...state,
+    tab,
+    terminalActivated: state.terminalActivated || tab === "terminal"
+  };
+}
+
+export function openProjectRightTab(
+  state: ProjectRightPanelState,
+  tab: RightTab
+): ProjectRightPanelState {
+  return selectProjectRightTab({ ...state, open: true }, tab);
+}
+
+export function shouldMountProjectTerminal(state: ProjectRightPanelState): boolean {
+  return state.open && state.terminalActivated;
+}
 
 /**
  * Project workbench: the three-column Universal Workspace surface. Left —
@@ -96,7 +138,7 @@ type RightTab = "terminal" | "git" | "preview";
  * that same stoppable run. Right — collapsible dynamic panel
  * (terminal / git / artifact preview).
  */
-export function ProjectView({ locale, clientId, projectId, focusArtifactId, initialMission, onBack, onModelSaved, onOpenSettings }: {
+export function ProjectView({ locale, clientId, projectId, focusArtifactId, initialMission, chatConfigured, onBack, onModelSaved, onOpenSettings }: {
   locale: AppLocale;
   clientId: string;
   projectId: string;
@@ -104,6 +146,7 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
   focusArtifactId?: string | null;
   /** Prefill the mission composer (e.g. Home's Code hand-off). */
   initialMission?: string | undefined;
+  chatConfigured: boolean;
   onBack: () => void;
   onModelSaved: (data: SettingsData) => void;
   onOpenSettings: () => void;
@@ -115,8 +158,13 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [error, setError] = useState("");
   const [leftTab, setLeftTab] = useState<LeftTab>("goals");
-  const [rightTab, setRightTab] = useState<RightTab>("terminal");
-  const [rightOpen, setRightOpen] = useState(true);
+  const [rightPanel, setRightPanel] = useState<ProjectRightPanelState>(() => initialProjectRightPanelState(
+    typeof window !== "undefined"
+      && typeof window.matchMedia === "function"
+      && window.matchMedia(PROJECT_NARROW_MEDIA_QUERY).matches
+  ));
+  const rightTab = rightPanel.tab;
+  const rightOpen = rightPanel.open;
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(focusArtifactId ?? null);
   const [mission, setMission] = useState(initialMission ?? "");
   /** The durable session this project's chat is bound to. */
@@ -154,6 +202,16 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia(PROJECT_NARROW_MEDIA_QUERY);
+    const closeWhenNarrow = (event: MediaQueryListEvent) => {
+      if (event.matches) setRightPanel(initialProjectRightPanelState(true));
+    };
+    media.addEventListener("change", closeWhenNarrow);
+    return () => media.removeEventListener("change", closeWhenNarrow);
   }, []);
 
   const runScopeSessionId = session?.id;
@@ -194,8 +252,7 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
   useEffect(() => {
     if (focusArtifactId) {
       setSelectedArtifactId(focusArtifactId);
-      setRightTab("preview");
-      setRightOpen(true);
+      setRightPanel((current) => openProjectRightTab(current, "preview"));
     }
   }, [focusArtifactId]);
 
@@ -289,8 +346,7 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
 
   function openArtifact(artifact: KernelArtifact) {
     setSelectedArtifactId(artifact.id);
-    setRightTab("preview");
-    setRightOpen(true);
+    setRightPanel((current) => openProjectRightTab(current, "preview"));
   }
 
   async function completeTask(taskId: string) {
@@ -312,6 +368,10 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
   async function submitMission() {
     const message = mission.trim();
     if (!message || bindLockRef.current || runLifecycleRef.current.current() || !session) return;
+    if (chatGoalAdmission(message, { busy: false, chatConfigured }) === "model_required") {
+      onOpenSettings();
+      return;
+    }
     const targetSession = session;
     const target: ProjectChatProjectRunTarget = {
       clientId,
@@ -404,7 +464,7 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
             aria-label={rightOpen ? copy.collapsePanel : copy.expandPanel}
             aria-pressed={rightOpen}
             data-active={rightOpen || undefined}
-            onClick={() => setRightOpen((open) => !open)}
+            onClick={() => setRightPanel(toggleProjectRightPanel)}
           />
         </Tooltip>
       </header>
@@ -554,7 +614,7 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
                   aria-selected={rightTab === tab}
                   className="project-tab"
                   data-active={rightTab === tab || undefined}
-                  onClick={() => setRightTab(tab)}
+                  onClick={() => setRightPanel((current) => selectProjectRightTab(current, tab))}
                 >
                   {tab === "terminal" ? copy.tabTerminal : tab === "git" ? copy.tabGit : copy.tabPreview}
                 </button>
@@ -562,17 +622,20 @@ export function ProjectView({ locale, clientId, projectId, focusArtifactId, init
             </div>
             {detail && (
               <div className="project-panel-body">
-                {/* Terminal sessions stay alive across right-tab switches; the
-                    panel unmounts only when the workbench itself closes. */}
-                <div hidden={rightTab !== "terminal"} className="project-panel-fill">
-                  <TerminalPanel
-                    locale={locale}
-                    clientId={clientId}
-                    projectId={projectId}
-                    defaultCwd={projectDefaultRoot(detail)}
-                    projectName={detail.name}
-                  />
-                </div>
+                {/* After explicit activation, terminal sessions stay alive
+                    across right-tab switches. Closing the right panel or the
+                    workbench unmounts TerminalPanel and kills its sessions. */}
+                {shouldMountProjectTerminal(rightPanel) && (
+                  <div hidden={rightTab !== "terminal"} className="project-panel-fill">
+                    <TerminalPanel
+                      locale={locale}
+                      clientId={clientId}
+                      projectId={projectId}
+                      defaultCwd={projectDefaultRoot(detail)}
+                      projectName={detail.name}
+                    />
+                  </div>
+                )}
                 <div hidden={rightTab !== "git"} className="project-panel-fill">
                   <GitPanel locale={locale} root={projectDefaultRoot(detail)} workspaceId={clientId} />
                 </div>

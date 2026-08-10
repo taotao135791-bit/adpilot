@@ -82,11 +82,7 @@ export function ModelPicker({ locale, settingsLabel, onSaved, onOpenSettings }: 
   }
 
   const current = data ? `${data.models.fast.provider}/${data.models.fast.model}` : "…";
-  const currentVision = data
-    ? data.catalog.providers
-        .find((provider) => provider.id === data.models.fast.provider)
-        ?.models.some((model) => model.id === data.models.fast.model && model.vision) === true
-    : false;
+  const currentProviderConfigured = data?.providerConfigured[data.models.fast.provider] === true;
 
   return (
     <div className="model-picker" ref={rootRef}>
@@ -94,10 +90,10 @@ export function ModelPicker({ locale, settingsLabel, onSaved, onOpenSettings }: 
         type="button"
         className="chip chip-button model-picker-chip"
         aria-expanded={open}
-        aria-label={copy.modelPickerLabel}
+        aria-label={`${copy.modelPickerLabel}: ${current}${currentProviderConfigured ? "" : ` (${copy.modelProviderNeedsKey})`}`}
         onClick={() => setOpen((value) => !value)}
       >
-        <i className="model-picker-dot" data-vision={currentVision || undefined} aria-hidden="true" />
+        <i className="model-picker-dot" data-configured={currentProviderConfigured || undefined} aria-hidden="true" />
         <span>{current}</span>
         <IconChevronDown size={11} {...(open ? { className: "open" } : {})} />
       </button>
