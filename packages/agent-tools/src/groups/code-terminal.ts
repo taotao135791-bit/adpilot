@@ -24,6 +24,7 @@ const SessionParams = z.object({ terminalId: z.string().min(1) });
 
 type OwnedTerminal = {
   workspaceId: string;
+  projectId?: string;
   sessionId: string;
   root: string;
   lastExitCode: number | null;
@@ -35,30 +36,83 @@ type OwnedTerminal = {
   }>;
 };
 
+type ActiveTerminalExecution = {
+  readonly owner: OwnedTerminal;
+  readonly controller: AbortController;
+  readonly unlinkParentSignal: () => void;
+};
+
+function terminalNotFound(): Error {
+  return toolError(
+    "TERMINAL_NOT_FOUND",
+    "terminal session is unavailable or belongs to a different workspace/project/session"
+  );
+}
+
+function requireTerminalOwner(
+  terminals: ReadonlyMap<string, OwnedTerminal>,
+  terminalId: string,
+  ctx: AgentExecutionContext
+): OwnedTerminal {
+  const owned = terminals.get(terminalId);
+  if (
+    !owned
+    || owned.workspaceId !== ctx.workspaceId
+    || owned.projectId !== ctx.projectId
+    || owned.sessionId !== ctx.sessionId
+  ) {
+    throw terminalNotFound();
+  }
+  return owned;
+}
+
 async function requireOwnedTerminal(
   terminals: ReadonlyMap<string, OwnedTerminal>,
   terminalId: string,
   ctx: AgentExecutionContext,
   deps: AgentToolDeps
 ): Promise<{ owned: OwnedTerminal; cwd: string; running: boolean; exitCode: number | null }> {
-  const owned = terminals.get(terminalId);
-  if (
-    !owned
-    || owned.workspaceId !== ctx.workspaceId
-    || owned.sessionId !== ctx.sessionId
-  ) {
-    throw toolError(
-      "TERMINAL_NOT_FOUND",
-      "terminal session is unavailable or belongs to a different workspace/session"
-    );
+  const owned = requireTerminalOwner(terminals, terminalId, ctx);
+  // Context authority can narrow while a product session remains alive. Do
+  // not let an old terminal id retain access to a root the current call no
+  // longer carries.
+  try {
+    await assertWithinRoots(owned.root, ctx.rootPaths);
+  } catch {
+    throw terminalNotFound();
   }
   const session = deps.terminal.list().find((candidate) => candidate.id === terminalId);
-  if (!session) throw toolError("TERMINAL_NOT_FOUND", `terminal session not found: ${terminalId}`);
+  if (!session) throw terminalNotFound();
   // A user may also interact with the same terminal through the desktop. If
   // that moved its cwd, re-check it at every tool call instead of trusting the
   // creation-time root.
   const cwd = await assertWithinRoots(session.cwd, [owned.root]);
   return { owned, cwd, running: session.running, exitCode: session.exitCode };
+}
+
+function linkedAbortController(parent: AbortSignal | undefined): {
+  controller: AbortController;
+  unlink: () => void;
+} {
+  const controller = new AbortController();
+  if (!parent) return { controller, unlink: () => undefined };
+  const abortFromParent = () => controller.abort(parent.reason);
+  if (parent.aborted) {
+    abortFromParent();
+    return { controller, unlink: () => undefined };
+  }
+  parent.addEventListener("abort", abortFromParent, { once: true });
+  return {
+    controller,
+    unlink: () => parent.removeEventListener("abort", abortFromParent)
+  };
+}
+
+function terminalExecutionAborted(): Error {
+  return toolError(
+    "OPERATION_ABORTED",
+    "terminal execution was cancelled; do not retry unless the user starts it again"
+  );
 }
 
 async function checkpointRepositoryMutation(
@@ -100,6 +154,11 @@ async function checkpointRepositoryMutation(
  */
 export function createCodeTerminalTools(): AgentToolDefinition[] {
   const terminals = new Map<string, OwnedTerminal>();
+  // terminal.execute uses a separate, sandboxed process group rather than
+  // the persistent shell process owned by TerminalService. Keep the exact
+  // controller for that child bound to the product terminal id so interrupt
+  // cannot signal the wrong process (or another product session's process).
+  const activeExecutions = new Map<string, ActiveTerminalExecution>();
 
   return [
     {
@@ -117,6 +176,7 @@ export function createCodeTerminalTools(): AgentToolDefinition[] {
         });
         terminals.set(session.id, {
           workspaceId: ctx.workspaceId,
+          ...(ctx.projectId !== undefined ? { projectId: ctx.projectId } : {}),
           sessionId: ctx.sessionId,
           root: cwd,
           lastExitCode: null,
@@ -150,43 +210,73 @@ export function createCodeTerminalTools(): AgentToolDefinition[] {
             `command is deny-classified and never runs (${classification.reason}); do not try to work around this`
           );
         }
-        const checkpointId = classification.verdict === "read"
-          ? undefined
-          : await checkpointRepositoryMutation(cwd, params.command, ctx, deps);
-        const result = await executeSandboxedBash(
-          { workspaceRoot: cwd },
-          {
-            command: params.command,
-            ...(params.timeoutMs !== undefined ? { timeout: params.timeoutMs / 1_000 } : {})
-          },
-          signal
-        );
-        if (sessionTarget) {
-          sessionTarget.owned.lastExitCode = result.exitCode;
-          sessionTarget.owned.chunks.push({
-            seq: (sessionTarget.owned.chunks.at(-1)?.seq ?? 0) + 1,
-            ts: Date.now(),
-            stream: result.exitCode === 0 ? "stdout" : "stderr",
-            data: result.output
-          });
-          if (sessionTarget.owned.chunks.length > 200) {
-            sessionTarget.owned.chunks.splice(0, sessionTarget.owned.chunks.length - 200);
+        let active: ActiveTerminalExecution | undefined;
+        let executionSignal = signal;
+        if (params.terminalId !== undefined) {
+          if (activeExecutions.has(params.terminalId)) {
+            throw toolError(
+              "TERMINAL_BUSY",
+              "this terminal already has an active terminal.execute; wait for it or interrupt it before starting another"
+            );
           }
+          const linked = linkedAbortController(signal);
+          active = {
+            owner: sessionTarget!.owned,
+            controller: linked.controller,
+            unlinkParentSignal: linked.unlink
+          };
+          activeExecutions.set(params.terminalId, active);
+          executionSignal = linked.controller.signal;
         }
-        return succeed("terminal.execute", ctx, {
-          classification: {
-            verdict: result.classification.verdict,
-            reason: result.classification.reason
-          },
-          exitCode: result.exitCode,
-          stdout: result.exitCode === 0 ? result.output : "",
-          stderr: result.exitCode === 0 ? "" : result.output,
-          durationMs: result.durationMs,
-          timedOut: false,
-          truncated: result.truncated,
-          sandboxed: true,
-          ...(checkpointId ? { checkpointId } : {})
-        }, checkpointId ? { evidenceIds: [`git-checkpoint:${checkpointId}`] } : {});
+        try {
+          if (executionSignal?.aborted) throw terminalExecutionAborted();
+          const checkpointId = classification.verdict === "read"
+            ? undefined
+            : await checkpointRepositoryMutation(cwd, params.command, ctx, deps);
+          if (executionSignal?.aborted) throw terminalExecutionAborted();
+          const result = await executeSandboxedBash(
+            { workspaceRoot: cwd },
+            {
+              command: params.command,
+              ...(params.timeoutMs !== undefined ? { timeout: params.timeoutMs / 1_000 } : {})
+            },
+            executionSignal
+          );
+          if (sessionTarget) {
+            sessionTarget.owned.lastExitCode = result.exitCode;
+            sessionTarget.owned.chunks.push({
+              seq: (sessionTarget.owned.chunks.at(-1)?.seq ?? 0) + 1,
+              ts: Date.now(),
+              stream: result.exitCode === 0 ? "stdout" : "stderr",
+              data: result.output
+            });
+            if (sessionTarget.owned.chunks.length > 200) {
+              sessionTarget.owned.chunks.splice(0, sessionTarget.owned.chunks.length - 200);
+            }
+          }
+          return succeed("terminal.execute", ctx, {
+            classification: {
+              verdict: result.classification.verdict,
+              reason: result.classification.reason
+            },
+            exitCode: result.exitCode,
+            stdout: result.exitCode === 0 ? result.output : "",
+            stderr: result.exitCode === 0 ? "" : result.output,
+            durationMs: result.durationMs,
+            timedOut: false,
+            truncated: result.truncated,
+            sandboxed: true,
+            ...(checkpointId ? { checkpointId } : {})
+          }, checkpointId ? { evidenceIds: [`git-checkpoint:${checkpointId}`] } : {});
+        } catch (error) {
+          if (executionSignal?.aborted) throw terminalExecutionAborted();
+          throw error;
+        } finally {
+          if (params.terminalId !== undefined && activeExecutions.get(params.terminalId) === active) {
+            activeExecutions.delete(params.terminalId);
+          }
+          active?.unlinkParentSignal();
+        }
       }
     },
     {
@@ -222,15 +312,27 @@ export function createCodeTerminalTools(): AgentToolDefinition[] {
     },
     {
       name: "terminal.interrupt",
-      description: "Send SIGINT to a terminal session's process group. Use to stop a running command without killing the session.",
+      description: "Cancel the active terminal.execute process group bound to this exact product terminal and session. An idle or already-completed execution is left untouched and returns interrupted: false.",
       capabilityPack: "code",
       permission: "write",
       parameters: SessionParams,
       execute: async (raw, ctx, deps) => {
         const params = SessionParams.parse(raw);
+        // Snapshot before the asynchronous filesystem revalidation. If the
+        // snapshotted command finishes and another starts meanwhile, this
+        // stale interrupt must not cancel the replacement command.
+        const owner = requireTerminalOwner(terminals, params.terminalId, ctx);
+        const activeAtRequest = activeExecutions.get(params.terminalId);
         await requireOwnedTerminal(terminals, params.terminalId, ctx, deps);
-        deps.terminal.interrupt(params.terminalId);
-        return succeed("terminal.interrupt", ctx, { terminalId: params.terminalId, interrupted: true });
+        const stillActive = activeAtRequest !== undefined
+          && activeAtRequest.owner === owner
+          && activeExecutions.get(params.terminalId) === activeAtRequest
+          && !activeAtRequest.controller.signal.aborted;
+        if (stillActive) activeAtRequest.controller.abort("terminal.interrupt");
+        return succeed("terminal.interrupt", ctx, {
+          terminalId: params.terminalId,
+          interrupted: stillActive
+        });
       }
     },
     {
@@ -242,6 +344,7 @@ export function createCodeTerminalTools(): AgentToolDefinition[] {
       execute: async (raw, ctx, deps) => {
         const params = SessionParams.parse(raw);
         await requireOwnedTerminal(terminals, params.terminalId, ctx, deps);
+        activeExecutions.get(params.terminalId)?.controller.abort("terminal.close");
         await deps.terminal.kill(params.terminalId);
         terminals.delete(params.terminalId);
         return succeed("terminal.close", ctx, { terminalId: params.terminalId, closed: true });

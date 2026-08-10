@@ -19,7 +19,8 @@
  *   osascript), browser cookie/profile store access, credential stores
  *   (.ssh, keychain, .env*, the .adpilot approval secret, pi-auth.json,
  *   settings.json, the audit chain), privilege escalation (sudo), process
- *   control (kill, launchctl), scheduled persistence (crontab/at) and rm -rf.
+ *   control (kill, launchctl), scheduled persistence (crontab/at), direct
+ *   removal/truncation commands, find deletion and repository-history loss.
  *
  * The classification decision is written to the audit chain by the bash tool.
  * The classifier is the first of two enforcement layers; the sandbox-exec

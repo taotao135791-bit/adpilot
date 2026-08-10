@@ -29,11 +29,21 @@ async function call(
   name: string,
   params: unknown,
   ctx: AgentExecutionContext,
-  deps: AgentToolDeps
+  deps: AgentToolDeps,
+  signal?: AbortSignal
 ): Promise<AgentToolResult> {
   const definition = registry.get(name);
   if (!definition) throw new Error(`tool not registered: ${name}`);
-  return runAgentToolCall(definition, params, ctx, deps);
+  return runAgentToolCall(definition, params, ctx, deps, signal);
+}
+
+async function waitForFile(path: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (await stat(path).then(() => true).catch(() => false)) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for fixture file: ${path}`);
 }
 
 async function workspace(): Promise<{
@@ -138,9 +148,94 @@ describe("terminal tools (real TerminalService)", () => {
     expect(output.success).toBe(true);
     expect((output.data as { chunks: Array<{ data: string }> }).chunks.at(-1)?.data).toContain("hello-adpilot");
 
-    await call("terminal.interrupt", { terminalId }, ctx, deps);
+    const idleInterrupt = await call("terminal.interrupt", { terminalId }, ctx, deps);
+    expect((idleInterrupt.data as { interrupted: boolean }).interrupted).toBe(false);
     const closed = await call("terminal.close", { terminalId }, ctx, deps);
     expect((closed.data as { closed: boolean }).closed).toBe(true);
+  });
+
+  it("interrupts only the exact active execution and rejects concurrent execution", async () => {
+    const { root, deps } = await workspace();
+    const canonical = await realpath(root);
+    const owner = makeCtx({
+      workspaceId: "client-a",
+      projectId: "project-a",
+      sessionId: "coding-session-a",
+      rootPaths: [canonical]
+    });
+    const created = await call("terminal.create", { cwd: canonical }, owner, deps);
+    const terminalId = (created.data as { session: { id: string } }).session.id;
+    const marker = join(canonical, "active-terminal-execution");
+
+    const executing = call(
+      "terminal.execute",
+      { terminalId, command: `touch ${marker} && sleep 30` },
+      owner,
+      deps
+    );
+    await waitForFile(marker);
+
+    const concurrent = await call(
+      "terminal.execute",
+      { terminalId, command: "echo must-not-run" },
+      owner,
+      deps
+    );
+    expect(concurrent.error).toMatchObject({ code: "TERMINAL_BUSY" });
+
+    for (const foreign of [
+      makeCtx({ ...owner, workspaceId: "client-b" }),
+      makeCtx({ ...owner, projectId: "project-b" }),
+      makeCtx({ ...owner, sessionId: "coding-session-b" })
+    ]) {
+      const refused = await call("terminal.interrupt", { terminalId }, foreign, deps);
+      expect(refused.error).toMatchObject({ code: "TERMINAL_NOT_FOUND" });
+    }
+
+    const interrupted = await call("terminal.interrupt", { terminalId }, owner, deps);
+    expect(interrupted.success).toBe(true);
+    expect(interrupted.data).toMatchObject({ terminalId, interrupted: true });
+    const outcome = await executing;
+    expect(outcome.error).toMatchObject({ code: "OPERATION_ABORTED", recoverable: false });
+
+    const completedInterrupt = await call("terminal.interrupt", { terminalId }, owner, deps);
+    expect(completedInterrupt.data).toMatchObject({ terminalId, interrupted: false });
+
+    const next = await call("terminal.execute", { terminalId, command: "echo still-usable" }, owner, deps);
+    expect((next.data as { stdout: string }).stdout).toContain("still-usable");
+    await call("terminal.close", { terminalId }, owner, deps);
+  });
+
+  it("propagates an AbortSignal to the active terminal process group and releases the slot", async () => {
+    const { root, deps } = await workspace();
+    const canonical = await realpath(root);
+    const context = makeCtx({
+      projectId: "project-abort",
+      sessionId: "coding-session-abort",
+      rootPaths: [canonical]
+    });
+    const created = await call("terminal.create", { cwd: canonical }, context, deps);
+    const terminalId = (created.data as { session: { id: string } }).session.id;
+    const marker = join(canonical, "abort-signal-terminal-execution");
+    const controller = new AbortController();
+
+    const executing = call(
+      "terminal.execute",
+      { terminalId, command: `touch ${marker} && sleep 30` },
+      context,
+      deps,
+      controller.signal
+    );
+    await waitForFile(marker);
+    controller.abort("test cancellation");
+    const outcome = await executing;
+    expect(outcome.error).toMatchObject({ code: "OPERATION_ABORTED", recoverable: false });
+
+    const idleInterrupt = await call("terminal.interrupt", { terminalId }, context, deps);
+    expect(idleInterrupt.data).toMatchObject({ interrupted: false });
+    const next = await call("terminal.execute", { terminalId, command: "echo slot-released" }, context, deps);
+    expect((next.data as { stdout: string }).stdout).toContain("slot-released");
+    await call("terminal.close", { terminalId }, context, deps);
   });
 
   it("refuses cwd outside the roots, allows sandboxed writes, and always denies dangerous commands", async () => {
